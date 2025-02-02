@@ -1,9 +1,6 @@
 package header
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
 )
@@ -12,7 +9,7 @@ type Header struct {
 	ParentHash                   [32]byte
 	PriorStateRoot               [32]byte
 	ExtrinsicHash                [32]byte
-	TimeSlotIndex                uint32
+	TimeSlotIndex                types.TimeslotIndex
 	EpochMarker                  *EpochMarker
 	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
 	OffendersMarker              OffendersMarker
@@ -33,18 +30,3 @@ type Ticket struct {
 }
 
 type OffendersMarker [](types.Ed25519PublicKey)
-
-func NewOffendersMarker(elements ...types.Ed25519PublicKey) (OffendersMarker, error) {
-	if len(elements) > constants.NumValidators {
-		return nil, fmt.Errorf("exceeds maximum allowed length of %d", constants.NumValidators)
-	}
-	return elements, nil
-}
-
-func (arr *OffendersMarker) Append(element types.Ed25519PublicKey) error {
-	if len(*arr) >= constants.NumValidators {
-		return errors.New("cannot append, maximum length reached")
-	}
-	*arr = append(*arr, element)
-	return nil
-}

@@ -12,7 +12,11 @@ type BandersnatchPublicKey [32]byte
 
 type BandersnatchSignature [64]byte
 
+type BandersnatchRingVRFProof [784]byte
+
 type Ed25519Signature [64]byte
+
+type TimeslotIndex uint32
 
 type ValidatorIndex uint16
 
