@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/types"
 )
 
 type Header struct {
@@ -13,34 +14,34 @@ type Header struct {
 	ExtrinsicHash                [32]byte
 	TimeSlotIndex                uint32
 	EpochMarker                  *EpochMarker
-	WinningTicketsMarker         *([constants.NumEpochTimeslots]Ticket)
+	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
 	OffendersMarker              OffendersMarker
-	BandersnatchBlockAuthorIndex constants.ValidatorIndex
-	VRFSignature                 [32]byte
-	BlockSeal                    [32]byte
+	BandersnatchBlockAuthorIndex types.ValidatorIndex
+	VRFSignature                 types.BandersnatchSignature
+	BlockSeal                    types.BandersnatchSignature
 }
 
 type EpochMarker struct {
-	CurrentEpochRandomness    [32]byte
-	NextEpochRandomness       [32]byte
-	BandersnatchValidatorKeys [constants.NumValidators][32]byte
+	CurrentEpochRandomness [32]byte
+	NextEpochRandomness    [32]byte
+	ValidatorKeys          [constants.NumValidators]types.BandersnatchPublicKey
 }
 
 type Ticket struct {
 	VerifiablyRandomIdentifier [32]byte
-	EntryIndex                 constants.TicketEntryIndex
+	EntryIndex                 types.TicketEntryIndex
 }
 
-type OffendersMarker []([32]byte)
+type OffendersMarker [](types.Ed25519PublicKey)
 
-func NewOffendersMarker(elements ...[32]byte) (OffendersMarker, error) {
+func NewOffendersMarker(elements ...types.Ed25519PublicKey) (OffendersMarker, error) {
 	if len(elements) > constants.NumValidators {
 		return nil, fmt.Errorf("exceeds maximum allowed length of %d", constants.NumValidators)
 	}
 	return elements, nil
 }
 
-func (arr *OffendersMarker) Append(element [32]byte) error {
+func (arr *OffendersMarker) Append(element types.Ed25519PublicKey) error {
 	if len(*arr) >= constants.NumValidators {
 		return errors.New("cannot append, maximum length reached")
 	}
