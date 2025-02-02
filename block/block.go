@@ -1,8 +1,8 @@
 package block
 
 import (
-	"github.com/ascrivener/jam/extrinsics"
-	"github.com/ascrivener/jam/header"
+	"github.com/ascrivener/jam/block/extrinsics"
+	"github.com/ascrivener/jam/block/header"
 )
 
 type Block struct {
