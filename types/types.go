@@ -35,3 +35,18 @@ func NewTicketEntryIndex(value uint8) (TicketEntryIndex, error) {
 	}
 	return TicketEntryIndex(value), nil
 }
+
+type BlobLength uint32
+
+type CoreIndex uint16
+
+func NewCoreIndex(value uint16) (CoreIndex, error) {
+	if value >= constants.NumCores {
+		return 0, fmt.Errorf("invalid core index value: must be less than %d", constants.NumCores)
+	}
+	return CoreIndex(value), nil
+}
+
+type ServiceIndex uint32
+
+type GasValue uint64
