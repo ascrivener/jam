@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math/bits"
 	"reflect"
 	"sort"
@@ -91,14 +92,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 	case reflect.Array, reflect.Slice:
 		return serializeSlice(v, buf)
 
-	case reflect.Uint8:
-		return buf.WriteByte(byte(v.Uint()))
-
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return binary.Write(buf, binary.LittleEndian, v.Int())
-
+		return writeIntLittleEndian(buf, v)
 	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return binary.Write(buf, binary.LittleEndian, v.Uint())
+		return writeUintLittleEndian(buf, v)
 
 	default:
 		return fmt.Errorf("unsupported type: %s", v.Type().String())
@@ -233,4 +230,50 @@ func appendLengthEncoding(v reflect.Value, buf *bytes.Buffer) error {
 		}
 	}
 	return nil
+}
+
+func writeIntLittleEndian(buf io.Writer, v reflect.Value) error {
+	// Determine the number of bytes for this integer.
+	size := int(v.Type().Size())
+	tmp := make([]byte, size)
+	value := v.Int() // v.Int() returns an int64 regardless of the underlying size.
+
+	switch size {
+	case 1:
+		// For 1-byte int, cast to int8 then to byte.
+		tmp[0] = byte(int8(value))
+	case 2:
+		binary.LittleEndian.PutUint16(tmp, uint16(value))
+	case 4:
+		binary.LittleEndian.PutUint32(tmp, uint32(value))
+	case 8:
+		binary.LittleEndian.PutUint64(tmp, uint64(value))
+	default:
+		// Fallback: if for some reason the size isn't one of the above.
+		return io.ErrShortWrite
+	}
+	_, err := buf.Write(tmp)
+	return err
+}
+
+func writeUintLittleEndian(buf io.Writer, v reflect.Value) error {
+	// Determine the number of bytes for this unsigned integer.
+	size := int(v.Type().Size())
+	tmp := make([]byte, size)
+	value := v.Uint() // Always returns a uint64, regardless of the underlying type.
+
+	switch size {
+	case 1:
+		tmp[0] = byte(value)
+	case 2:
+		binary.LittleEndian.PutUint16(tmp, uint16(value))
+	case 4:
+		binary.LittleEndian.PutUint32(tmp, uint32(value))
+	case 8:
+		binary.LittleEndian.PutUint64(tmp, uint64(value))
+	default:
+		return io.ErrShortWrite
+	}
+	_, err := buf.Write(tmp)
+	return err
 }
