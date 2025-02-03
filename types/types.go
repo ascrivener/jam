@@ -14,9 +14,11 @@ type BandersnatchSignature [64]byte
 
 type BandersnatchRingVRFProof [784]byte
 
+type BandersnatchRingRoot [144]byte
+
 type Ed25519Signature [64]byte
 
-type TimeslotIndex uint32
+type Timeslot uint32
 
 type ValidatorIndex uint16
 
@@ -49,4 +51,8 @@ func NewCoreIndex(value uint16) (CoreIndex, error) {
 
 type ServiceIndex uint32
 
-type GasValue uint64
+type GasValue int64
+
+type ValidatorKeyset [336]byte
+
+type Balance uint64

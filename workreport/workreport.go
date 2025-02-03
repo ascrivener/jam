@@ -25,7 +25,7 @@ type RefinementContext struct {
 	PosteriorStateRoot            [32]byte
 	PosteriorBEEFYRoot            [32]byte
 	LookupAnchorHeaderHash        [32]byte
-	Timeslot                      types.TimeslotIndex
+	Timeslot                      types.Timeslot
 	PrerequisiteWorkPackageHashes map[[32]byte]struct{}
 }
 

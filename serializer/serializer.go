@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/workreport"
 )
 
@@ -48,6 +49,32 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			}
 			// If there is an error, write the error value as a single octet.
 			return buf.WriteByte(byte(wo.Err))
+		}
+
+		if v.Type() == reflect.TypeOf(state.SafroleBasicState{}) {
+			safroleBasicState := v.Interface().(state.SafroleBasicState)
+			if err := serializeValue(reflect.ValueOf(safroleBasicState.PendingValidatorKeys), buf); err != nil {
+				return err
+			}
+			if err := serializeValue(reflect.ValueOf(safroleBasicState.EpochTicketSubmissionsRoot), buf); err != nil {
+				return err
+			}
+			if safroleBasicState.SealingKeySequence.IsSealKeyTickets() {
+				if err := buf.WriteByte(0); err != nil {
+					return err
+				}
+				if err := serializeValue(reflect.ValueOf(safroleBasicState.SealingKeySequence.SealKeyTickets), buf); err != nil {
+					return err
+				}
+			} else {
+				if err := buf.WriteByte(1); err != nil {
+					return err
+				}
+				if err := serializeValue(reflect.ValueOf(safroleBasicState.SealingKeySequence.BandersnatchKeys), buf); err != nil {
+					return err
+				}
+			}
+			return serializeValue(reflect.ValueOf(safroleBasicState.TicketAccumulator), buf)
 		}
 
 		// Otherwise, for structs, iterate over and serialize all fields.

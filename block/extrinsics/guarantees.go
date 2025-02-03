@@ -10,7 +10,7 @@ type Guarantees []Guarantee
 
 type Guarantee struct {
 	WorkReport  workreport.WorkReport
-	Timeslot    types.TimeslotIndex
+	Timeslot    types.Timeslot
 	Credentials []Credential // only 2 or 3?
 }
 

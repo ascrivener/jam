@@ -9,10 +9,10 @@ type Header struct {
 	ParentHash                   [32]byte
 	PriorStateRoot               [32]byte
 	ExtrinsicHash                [32]byte
-	TimeSlotIndex                types.TimeslotIndex
+	TimeSlot                     types.Timeslot
 	EpochMarker                  *EpochMarker
 	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
-	OffendersMarker              OffendersMarker
+	OffendersMarker              [](types.Ed25519PublicKey)
 	BandersnatchBlockAuthorIndex types.ValidatorIndex
 	VRFSignature                 types.BandersnatchSignature
 	BlockSeal                    types.BandersnatchSignature
@@ -28,5 +28,3 @@ type Ticket struct {
 	VerifiablyRandomIdentifier [32]byte
 	EntryIndex                 types.TicketEntryIndex
 }
-
-type OffendersMarker [](types.Ed25519PublicKey)
