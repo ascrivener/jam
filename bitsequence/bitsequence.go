@@ -1,5 +1,12 @@
 package bitsequence
 
+import (
+	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 // BitSequence represents a sequence of bits stored in a []byte.
 // The bits are packed in big-endian order within each byte (i.e. bit 0 is stored in the most significant bit).
 type BitSequence struct {
@@ -115,4 +122,38 @@ func (bs *BitSequence) To32ByteArray() [32]byte {
 	// It should have a length of 32 if bs is exactly 256 bits.
 	copy(arr[:], bs.Bytes())
 	return arr
+}
+
+// BitSeqKey is a comparable representation of a BitSequence.
+type BitSeqKey string
+
+// Key converts the BitSequence to a BitSeqKey.
+func (bs *BitSequence) Key() BitSeqKey {
+	return BitSeqKey(fmt.Sprintf("%d:%x", bs.bitLen, bs.Bytes()))
+}
+
+// ToBitSequence converts a BitSeqKey back into a BitSequence.
+// It assumes the key is formatted as "<bitLen>:<hexBytes>".
+func (k BitSeqKey) ToBitSequence() *BitSequence {
+	parts := strings.SplitN(string(k), ":", 2)
+	if len(parts) != 2 {
+		panic(fmt.Errorf("invalid BitSeqKey format"))
+	}
+
+	// Parse the bit length.
+	bitLen, err := strconv.Atoi(parts[0])
+	if err != nil {
+		panic(fmt.Errorf("invalid bit length in key: %w", err))
+	}
+
+	// Decode the hex string to get the underlying bytes.
+	data, err := hex.DecodeString(parts[1])
+	if err != nil {
+		panic(fmt.Errorf("invalid hex data in key: %w", err))
+	}
+
+	return &BitSequence{
+		buf:    data,
+		bitLen: bitLen,
+	}
 }
