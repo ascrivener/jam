@@ -62,6 +62,27 @@ func (bs *BitSequence) Concat(other *BitSequence) {
 	}
 }
 
+// Subsequence returns a new BitSequence containing bits in the range [from, to).
+// It panics if the indices are out of range.
+func (bs *BitSequence) Subsequence(from, to int) *BitSequence {
+	if from < 0 || to > bs.bitLen || from > to {
+		panic("invalid subsequence indices")
+	}
+	newBS := New()
+	for i := from; i < to; i++ {
+		newBS.AppendBit(bs.BitAt(i))
+	}
+	return newBS
+}
+
+func (bs *BitSequence) SubsequenceFrom(from int) *BitSequence {
+	return bs.Subsequence(from, bs.bitLen)
+}
+
+func (bs *BitSequence) SubsequenceTo(to int) *BitSequence {
+	return bs.Subsequence(0, to)
+}
+
 // BitAt returns the bit at position i (0-indexed).
 // It panics if i is out of range.
 func (bs *BitSequence) BitAt(i int) bool {
@@ -82,4 +103,16 @@ func (bs *BitSequence) Bytes() []byte {
 // Len returns the total number of bits in the sequence.
 func (bs *BitSequence) Len() int {
 	return bs.bitLen
+}
+
+func (bs *BitSequence) To32ByteArray() [32]byte {
+	// Ensure the bit sequence is exactly 256 bits.
+	if bs.Len() != 256 {
+		panic("BitSequence length is not 256 bits (32 bytes)")
+	}
+	var arr [32]byte
+	// bs.Bytes() returns the underlying byte slice.
+	// It should have a length of 32 if bs is exactly 256 bits.
+	copy(arr[:], bs.Bytes())
+	return arr
 }

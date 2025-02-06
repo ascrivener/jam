@@ -83,12 +83,8 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		// Special case for BitSequence
 		if v.Type() == reflect.TypeOf(bitsequence.BitSequence{}) {
 			bs := v.Interface().(bitsequence.BitSequence)
-			for _, b := range bs.Bytes()[:(bs.Len()+7)/8] {
-				if err := buf.WriteByte(b); err != nil {
-					return err
-				}
-			}
-			return nil
+			_, err := buf.Write(bs.Bytes())
+			return err
 		}
 
 		// Otherwise, for structs, iterate over and serialize all fields.
