@@ -1,8 +1,6 @@
 package serializer
 
 import (
-	"encoding/binary"
-
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/ascrivener/jam/state"
@@ -119,8 +117,10 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 		})
 
 		// Process StorageDictionary.
-		ones := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ones, 1<<32-1)
+		ones, err := Serialize(uint32(1<<32 - 1))
+		if err != nil {
+			return nil, err
+		}
 		for k, v := range sAccount.StorageDictionary {
 			// Capture k and v.
 			keyK := k
@@ -136,8 +136,10 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 		}
 
 		// Process PreimageLookup.
-		onesMinusOne := make([]byte, 4)
-		binary.LittleEndian.PutUint32(onesMinusOne, 1<<32-2)
+		onesMinusOne, err := Serialize(uint32(1<<32 - 2))
+		if err != nil {
+			return nil, err
+		}
 		for h, p := range sAccount.PreimageLookup {
 			// Capture h and p.
 			hashH := h
@@ -158,8 +160,10 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 			lookupKey := k
 			timeslots := t
 
-			blobLengthBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(blobLengthBytes, uint32(lookupKey.BlobLength))
+			blobLengthBytes, err := Serialize(uint32(lookupKey.BlobLength))
+			if err != nil {
+				return nil, err
+			}
 			preimageHash := blake2b.Sum256(lookupKey.Preimage[:])
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [32]byte {

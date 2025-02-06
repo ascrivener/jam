@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/workreport"
 )
@@ -52,6 +53,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			return buf.WriteByte(byte(wo.Err))
 		}
 
+		// Special handling for state.SafroleBasicState.
 		if v.Type() == reflect.TypeOf(state.SafroleBasicState{}) {
 			safroleBasicState := v.Interface().(state.SafroleBasicState)
 			if err := serializeValue(reflect.ValueOf(safroleBasicState.PendingValidatorKeys), buf); err != nil {
@@ -78,6 +80,17 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			return serializeValue(reflect.ValueOf(safroleBasicState.TicketAccumulator), buf)
 		}
 
+		// Special case for BitSequence
+		if v.Type() == reflect.TypeOf(bitsequence.BitSequence{}) {
+			bs := v.Interface().(bitsequence.BitSequence)
+			for _, b := range bs.Bytes()[:(bs.Len()+7)/8] {
+				if err := buf.WriteByte(b); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
 		// Otherwise, for structs, iterate over and serialize all fields.
 		for i := 0; i < v.NumField(); i++ {
 			if err := serializeValue(v.Field(i), buf); err != nil {
@@ -92,10 +105,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 	case reflect.Array, reflect.Slice:
 		return serializeSlice(v, buf)
 
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return writeIntLittleEndian(buf, v)
-	case reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return writeUintLittleEndian(buf, v)
+	// Handle all integer types (signed and unsigned) by writing their little-endian representation.
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return writeIntOrUintLittleEndian(buf, v)
 
 	default:
 		return fmt.Errorf("unsupported type: %s", v.Type().String())
@@ -161,30 +174,6 @@ func serializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 		}
 	}
 
-	// Special case for []bool: pack bits into octets.
-	if v.Type().Elem().Kind() == reflect.Bool {
-		var octet byte
-		count := 0
-		for i := 0; i < v.Len(); i++ {
-			if v.Index(i).Bool() {
-				octet |= 1 << uint(count)
-			}
-			count++
-			if count == 8 {
-				if err := buf.WriteByte(octet); err != nil {
-					return err
-				}
-				octet, count = 0, 0
-			}
-		}
-		if count > 0 {
-			if err := buf.WriteByte(octet); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	// For other slices/arrays, serialize each element.
 	for i := 0; i < v.Len(); i++ {
 		if err := serializeValue(v.Index(i), buf); err != nil {
@@ -232,36 +221,25 @@ func appendLengthEncoding(v reflect.Value, buf *bytes.Buffer) error {
 	return nil
 }
 
-func writeIntLittleEndian(buf io.Writer, v reflect.Value) error {
-	// Determine the number of bytes for this integer.
+// writeIntOrUintLittleEndian writes an integer (signed or unsigned) in little-endian format.
+func writeIntOrUintLittleEndian(buf io.Writer, v reflect.Value) error {
+	// Determine the number of bytes for this integer type.
 	size := int(v.Type().Size())
 	tmp := make([]byte, size)
-	value := v.Int() // v.Int() returns an int64 regardless of the underlying size.
 
-	switch size {
-	case 1:
-		// For 1-byte int, cast to int8 then to byte.
-		tmp[0] = byte(int8(value))
-	case 2:
-		binary.LittleEndian.PutUint16(tmp, uint16(value))
-	case 4:
-		binary.LittleEndian.PutUint32(tmp, uint32(value))
-	case 8:
-		binary.LittleEndian.PutUint64(tmp, uint64(value))
+	// Extract the value as a uint64.
+	// For signed types, v.Int() returns the two's complement value.
+	var value uint64
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value = uint64(v.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		value = v.Uint()
 	default:
-		// Fallback: if for some reason the size isn't one of the above.
-		return io.ErrShortWrite
+		return fmt.Errorf("unsupported type: %s", v.Type())
 	}
-	_, err := buf.Write(tmp)
-	return err
-}
 
-func writeUintLittleEndian(buf io.Writer, v reflect.Value) error {
-	// Determine the number of bytes for this unsigned integer.
-	size := int(v.Type().Size())
-	tmp := make([]byte, size)
-	value := v.Uint() // Always returns a uint64, regardless of the underlying type.
-
+	// Write the value into the temporary buffer in little-endian order.
 	switch size {
 	case 1:
 		tmp[0] = byte(value)
@@ -270,10 +248,12 @@ func writeUintLittleEndian(buf io.Writer, v reflect.Value) error {
 	case 4:
 		binary.LittleEndian.PutUint32(tmp, uint32(value))
 	case 8:
-		binary.LittleEndian.PutUint64(tmp, uint64(value))
+		binary.LittleEndian.PutUint64(tmp, value)
 	default:
 		return io.ErrShortWrite
 	}
+
+	// Write the bytes to the provided writer.
 	_, err := buf.Write(tmp)
 	return err
 }
