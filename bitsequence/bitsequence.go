@@ -112,18 +112,6 @@ func (bs *BitSequence) Len() int {
 	return bs.bitLen
 }
 
-func (bs *BitSequence) To32ByteArray() [32]byte {
-	// Ensure the bit sequence is exactly 256 bits.
-	if bs.Len() != 256 {
-		panic("BitSequence length is not 256 bits (32 bytes)")
-	}
-	var arr [32]byte
-	// bs.Bytes() returns the underlying byte slice.
-	// It should have a length of 32 if bs is exactly 256 bits.
-	copy(arr[:], bs.Bytes())
-	return arr
-}
-
 // BitSeqKey is a comparable representation of a BitSequence.
 type BitSeqKey string
 
