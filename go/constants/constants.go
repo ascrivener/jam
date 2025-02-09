@@ -11,3 +11,5 @@ const NumTimeslotsPerEpoch = 600
 const NumCores = 341
 
 const AuthorizerQueueLength = 80
+
+const MaxItemsInAuthorizationsPool = 8

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ascrivener/jam/bandersnatch"
 	"github.com/ascrivener/jam/block"
+	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
@@ -42,7 +43,17 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 		mu.Unlock()
 	}
 
+	runComputation(&wg, setError, func() error {
+		var err error
+		posteriorState.ValidatorKeysetsPriorEpoch, err = computeValidatorKeysetsPriorEpoch(block.Header, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
+		return err
+	})
+
 	if posteriorState.MostRecentBlockTimeslot, transitionError = computeMostRecentBlockTimeslot(block.Header); transitionError != nil {
+		return State{}, transitionError
+	}
+
+	if posteriorState.ValidatorKeysetsActive, transitionError = computeValidatorKeysetsActive(block.Header, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState); transitionError != nil {
 		return State{}, transitionError
 	}
 
@@ -57,91 +68,6 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 		return nil
 	})
 
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.RecentBlocks, err = computeRecentBlocks()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.RecentBlocks, err = computeRecentBlocks()
-		return err
-	})
-
-	// Compute each field concurrently.
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.AuthorizersPool, err = computeAuthorizersPool()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.PriorServiceAccountState, err = computePriorServiceAccountState()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.ValidatorKeysetsStaging, err = computeValidatorKeysetsStaging()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.ValidatorKeysetsActive, err = computeValidatorKeysetsActive()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.ValidatorKeysetsPriorEpoch, err = computeValidatorKeysetsPriorEpoch()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.PendingReports, err = computePendingReports()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.AuthorizerQueue, err = computeAuthorizerQueue()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.Disputes, err = computeDisputes()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.PrivilegedServices, err = computePrivilegedServices()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.ValidatorStatistics, err = computeValidatorStatistics()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.AccumulationQueue, err = computeAccumulationQueue()
-		return err
-	})
-
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.AccumulationHistory, err = computeAccumulationHistory()
-		return err
-	})
-
 	wg.Wait()
 
 	if transitionError != nil {
@@ -153,13 +79,33 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 
 // Now, update each compute function to return (result, error).
 
-func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {
-	return blockHeader.TimeSlot, nil
-}
-
-func computeAuthorizersPool() ([constants.NumCores][][32]byte, error) {
-	// TODO: Implement your logic.
-	return [constants.NumCores][][32]byte{}, nil
+func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarantees, posteriorAuthorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, priorAuthorizersPool [constants.NumCores][][32]byte) ([constants.NumCores][][32]byte, error) {
+	posteriorAuthorizersPool := [constants.NumCores][][32]byte{}
+	for coreIndex, priorAuthorizersPoolForCore := range priorAuthorizersPool {
+		var workReport *workreport.WorkReport
+		for _, guarantee := range guarantees {
+			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
+				workReport = &guarantee.WorkReport
+				break
+			}
+		}
+		if workReport != nil {
+			for i, authorizerHash := range priorAuthorizersPoolForCore {
+				if authorizerHash == workReport.AuthorizerHash {
+					priorAuthorizersPoolForCore = append(priorAuthorizersPoolForCore[:i], priorAuthorizersPoolForCore[i+1:]...)
+					break
+				}
+			}
+		}
+		posteriorAuthorizerQueueForCore := posteriorAuthorizerQueue[coreIndex]
+		priorAuthorizersPoolForCore = append(priorAuthorizersPoolForCore, posteriorAuthorizerQueueForCore[int(uint32(header.TimeSlot)%uint32(len(posteriorAuthorizerQueueForCore)))])
+		if len(priorAuthorizersPoolForCore) < constants.MaxItemsInAuthorizationsPool {
+			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore
+		} else {
+			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore[len(priorAuthorizersPoolForCore)-constants.MaxItemsInAuthorizationsPool:]
+		}
+	}
+	return posteriorAuthorizersPool, nil
 }
 
 func computeRecentBlocks() ([]RecentBlock, error) {
@@ -177,21 +123,21 @@ func computePriorServiceAccountState() (map[types.ServiceIndex]ServiceAccount, e
 	return map[types.ServiceIndex]ServiceAccount{}, nil
 }
 
-func computeEntropyAccumulator(blockHeader header.Header, entropyAccumulator [4][32]byte) ([4][32]byte, error) {
+func computeEntropyAccumulator(header header.Header, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
 	posteriorEntropyAccumulator := [4][32]byte{}
-	randomVRFOutput, err := bandersnatch.VRFOutput((blockHeader.VRFSignature[:]))
+	randomVRFOutput, err := bandersnatch.VRFOutput((header.VRFSignature[:]))
 	if err != nil {
 		return [4][32]byte{}, err
 	}
-	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(entropyAccumulator[0][:], randomVRFOutput[:]...))
-	if blockHeader.TimeSlot%constants.NumTimeslotsPerEpoch == 0 { // new epoch
-		posteriorEntropyAccumulator[1] = entropyAccumulator[0]
-		posteriorEntropyAccumulator[2] = entropyAccumulator[1]
-		posteriorEntropyAccumulator[3] = entropyAccumulator[2]
+	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(priorEntropyAccumulator[0][:], randomVRFOutput[:]...))
+	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 { // new epoch
+		posteriorEntropyAccumulator[1] = priorEntropyAccumulator[0]
+		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[1]
+		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[2]
 	} else {
-		posteriorEntropyAccumulator[1] = entropyAccumulator[1]
-		posteriorEntropyAccumulator[2] = entropyAccumulator[2]
-		posteriorEntropyAccumulator[3] = entropyAccumulator[3]
+		posteriorEntropyAccumulator[1] = priorEntropyAccumulator[1]
+		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[2]
+		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[3]
 	}
 	return posteriorEntropyAccumulator, nil
 }
@@ -201,14 +147,18 @@ func computeValidatorKeysetsStaging() ([constants.NumValidators]types.ValidatorK
 	return [constants.NumValidators]types.ValidatorKeyset{}, nil
 }
 
-func computeValidatorKeysetsActive() ([constants.NumValidators]types.ValidatorKeyset, error) {
-	// TODO: Implement your logic.
-	return [constants.NumValidators]types.ValidatorKeyset{}, nil
+func computeValidatorKeysetsActive(header header.Header, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorSafroleBasicState SafroleBasicState) ([constants.NumValidators]types.ValidatorKeyset, error) {
+	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+		return priorSafroleBasicState.PendingValidatorKeys, nil
+	}
+	return priorValidatorKeysetsActive, nil
 }
 
-func computeValidatorKeysetsPriorEpoch() ([constants.NumValidators]types.ValidatorKeyset, error) {
-	// TODO: Implement your logic.
-	return [constants.NumValidators]types.ValidatorKeyset{}, nil
+func computeValidatorKeysetsPriorEpoch(header header.Header, priorValidatorKeysetsPriorEpoch [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset) ([constants.NumValidators]types.ValidatorKeyset, error) {
+	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+		return priorValidatorKeysetsActive, nil
+	}
+	return priorValidatorKeysetsPriorEpoch, nil
 }
 
 func computePendingReports() ([constants.NumCores]*struct {
@@ -220,6 +170,10 @@ func computePendingReports() ([constants.NumCores]*struct {
 		WorkReport workreport.WorkReport
 		Timeslot   types.Timeslot
 	}{}, nil
+}
+
+func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {
+	return blockHeader.TimeSlot, nil
 }
 
 func computeAuthorizerQueue() ([constants.NumCores][constants.AuthorizerQueueLength][32]byte, error) {

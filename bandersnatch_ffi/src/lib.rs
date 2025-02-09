@@ -31,8 +31,8 @@ fn int_to_string(fe: &FieldElement) -> [u8; 32] {
 /// This 32-byte result is the final output \( Y(s) \).
 ///
 /// # Parameters
-/// - `vrf_output_ptr`: pointer to the VRF evaluation encoding \( x \).
-/// - `vrf_output_len`: length of that encoding.
+/// - `bytes_ptr`: pointer to the VRF evaluation encoding \( x \).
+/// - `bytes_len`: length of that encoding.
 /// - `out_ptr`: pointer to an output buffer (must be at least 32 bytes).
 /// - `out_len`: length of the output buffer.
 ///
@@ -41,9 +41,9 @@ fn int_to_string(fe: &FieldElement) -> [u8; 32] {
 /// - -1 if the output buffer is too small,
 /// - -2 if the input is too short.
 #[no_mangle]
-pub extern "C" fn compute_y(
-    vrf_output_ptr: *const u8,
-    vrf_output_len: usize,
+pub extern "C" fn vrf_output(
+    bytes_ptr: *const u8,
+    bytes_len: usize,
     out_ptr: *mut u8,
     out_len: usize,
 ) -> i32 {
@@ -51,14 +51,14 @@ pub extern "C" fn compute_y(
     if out_len < 32 {
         return -1; // output buffer too small
     }
-    // Safety: the caller must ensure that vrf_output_ptr is valid for vrf_output_len bytes.
-    let vrf_output = unsafe { std::slice::from_raw_parts(vrf_output_ptr, vrf_output_len) };
-    if vrf_output.len() < 32 {
+    // Safety: the caller must ensure that bytes_ptr is valid for bytes_len bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bytes_len) };
+    if bytes.len() < 32 {
         return -2; // VRF output too short
     }
 
     // Step 1: Extract the first 32 bytes.
-    let encoded_part = &vrf_output[..32];
+    let encoded_part = &bytes[..32];
 
     // Step 2: Decode the first 32 bytes into a field element.
     let fe = string_to_int(encoded_part);
