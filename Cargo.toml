@@ -1,0 +1,3 @@
+[dependencies]
+dashmap = "5.4"
+hex = "0.4"
