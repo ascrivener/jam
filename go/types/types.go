@@ -55,4 +55,12 @@ type GasValue int64
 
 type ValidatorKeyset [336]byte
 
+func (v ValidatorKeyset) ToBandersnatchPublicKey() BandersnatchPublicKey {
+	return BandersnatchPublicKey(v[:32])
+}
+
+func (v ValidatorKeyset) ToEd25519PublicKey() Ed25519PublicKey {
+	return Ed25519PublicKey(v[32:64])
+}
+
 type Balance uint64

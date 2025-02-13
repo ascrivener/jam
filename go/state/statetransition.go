@@ -62,9 +62,6 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 		if posteriorState.EntropyAccumulator, err = computeEntropyAccumulator(block.Header, priorState.EntropyAccumulator); err != nil {
 			return err
 		}
-		if posteriorState.SafroleBasicState, err = computeSafroleBasicState(); err != nil {
-			return err
-		}
 		return nil
 	})
 
@@ -108,14 +105,45 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 	return posteriorAuthorizersPool, nil
 }
 
-func computeRecentBlocks() ([]RecentBlock, error) {
+func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []RecentBlock) ([]RecentBlock, error) {
+	posteriorRecentBlocks := priorRecentBlocks
+	posteriorRecentBlocks[len(priorRecentBlocks)-1].StateRoot = header.PriorStateRoot
 	// TODO: implement
-	return []RecentBlock{}, nil
+	return posteriorRecentBlocks, nil
 }
 
-func computeSafroleBasicState() (SafroleBasicState, error) {
-	// TODO: Implement your logic.
-	return SafroleBasicState{}, nil
+func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []RecentBlock, C struct{}) {
+
+}
+
+func computeSafroleBasicState(header header.Header, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorDisputes Disputes) (SafroleBasicState, error) {
+	var posteriorValidatorKeysetsPending [constants.NumValidators]types.ValidatorKeyset
+	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
+	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+		// posteriorValidatorKeysetsPending
+		for index, _ := range posteriorValidatorKeysetsPending {
+			if posteriorDisputes.PunishEd25519Key(priorValidatorKeysetsStaging[index].ToEd25519PublicKey()) {
+				posteriorValidatorKeysetsPending[index] = [336]byte{}
+			} else {
+				posteriorValidatorKeysetsPending[index] = priorValidatorKeysetsStaging[index]
+			}
+		}
+
+		// posteriorEpochTicketSubmissionsRoot
+		var posteriorBandersnatchPublicKeysPending [constants.NumValidators]types.BandersnatchPublicKey
+		for index, keyset := range posteriorValidatorKeysetsPending {
+			posteriorBandersnatchPublicKeysPending[index] = keyset.ToBandersnatchPublicKey()
+		}
+		posteriorEpochTicketSubmissionsRoot = BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending)
+	} else {
+		posteriorValidatorKeysetsPending = priorSafroleBasicState.ValidatorKeysetsPending
+
+		posteriorEpochTicketSubmissionsRoot = priorSafroleBasicState.EpochTicketSubmissionsRoot
+	}
+	return SafroleBasicState{
+		ValidatorKeysetsPending:    posteriorValidatorKeysetsPending,
+		EpochTicketSubmissionsRoot: posteriorEpochTicketSubmissionsRoot,
+	}, nil
 }
 
 func computePriorServiceAccountState() (map[types.ServiceIndex]ServiceAccount, error) {
@@ -149,7 +177,7 @@ func computeValidatorKeysetsStaging() ([constants.NumValidators]types.ValidatorK
 
 func computeValidatorKeysetsActive(header header.Header, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorSafroleBasicState SafroleBasicState) ([constants.NumValidators]types.ValidatorKeyset, error) {
 	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
-		return priorSafroleBasicState.PendingValidatorKeys, nil
+		return priorSafroleBasicState.ValidatorKeysetsPending, nil
 	}
 	return priorValidatorKeysetsActive, nil
 }
@@ -181,21 +209,6 @@ func computeAuthorizerQueue() ([constants.NumCores][constants.AuthorizerQueueLen
 	return [constants.NumCores][constants.AuthorizerQueueLength][32]byte{}, nil
 }
 
-func computeDisputes() (struct {
-	WorkReportHashesGood  [][32]byte
-	WorkReportHashesBad   [][32]byte
-	WorkReportHashesWonky [][32]byte
-	ValidatorPunishes     []types.Ed25519PublicKey
-}, error) {
-	// TODO: Implement your logic.
-	return struct {
-		WorkReportHashesGood  [][32]byte
-		WorkReportHashesBad   [][32]byte
-		WorkReportHashesWonky [][32]byte
-		ValidatorPunishes     []types.Ed25519PublicKey
-	}{}, nil
-}
-
 func computePrivilegedServices() (struct {
 	ManagerServiceIndex             types.ServiceIndex
 	AssignServiceIndex              types.ServiceIndex
@@ -208,6 +221,21 @@ func computePrivilegedServices() (struct {
 		AssignServiceIndex              types.ServiceIndex
 		DesignateServiceIndex           types.ServiceIndex
 		AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
+	}{}, nil
+}
+
+func computeDisputes() (struct {
+	WorkReportHashesGood  [][32]byte
+	WorkReportHashesBad   [][32]byte
+	WorkReportHashesWonky [][32]byte
+	ValidatorPunishes     []types.Ed25519PublicKey
+}, error) {
+	// TODO: Implement your logic.
+	return struct {
+		WorkReportHashesGood  [][32]byte
+		WorkReportHashesBad   [][32]byte
+		WorkReportHashesWonky [][32]byte
+		ValidatorPunishes     []types.Ed25519PublicKey
 	}{}, nil
 }
 

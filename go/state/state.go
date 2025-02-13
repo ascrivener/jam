@@ -21,19 +21,9 @@ type State struct {
 	} // 11.1
 	MostRecentBlockTimeslot types.Timeslot                                                // 6.1
 	AuthorizerQueue         [constants.NumCores][constants.AuthorizerQueueLength][32]byte // 8.1
-	Disputes                struct {
-		WorkReportHashesGood  [][32]byte
-		WorkReportHashesBad   [][32]byte
-		WorkReportHashesWonky [][32]byte
-		ValidatorPunishes     []types.Ed25519PublicKey
-	} // 10.1
-	PrivilegedServices struct {
-		ManagerServiceIndex             types.ServiceIndex
-		AssignServiceIndex              types.ServiceIndex
-		DesignateServiceIndex           types.ServiceIndex
-		AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
-	} // 9.9
-	ValidatorStatistics [2][constants.NumValidators]struct {
+	PrivilegedServices      PrivilegedServices                                            // 9.9
+	Disputes                Disputes                                                      //10.1
+	ValidatorStatistics     [2][constants.NumValidators]struct {
 		BlocksProduced         uint64
 		TicketsIntroduced      uint64
 		PreimagesIntroduced    uint64
@@ -46,4 +36,28 @@ type State struct {
 		WorkPackageHashes map[[32]byte]struct{}
 	} // 12.3
 	AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{} // 12.1
+}
+
+type PrivilegedServices struct {
+	ManagerServiceIndex             types.ServiceIndex
+	AssignServiceIndex              types.ServiceIndex
+	DesignateServiceIndex           types.ServiceIndex
+	AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
+}
+
+type Disputes struct {
+	WorkReportHashesGood  [][32]byte
+	WorkReportHashesBad   [][32]byte
+	WorkReportHashesWonky [][32]byte
+	ValidatorPunishes     []types.Ed25519PublicKey
+}
+
+func (d Disputes) PunishEd25519Key(key types.Ed25519PublicKey) bool {
+	punish := false
+	for _, posteriorValidatorPunish := range d.ValidatorPunishes {
+		if key == posteriorValidatorPunish {
+			punish = true
+		}
+	}
+	return punish
 }

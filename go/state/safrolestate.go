@@ -6,10 +6,10 @@ import (
 )
 
 type SafroleBasicState struct {
-	PendingValidatorKeys       [constants.NumValidators]types.ValidatorKeyset // 6.7
-	EpochTicketSubmissionsRoot types.BandersnatchRingRoot                     // 6.4
-	SealingKeySequence         SealingKeySequence                             // 6.5
-	TicketAccumulator          []SealKeyTicket                                // 6.5
+	ValidatorKeysetsPending    [constants.NumValidators]types.ValidatorKeyset // 6.7 (yk)
+	EpochTicketSubmissionsRoot types.BandersnatchRingRoot                     // 6.4 (yz)
+	SealingKeySequence         SealingKeySequence                             // 6.5 (ys)
+	TicketAccumulator          []SealKeyTicket                                // 6.5 (ya)
 }
 
 type SealingKeySequence struct {
