@@ -82,70 +82,39 @@ pub extern "C" fn vrf_output(
     0 // success
 }
 
-// use ark_ec_vrfs::suites::bandersnatch::weierstrass::BandersnatchSha512Tai;
-// use ark_ec_vrfs::ring::RingContext;
-// use ark_ec_vrfs::prelude::ark_std::rand::SeedableRng;
-// use ark_ec_vrfs::prelude::ark_std::rand::rngs::StdRng;
-// use ark_ec_vrfs::codec;
-// use core::slice;
-// #[no_mangle]
-// pub extern "C" fn compute_O(
-//     pks_ptr: *const u8,
-//     count: usize,
-//     out_ptr: *mut u8,
-//     out_len: usize,
-// ) -> i32 {
-//     // Define the expected size of the serialized commitment.
-//     const COMMITMENT_SIZE: usize = 144;
-//     // Define the size of each public key.
-//     const PK_SIZE: usize = 32;
+// Import your concrete suite.
+// (Adjust the path if needed.)
+use ark_ec_vrfs::prelude::ark_serialize::{CanonicalDeserialize, Compress, Validate};
+use ark_ec_vrfs::suites::bandersnatch::weierstrass::{
+    AffinePoint, BandersnatchSha512Tai, RingCommitment, RingContext,
+};
+use ark_ec_vrfs::Error;
+use ark_ec_vrfs::Suite;
+use std::fs::File;
+use std::io::Read;
 
-//     // Check if the output buffer is large enough.
-//     if out_len < COMMITMENT_SIZE {
-//         return -1; // Output buffer too small.
-//     }
+pub const PCS_SRS_FILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/zcash-bls12-381-srs-2-11-uncompressed.bin"
+);
 
-//     // Calculate the total number of bytes expected for the public keys.
-//     let total_bytes = match count.checked_mul(PK_SIZE) {
-//         Some(size) if size > 0 => size,
-//         _ => return -2, // Invalid count or no keys provided.
-//     };
+// Here is the helper function from before.
+pub fn compute_kzg_commitment_bandersnatch(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> {
+    let mut file = File::open(PCS_SRS_FILE).map_err(|_| Error::InvalidData)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).map_err(|_| Error::InvalidData)?;
+    // Use the deserialize_with_mode implementation defined for RingContext.
+    let ring_ctx = RingContext::deserialize_with_mode(&mut &buf[..], Compress::No, Validate::Yes)
+        .map_err(|_| Error::InvalidData)?;
 
-//     // Create a slice from the provided pointer.
-//     let input_slice = unsafe { slice::from_raw_parts(pks_ptr, total_bytes) };
+    let ring_pks: Vec<AffinePoint> = hashes
+        .iter()
+        .map(|bytes| BandersnatchSha512Tai::data_to_point(bytes).ok_or(Error::InvalidData))
+        .collect::<Result<_, _>>()?;
 
-//     // Deserialize each 32-byte block into an AffinePoint.
-//     let mut pks = Vec::with_capacity(count);
-//     for chunk in input_slice.chunks_exact(PK_SIZE) {
-//         match codec::point_decode::<BandersnatchSha512Tai>(chunk) {
-//             Ok(pk) => pks.push(pk),
-//             Err(_) => return -3, // Deserialization error.
-//         };
-//     }
+    // Derive the verifier key from the ring public keys.
+    let verifier_key = ring_ctx.verifier_key(&ring_pks);
 
-//     // Ensure that the number of deserialized public keys matches the count.
-//     if pks.len() != count {
-//         return -4; // Mismatch between count and actual number of public keys.
-//     }
-
-//     // Initialize a random number generator.
-//     let mut rng = StdRng::from_seed([0u8; 32]);
-//     let ring_ctx = RingContext::<BandersnatchSha512Tai>::from_rand(pks.len(), &mut rng);
-
-//     // Compute the verifier key, which internally computes the commitment O.
-//     let vk = ring_ctx.verifier_key(&pks);
-//     let commitment = vk.commitment();
-
-//     // Serialize the commitment to compressed form.
-//     let serialized = codec::point_encode::<BandersnatchSha512Tai>(&commitment);
-//     if serialized.len() > out_len {
-//         return -5; // Serialized length exceeds provided buffer.
-//     }
-
-//     // Copy the serialized commitment to the output buffer.
-//     unsafe {
-//         core::ptr::copy_nonoverlapping(serialized.as_ptr(), out_ptr, serialized.len());
-//     }
-
-//     0 // Success.
-// }
+    // Return the commitment from the verifier key.
+    Ok(verifier_key.commitment())
+}
