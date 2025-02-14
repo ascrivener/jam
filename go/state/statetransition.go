@@ -117,6 +117,7 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 }
 
 func computeSafroleBasicState(header header.Header, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorDisputes Disputes) (SafroleBasicState, error) {
+	var err error
 	var posteriorValidatorKeysetsPending [constants.NumValidators]types.ValidatorKeyset
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
 	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
@@ -134,7 +135,9 @@ func computeSafroleBasicState(header header.Header, tickets extrinsics.Tickets, 
 		for index, keyset := range posteriorValidatorKeysetsPending {
 			posteriorBandersnatchPublicKeysPending[index] = keyset.ToBandersnatchPublicKey()
 		}
-		posteriorEpochTicketSubmissionsRoot = BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending)
+		if posteriorEpochTicketSubmissionsRoot, err = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:]); err != nil {
+			return SafroleBasicState{}, nil
+		}
 	} else {
 		posteriorValidatorKeysetsPending = priorSafroleBasicState.ValidatorKeysetsPending
 

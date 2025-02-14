@@ -56,7 +56,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		// Special handling for state.SafroleBasicState.
 		if v.Type() == reflect.TypeOf(state.SafroleBasicState{}) {
 			safroleBasicState := v.Interface().(state.SafroleBasicState)
-			if err := serializeValue(reflect.ValueOf(safroleBasicState.PendingValidatorKeys), buf); err != nil {
+			if err := serializeValue(reflect.ValueOf(safroleBasicState.ValidatorKeysetsPending), buf); err != nil {
 				return err
 			}
 			if err := serializeValue(reflect.ValueOf(safroleBasicState.EpochTicketSubmissionsRoot), buf); err != nil {

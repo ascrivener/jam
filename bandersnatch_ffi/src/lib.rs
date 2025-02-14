@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha512};
 
+extern crate ark_ec_vrfs;
+
 /// In your suite, these two functions are defined to convert between 32-byte
 /// representations and field elements. Here we give dummy implementations for
 /// illustration. In your real code, use the implementations from your codec.
@@ -79,3 +81,71 @@ pub extern "C" fn vrf_output(
 
     0 // success
 }
+
+// use ark_ec_vrfs::suites::bandersnatch::weierstrass::BandersnatchSha512Tai;
+// use ark_ec_vrfs::ring::RingContext;
+// use ark_ec_vrfs::prelude::ark_std::rand::SeedableRng;
+// use ark_ec_vrfs::prelude::ark_std::rand::rngs::StdRng;
+// use ark_ec_vrfs::codec;
+// use core::slice;
+// #[no_mangle]
+// pub extern "C" fn compute_O(
+//     pks_ptr: *const u8,
+//     count: usize,
+//     out_ptr: *mut u8,
+//     out_len: usize,
+// ) -> i32 {
+//     // Define the expected size of the serialized commitment.
+//     const COMMITMENT_SIZE: usize = 144;
+//     // Define the size of each public key.
+//     const PK_SIZE: usize = 32;
+
+//     // Check if the output buffer is large enough.
+//     if out_len < COMMITMENT_SIZE {
+//         return -1; // Output buffer too small.
+//     }
+
+//     // Calculate the total number of bytes expected for the public keys.
+//     let total_bytes = match count.checked_mul(PK_SIZE) {
+//         Some(size) if size > 0 => size,
+//         _ => return -2, // Invalid count or no keys provided.
+//     };
+
+//     // Create a slice from the provided pointer.
+//     let input_slice = unsafe { slice::from_raw_parts(pks_ptr, total_bytes) };
+
+//     // Deserialize each 32-byte block into an AffinePoint.
+//     let mut pks = Vec::with_capacity(count);
+//     for chunk in input_slice.chunks_exact(PK_SIZE) {
+//         match codec::point_decode::<BandersnatchSha512Tai>(chunk) {
+//             Ok(pk) => pks.push(pk),
+//             Err(_) => return -3, // Deserialization error.
+//         };
+//     }
+
+//     // Ensure that the number of deserialized public keys matches the count.
+//     if pks.len() != count {
+//         return -4; // Mismatch between count and actual number of public keys.
+//     }
+
+//     // Initialize a random number generator.
+//     let mut rng = StdRng::from_seed([0u8; 32]);
+//     let ring_ctx = RingContext::<BandersnatchSha512Tai>::from_rand(pks.len(), &mut rng);
+
+//     // Compute the verifier key, which internally computes the commitment O.
+//     let vk = ring_ctx.verifier_key(&pks);
+//     let commitment = vk.commitment();
+
+//     // Serialize the commitment to compressed form.
+//     let serialized = codec::point_encode::<BandersnatchSha512Tai>(&commitment);
+//     if serialized.len() > out_len {
+//         return -5; // Serialized length exceeds provided buffer.
+//     }
+
+//     // Copy the serialized commitment to the output buffer.
+//     unsafe {
+//         core::ptr::copy_nonoverlapping(serialized.as_ptr(), out_ptr, serialized.len());
+//     }
+
+//     0 // Success.
+// }

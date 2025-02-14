@@ -8,3 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 sha2 = "0.10"
+ark-ec-vrfs = { git = "https://github.com/davxy/ark-ec-vrfs.git", branch = "main", features = ["ring", "bandersnatch"] }

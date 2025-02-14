@@ -11,6 +11,8 @@ import "C"
 import (
 	"errors"
 	"unsafe"
+
+	"github.com/ascrivener/jam/types"
 )
 
 func VRFOutput(bytes []byte) ([32]byte, error) {
@@ -31,3 +33,37 @@ func VRFOutput(bytes []byte) ([32]byte, error) {
 
 	return out, nil
 }
+
+// TODO: implement
+func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.BandersnatchRingRoot, error) {
+	return [144]byte{}, nil
+}
+
+// func ComputeO(pks [][32]byte) (types.BandersnatchRingRoot, error) {
+// 	var out [144]byte
+
+// 	// There must be at least one public key.
+// 	if len(pks) == 0 {
+// 		return out, errors.New("no public keys provided")
+// 	}
+
+// 	// Flatten the slice of [32]byte into a contiguous []byte.
+// 	total := len(pks) * 32
+// 	input := make([]byte, total)
+// 	for i, pk := range pks {
+// 		copy(input[i*32:(i+1)*32], pk[:])
+// 	}
+
+// 	// Call the exported C function.
+// 	ret := C.compute_O(
+// 		(*C.uchar)(unsafe.Pointer(&input[0])),
+// 		C.size_t(len(pks)),
+// 		(*C.uchar)(unsafe.Pointer(&out[0])),
+// 		C.size_t(len(out)),
+// 	)
+// 	if ret != 0 {
+// 		return out, errors.New("compute_O failed")
+// 	}
+
+// 	return out, nil
+// }
