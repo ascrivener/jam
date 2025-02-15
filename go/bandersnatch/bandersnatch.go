@@ -5,8 +5,8 @@ package bandersnatch
 #include <stdlib.h>
 
 // Declaration of the Rust functions.
-int vrf_output(const unsigned char *bytes_ptr, size_t bytes_len, unsigned char *out_ptr, size_t out_len);
-int compute_O(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
+int bandersnatch_ring_vrf_proof_output(const unsigned char *input_ptr, unsigned char *out_ptr);
+int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
 */
 import "C"
 import (
@@ -16,22 +16,23 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func VRFOutput(bytes []byte) ([32]byte, error) {
+func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
 	var out [32]byte
-	if len(bytes) < 32 {
-		return out, errors.New("vrfOutput must be at least 32 bytes long")
-	}
 
-	ret := C.vrf_output(
-		(*C.uchar)(unsafe.Pointer(&bytes[0])),
-		C.size_t(len(bytes)),
+	ret := C.bandersnatch_ring_vrf_proof_output(
+		(*C.uchar)(unsafe.Pointer(&proof)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),
-		C.size_t(len(out)),
 	)
 	if ret != 0 {
 		return out, errors.New("vrf_output failed")
 	}
 
+	return out, nil
+}
+
+// TODO: implement
+func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]byte, error) {
+	var out [32]byte
 	return out, nil
 }
 
@@ -51,7 +52,7 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.Bandersnatch
 	}
 
 	// Call the exported C function.
-	ret := C.compute_O(
+	ret := C.kzg_commitment(
 		(*C.uchar)(unsafe.Pointer(&input[0])),
 		C.size_t(len(pks)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),

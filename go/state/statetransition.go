@@ -156,7 +156,7 @@ func computePriorServiceAccountState() (map[types.ServiceIndex]ServiceAccount, e
 
 func computeEntropyAccumulator(header header.Header, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
 	posteriorEntropyAccumulator := [4][32]byte{}
-	randomVRFOutput, err := bandersnatch.VRFOutput((header.VRFSignature[:]))
+	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput((header.VRFSignature))
 	if err != nil {
 		return [4][32]byte{}, err
 	}

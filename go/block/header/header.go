@@ -14,8 +14,8 @@ type Header struct {
 	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
 	OffendersMarker              [](types.Ed25519PublicKey)
 	BandersnatchBlockAuthorIndex types.ValidatorIndex
-	VRFSignature                 types.BandersnatchSignature
-	BlockSeal                    types.BandersnatchSignature
+	VRFSignature                 types.BandersnatchVRFSignature
+	BlockSeal                    types.BandersnatchVRFSignature
 }
 
 type EpochMarker struct {
