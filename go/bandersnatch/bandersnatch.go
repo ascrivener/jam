@@ -44,16 +44,10 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.Bandersnatch
 		return out, errors.New("no public keys provided")
 	}
 
-	// Flatten the slice of [32]byte into a contiguous []byte.
-	total := len(pks) * 32
-	input := make([]byte, total)
-	for i, pk := range pks {
-		copy(input[i*32:(i+1)*32], pk[:])
-	}
-
-	// Call the exported C function.
+	// Since pks is a slice of [32]byte, its elements are stored contiguously.
+	// We can pass a pointer to the first element.
 	ret := C.kzg_commitment(
-		(*C.uchar)(unsafe.Pointer(&input[0])),
+		(*C.uchar)(unsafe.Pointer(&pks[0])),
 		C.size_t(len(pks)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)

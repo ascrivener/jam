@@ -10,10 +10,12 @@ use std::io::Read;
 use std::slice;
 
 // https://datatracker.ietf.org/doc/rfc9381/ 5.2 and 5.4.4 and 5.5
-pub fn bandersnatch_ring_vrf_proof_output_ffi(hash: &[u8; 784]) -> Result<[u8; 32], Error> {
-    let gamma = codec::point_decode::<BandersnatchSha512Ell2>(&hash[..32])
-        .map_err(|_| Error::InvalidData)?;
-    let output = Output::<BandersnatchSha512Ell2>::from(gamma.mul_by_cofactor());
+pub fn vrf_output_ffi<S: Suite>(hash: &[u8; 784]) -> Result<[u8; 32], Error> {
+    // Decode the first 32 bytes into an affine point.
+    let gamma = codec::point_decode::<S>(&hash[..32]).map_err(|_| Error::InvalidData)?;
+    // Multiply by the cofactor and wrap the result in an Output.
+    let output = Output::<S>::from(gamma.mul_by_cofactor());
+    // Hash the output and truncate the result to 32 bytes.
     let truncated: [u8; 32] = output.hash().as_slice()[..32]
         .try_into()
         .map_err(|_| Error::InvalidData)?;
@@ -37,7 +39,7 @@ pub extern "C" fn bandersnatch_ring_vrf_proof_output(
         Err(_) => return -2,
     };
 
-    match bandersnatch_ring_vrf_proof_output_ffi(input_array) {
+    match vrf_output_ffi::<BandersnatchSha512Ell2>(input_array) {
         Ok(result_array) => {
             // Safety: caller must guarantee that out_ptr is valid for 32 bytes.
             unsafe {
