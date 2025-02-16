@@ -71,4 +71,46 @@ func (v ValidatorKeyset) ToEd25519PublicKey() Ed25519PublicKey {
 	return Ed25519PublicKey(v[32:64])
 }
 
+type ValidatorKeysets [constants.NumValidators]ValidatorKeyset
+
+func (v ValidatorKeysets) KeyNullifier(disputes Disputes) ValidatorKeysets {
+	newValidatorKeysets := ValidatorKeysets{}
+	for index, keyset := range v {
+		if disputes.PunishEd25519Key(keyset.ToEd25519PublicKey()) {
+			newValidatorKeysets[index] = [336]byte{}
+		} else {
+			newValidatorKeysets[index] = keyset
+		}
+	}
+	return newValidatorKeysets
+}
+
+type ValidatorKeysetSlice []ValidatorKeyset
+
+func (v ValidatorKeysetSlice) ContainsKeyset(keyset ValidatorKeyset) bool {
+	for _, k := range v {
+		if keyset == k {
+			return true
+		}
+	}
+	return false
+}
+
 type Balance uint64
+
+type Disputes struct {
+	WorkReportHashesGood  map[[32]byte]struct{}
+	WorkReportHashesBad   map[[32]byte]struct{}
+	WorkReportHashesWonky map[[32]byte]struct{}
+	ValidatorPunishes     map[Ed25519PublicKey]struct{}
+}
+
+func (d Disputes) PunishEd25519Key(key Ed25519PublicKey) bool {
+	punish := false
+	for posteriorValidatorPunish, _ := range d.ValidatorPunishes {
+		if key == posteriorValidatorPunish {
+			punish = true
+		}
+	}
+	return punish
+}

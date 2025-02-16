@@ -123,9 +123,9 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 
 }
 
-func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging [constants.NumValidators]types.ValidatorKeyset, posteriorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorDisputes Disputes, posteriorEntropyAccumulator [4][32]byte) (SafroleBasicState, error) {
+func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) (SafroleBasicState, error) {
 	var err error
-	var posteriorValidatorKeysetsPending [constants.NumValidators]types.ValidatorKeyset
+	var posteriorValidatorKeysetsPending types.ValidatorKeysets
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
 	var posteriorSealingKeySequence sealingkeysequence.SealingKeySequence
 	var posteriorTicketAccumulator []ticket.Ticket
@@ -142,13 +142,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 	}
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		// posteriorValidatorKeysetsPending
-		for index, _ := range posteriorValidatorKeysetsPending {
-			if posteriorDisputes.PunishEd25519Key(priorValidatorKeysetsStaging[index].ToEd25519PublicKey()) {
-				posteriorValidatorKeysetsPending[index] = [336]byte{}
-			} else {
-				posteriorValidatorKeysetsPending[index] = priorValidatorKeysetsStaging[index]
-			}
-		}
+		posteriorValidatorKeysetsPending = priorValidatorKeysetsStaging.KeyNullifier(posteriorDisputes)
 
 		// posteriorEpochTicketSubmissionsRoot
 		var posteriorBandersnatchPublicKeysPending [constants.NumValidators]types.BandersnatchPublicKey
@@ -268,26 +262,26 @@ func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot typ
 	return posteriorEntropyAccumulator, nil
 }
 
-func computeValidatorKeysetsStaging() ([constants.NumValidators]types.ValidatorKeyset, error) {
+func computeValidatorKeysetsStaging() (types.ValidatorKeysets, error) {
 	// TODO: Implement your logic.
-	return [constants.NumValidators]types.ValidatorKeyset{}, nil
+	return types.ValidatorKeysets{}, nil
 }
 
-func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorSafroleBasicState SafroleBasicState) ([constants.NumValidators]types.ValidatorKeyset, error) {
+func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive types.ValidatorKeysets, priorSafroleBasicState SafroleBasicState) (types.ValidatorKeysets, error) {
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		return priorSafroleBasicState.ValidatorKeysetsPending, nil
 	}
 	return priorValidatorKeysetsActive, nil
 }
 
-func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsPriorEpoch [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset) ([constants.NumValidators]types.ValidatorKeyset, error) {
+func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorKeysetsActive types.ValidatorKeysets) (types.ValidatorKeysets, error) {
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		return priorValidatorKeysetsActive, nil
 	}
 	return priorValidatorKeysetsPriorEpoch, nil
 }
 
-func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {
+func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {
 	for coreIndex, _ := range postGuaranteesExtrinsicIntermediatePendingReports {
 		for _, guarantee := range guarantees {
 			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
@@ -327,7 +321,7 @@ func computePrivilegedServices() (struct {
 }
 
 // destroys priorDisputes
-func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes Disputes) (Disputes, error) {
+func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.Disputes) (types.Disputes, error) {
 	sumOfValidJudgementsMap := disputesExtrinsic.ToSumOfValidJudgementsMap()
 	for r, validCount := range sumOfValidJudgementsMap {
 		if validCount == constants.NumValidatorSafetyThreshold {
@@ -347,7 +341,7 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes Disput
 	return priorDisputes, nil
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) ([2][constants.NumValidators]SingleValidatorStatistics, error) {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) ([2][constants.NumValidators]SingleValidatorStatistics, error) {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
@@ -369,6 +363,10 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 			posteriorValidatorStatistics[0][vIndex].OctetsIntroduced += uint64(preimages.TotalDataSize())
 		}
 		posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
+		r := guarantees.ReporterValidatorKeysets(header.TimeSlot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch)
+		if r.ContainsKeyset(posteriorValidatorKeysetsActive[vIndex]) {
+			posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed++
+		}
 		posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances
 		if assurances.HasValidatorIndex(vIndex) {
 			posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances++

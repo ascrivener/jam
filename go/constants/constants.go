@@ -17,3 +17,5 @@ const NumCores int = 341
 const AuthorizerQueueLength int = 80
 
 const MaxItemsInAuthorizationsPool int = 8
+
+const ValidatorCoreAssignmentsRotationPeriodInTimeslots int = 10
