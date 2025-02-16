@@ -88,8 +88,8 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 		{func() [32]byte { return StateKeyConstructorFromStateComponentIndex(15) }, state.AccumulationHistory},
 	}
 
-	// Process PriorServiceAccountState
-	for serviceIndex, serviceAccount := range state.PriorServiceAccountState {
+	// Process ServiceAccounts
+	for serviceIndex, serviceAccount := range state.ServiceAccounts {
 		// Capture loop variables
 		sIndex := serviceIndex
 		sAccount := serviceAccount
@@ -155,7 +155,7 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 		}
 
 		// Process PreimageLookupLengthToTimeslots.
-		for k, t := range sAccount.PreimageLookupLengthToTimeslots {
+		for k, t := range sAccount.PreimageLookupHistoricalStatus {
 			// Capture k and t.
 			lookupKey := k
 			timeslots := t

@@ -8,6 +8,16 @@ import (
 // todo: validate guarantees 11.4
 type Guarantees []Guarantee
 
+func (g Guarantees) ReporterValidatorIndices() []types.ValidatorIndex {
+	reporterValidatorIndices := make([]types.ValidatorIndex, 0)
+	for _, guarantee := range g {
+		for _, credentials := range guarantee.Credentials {
+			reporterValidatorIndices = append(reporterValidatorIndices, credentials.ValidatorIndex)
+		}
+	}
+	return reporterValidatorIndices
+}
+
 type Guarantee struct {
 	WorkReport  workreport.WorkReport
 	Timeslot    types.Timeslot

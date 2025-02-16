@@ -5,5 +5,5 @@ type Extrinsics struct {
 	Disputes   Disputes
 	Preimages  Preimages
 	Assurances Assurances
-	Guarantees Guarantees
+	Guarantees Guarantees // 11.4
 }

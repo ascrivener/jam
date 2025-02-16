@@ -2,22 +2,26 @@ package state
 
 import "github.com/ascrivener/jam/types"
 
+type ServiceAccounts map[types.ServiceIndex]ServiceAccount
+
+type PreimageLookupHistoricalStatusKey struct {
+	Preimage   [32]byte
+	BlobLength types.BlobLength
+}
+
 type ServiceAccount struct {
-	StorageDictionary               map[[32]byte][]byte
-	PreimageLookup                  map[[32]byte][]byte
-	PreimageLookupLengthToTimeslots map[struct {
-		Preimage   [32]byte
-		BlobLength types.BlobLength
-	}][]types.Timeslot
-	CodeHash                [32]byte
-	Balance                 types.Balance
-	MinimumGasForAccumulate types.GasValue
-	MinimumGasForOnTransfer types.GasValue
+	StorageDictionary              map[[32]byte][]byte
+	PreimageLookup                 map[[32]byte][]byte
+	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot
+	CodeHash                       [32]byte
+	Balance                        types.Balance
+	MinimumGasForAccumulate        types.GasValue
+	MinimumGasForOnTransfer        types.GasValue
 }
 
 func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
 	total := uint64(0)
-	for key := range s.PreimageLookupLengthToTimeslots {
+	for key := range s.PreimageLookupHistoricalStatus {
 		total += 81 + uint64(key.BlobLength)
 	}
 	for _, blob := range s.StorageDictionary {
@@ -27,5 +31,5 @@ func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
 }
 
 func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
-	return uint32(2)*uint32(len(s.PreimageLookupLengthToTimeslots)) + uint32(len(s.StorageDictionary))
+	return uint32(2)*uint32(len(s.PreimageLookupHistoricalStatus)) + uint32(len(s.StorageDictionary))
 }

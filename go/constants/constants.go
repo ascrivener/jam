@@ -4,6 +4,8 @@ const NumValidators int = 1023
 
 const NumValidatorSafetyThreshold int = 2*NumValidators/3 + 1
 
+const OneThirdNumValidators int = NumValidators / 3
+
 const NumTicketEntries int = 2
 
 const NumTimeslotsPerEpoch int = 600

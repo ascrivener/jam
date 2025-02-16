@@ -14,3 +14,12 @@ type Assurance struct {
 	ValidatorIndex                types.ValidatorIndex
 	Signature                     types.Ed25519Signature
 }
+
+func (a Assurances) HasValidatorIndex(vIndex types.ValidatorIndex) bool {
+	for _, assurance := range a {
+		if assurance.ValidatorIndex == vIndex {
+			return true
+		}
+	}
+	return false
+}

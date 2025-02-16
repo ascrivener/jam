@@ -12,10 +12,28 @@ type Disputes struct {
 	Faults   []Fault
 }
 
+func (d Disputes) ToSumOfValidJudgementsMap() map[[32]byte]int {
+	m := make(map[[32]byte]int)
+	for _, verdict := range d.Verdicts {
+		m[verdict.WorkReportHash] = verdict.SumOfValidJudgements()
+	}
+	return m
+}
+
 type Verdict struct {
 	WorkReportHash [32]byte
 	EpochIndex     uint64 // TODO: must be epoch index of the prior state or 1 less
 	Judgements     [constants.NumValidatorSafetyThreshold]Judgement
+}
+
+func (v Verdict) SumOfValidJudgements() int {
+	sum := 0
+	for _, judgement := range v.Judgements {
+		if judgement.Valid {
+			sum++
+		}
+	}
+	return sum
 }
 
 type Judgement struct {

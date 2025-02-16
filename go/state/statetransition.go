@@ -199,11 +199,12 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		posteriorSealingKeySequence = priorSafroleBasicState.SealingKeySequence
 
 		for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
-			// if not in new tickets, the add
+			// if not in new tickets, then add
 			alreadyInNewTickets := false
 			for _, newTicket := range posteriorTicketAccumulator {
 				if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
 					alreadyInNewTickets = true
+					break
 				}
 			}
 			if !alreadyInNewTickets {
@@ -223,9 +224,29 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 	}, nil
 }
 
-func computePriorServiceAccountState() (map[types.ServiceIndex]ServiceAccount, error) {
-	// TODO: Implement your logic.
-	return map[types.ServiceIndex]ServiceAccount{}, nil
+// destroys postAccumulationIntermediateServiceAccounts
+func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts ServiceAccounts) (ServiceAccounts, error) {
+	for _, preimage := range preimages {
+		hashedPreimage := blake2b.Sum256(preimage.Data)
+		serviceAccount := postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex]
+		if _, exists := serviceAccount.PreimageLookup[hashedPreimage]; exists {
+			continue
+		}
+		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
+			Preimage:   hashedPreimage,
+			BlobLength: types.BlobLength(len(preimage.Data)),
+		}]; !exists {
+			continue
+		} else if len(availabilityTimeslots) > 0 {
+			continue
+		}
+		postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex].PreimageLookup[hashedPreimage] = preimage.Data
+		postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex].PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
+			Preimage:   hashedPreimage,
+			BlobLength: types.BlobLength(len(preimage.Data)),
+		}] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
+	}
+	return postAccumulationIntermediateServiceAccounts, nil
 }
 
 func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
@@ -235,7 +256,7 @@ func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot typ
 		return [4][32]byte{}, err
 	}
 	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(priorEntropyAccumulator[0][:], randomVRFOutput[:]...))
-	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() { // new epoch
+	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		posteriorEntropyAccumulator[1] = priorEntropyAccumulator[0]
 		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[1]
 		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[2]
@@ -266,15 +287,19 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 	return priorValidatorKeysetsPriorEpoch, nil
 }
 
-func computePendingReports() ([constants.NumCores]*struct {
-	WorkReport workreport.WorkReport
-	Timeslot   types.Timeslot
-}, error) {
-	// TODO: Implement your logic.
-	return [constants.NumCores]*struct {
-		WorkReport workreport.WorkReport
-		Timeslot   types.Timeslot
-	}{}, nil
+func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {
+	for coreIndex, _ := range postGuaranteesExtrinsicIntermediatePendingReports {
+		for _, guarantee := range guarantees {
+			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
+				postGuaranteesExtrinsicIntermediatePendingReports[coreIndex] = &PendingReport{
+					WorkReport: guarantee.WorkReport,
+					Timeslot:   posteriorMostRecentBlockTimeslot,
+				}
+				break
+			}
+		}
+	}
+	return postGuaranteesExtrinsicIntermediatePendingReports, nil
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {
@@ -301,38 +326,60 @@ func computePrivilegedServices() (struct {
 	}{}, nil
 }
 
-func computeDisputes() (struct {
-	WorkReportHashesGood  [][32]byte
-	WorkReportHashesBad   [][32]byte
-	WorkReportHashesWonky [][32]byte
-	ValidatorPunishes     []types.Ed25519PublicKey
-}, error) {
-	// TODO: Implement your logic.
-	return struct {
-		WorkReportHashesGood  [][32]byte
-		WorkReportHashesBad   [][32]byte
-		WorkReportHashesWonky [][32]byte
-		ValidatorPunishes     []types.Ed25519PublicKey
-	}{}, nil
+// destroys priorDisputes
+func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes Disputes) (Disputes, error) {
+	sumOfValidJudgementsMap := disputesExtrinsic.ToSumOfValidJudgementsMap()
+	for r, validCount := range sumOfValidJudgementsMap {
+		if validCount == constants.NumValidatorSafetyThreshold {
+			priorDisputes.WorkReportHashesGood[r] = struct{}{}
+		} else if validCount == 0 {
+			priorDisputes.WorkReportHashesBad[r] = struct{}{}
+		} else if validCount == constants.OneThirdNumValidators {
+			priorDisputes.WorkReportHashesWonky[r] = struct{}{}
+		}
+	}
+	for _, c := range disputesExtrinsic.Culprits {
+		priorDisputes.ValidatorPunishes[c.ValidatorKey] = struct{}{}
+	}
+	for _, f := range disputesExtrinsic.Faults {
+		priorDisputes.ValidatorPunishes[f.ValidatorKey] = struct{}{}
+	}
+	return priorDisputes, nil
 }
 
-func computeValidatorStatistics() ([2][constants.NumValidators]struct {
-	BlocksProduced         uint64
-	TicketsIntroduced      uint64
-	PreimagesIntroduced    uint64
-	OctetsIntroduced       uint64
-	ReportsGuaranteed      uint64
-	AvailabilityAssurances uint64
-}, error) {
-	// TODO: Implement your logic.
-	return [2][constants.NumValidators]struct {
-		BlocksProduced         uint64
-		TicketsIntroduced      uint64
-		PreimagesIntroduced    uint64
-		OctetsIntroduced       uint64
-		ReportsGuaranteed      uint64
-		AvailabilityAssurances uint64
-	}{}, nil
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) ([2][constants.NumValidators]SingleValidatorStatistics, error) {
+	posteriorValidatorStatistics := priorValidatorStatistics
+	var a [constants.NumValidators]SingleValidatorStatistics
+	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
+		a = priorValidatorStatistics[0]
+	} else {
+		posteriorValidatorStatistics[1] = priorValidatorStatistics[0]
+	}
+	for vIndex, vStats := range a {
+		vIndex := types.ValidatorIndex(vIndex)
+		vIndexIsBlockAuthor := header.BandersnatchBlockAuthorIndex == vIndex
+		posteriorValidatorStatistics[0][vIndex].BlocksProduced = vStats.BlocksProduced
+		posteriorValidatorStatistics[0][vIndex].TicketsIntroduced = vStats.TicketsIntroduced
+		posteriorValidatorStatistics[0][vIndex].PreimagesIntroduced = vStats.PreimagesIntroduced
+		posteriorValidatorStatistics[0][vIndex].OctetsIntroduced = vStats.OctetsIntroduced
+		if vIndexIsBlockAuthor {
+			posteriorValidatorStatistics[0][vIndex].BlocksProduced++
+			posteriorValidatorStatistics[0][vIndex].TicketsIntroduced += uint64(len(tickets))
+			posteriorValidatorStatistics[0][vIndex].PreimagesIntroduced += uint64(len(preimages))
+			posteriorValidatorStatistics[0][vIndex].OctetsIntroduced += uint64(preimages.TotalDataSize())
+		}
+		posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
+		for _, validatorIndex := range guarantees.ReporterValidatorIndices() {
+			if validatorIndex == vIndex {
+				posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed++
+			}
+		}
+		posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances
+		if assurances.HasValidatorIndex(vIndex) {
+			posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances++
+		}
+	}
+	return posteriorValidatorStatistics, nil
 }
 
 func computeAccumulationQueue() ([constants.NumTimeslotsPerEpoch][]struct {
