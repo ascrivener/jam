@@ -1,6 +1,7 @@
 package extrinsics
 
 import (
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 )
@@ -8,14 +9,15 @@ import (
 // todo: validate guarantees 11.4
 type Guarantees []Guarantee
 
-func (g Guarantees) ReporterValidatorIndices() []types.ValidatorIndex {
-	reporterValidatorIndices := make([]types.ValidatorIndex, 0)
+func (g Guarantees) ReporterValidatorIndices(validatorKeySets [constants.NumValidators]types.ValidatorKeyset) []types.ValidatorKeyset {
+	fix me 11.26
+	reportersKeysets := make([]types.ValidatorKeyset, 0)
 	for _, guarantee := range g {
 		for _, credentials := range guarantee.Credentials {
-			reporterValidatorIndices = append(reporterValidatorIndices, credentials.ValidatorIndex)
+			reportersKeysets = append(reportersKeysets, validatorKeySets[credentials.ValidatorIndex])
 		}
 	}
-	return reporterValidatorIndices
+	return reportersKeysets
 }
 
 type Guarantee struct {

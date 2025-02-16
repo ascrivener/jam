@@ -369,11 +369,6 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 			posteriorValidatorStatistics[0][vIndex].OctetsIntroduced += uint64(preimages.TotalDataSize())
 		}
 		posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
-		for _, validatorIndex := range guarantees.ReporterValidatorIndices() {
-			if validatorIndex == vIndex {
-				posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed++
-			}
-		}
 		posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances
 		if assurances.HasValidatorIndex(vIndex) {
 			posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances++
