@@ -1,8 +1,8 @@
-package state
+package ticket
 
 import "github.com/ascrivener/jam/types"
 
-type SealKeyTicket struct {
+type Ticket struct {
 	VerifiablyRandomIdentifier [32]byte
 	EntryIndex                 types.TicketEntryIndex
 }

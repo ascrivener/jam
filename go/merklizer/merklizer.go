@@ -8,8 +8,8 @@ import (
 	"github.com/ascrivener/jam/state"
 )
 
-func MerklizeState(state state.State) ([32]byte, error) {
-	serializedState, err := serializer.StateSerializer(state)
+func MerklizeState(s state.State) ([32]byte, error) {
+	serializedState, err := state.StateSerializer(s)
 	if err != nil {
 		return [32]byte{}, err
 	}

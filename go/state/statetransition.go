@@ -1,6 +1,10 @@
 package state
 
 import (
+	"bytes"
+	"encoding/binary"
+	"math"
+	"sort"
 	"sync"
 
 	"github.com/ascrivener/jam/bandersnatch"
@@ -8,6 +12,9 @@ import (
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/sealingkeysequence"
+	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
@@ -31,39 +38,39 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 	var posteriorState State
 
 	var wg sync.WaitGroup
-	var mu sync.Mutex
+	// var mu sync.Mutex
 	var transitionError error
 
 	// setError safely records the first error encountered.
-	setError := func(err error) {
-		mu.Lock()
-		if transitionError == nil {
-			transitionError = err
-		}
-		mu.Unlock()
-	}
+	// setError := func(err error) {
+	// 	mu.Lock()
+	// 	if transitionError == nil {
+	// 		transitionError = err
+	// 	}
+	// 	mu.Unlock()
+	// }
 
-	runComputation(&wg, setError, func() error {
-		var err error
-		posteriorState.ValidatorKeysetsPriorEpoch, err = computeValidatorKeysetsPriorEpoch(block.Header, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
-		return err
-	})
+	// runComputation(&wg, setError, func() error {
+	// 	var err error
+	// 	posteriorState.ValidatorKeysetsPriorEpoch, err = computeValidatorKeysetsPriorEpoch(block.Header, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
+	// 	return err
+	// })
 
-	if posteriorState.MostRecentBlockTimeslot, transitionError = computeMostRecentBlockTimeslot(block.Header); transitionError != nil {
-		return State{}, transitionError
-	}
+	// if posteriorState.MostRecentBlockTimeslot, transitionError = computeMostRecentBlockTimeslot(block.Header); transitionError != nil {
+	// 	return State{}, transitionError
+	// }
 
-	if posteriorState.ValidatorKeysetsActive, transitionError = computeValidatorKeysetsActive(block.Header, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState); transitionError != nil {
-		return State{}, transitionError
-	}
+	// if posteriorState.ValidatorKeysetsActive, transitionError = computeValidatorKeysetsActive(block.Header, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState); transitionError != nil {
+	// 	return State{}, transitionError
+	// }
 
-	runComputation(&wg, setError, func() error {
-		var err error
-		if posteriorState.EntropyAccumulator, err = computeEntropyAccumulator(block.Header, priorState.EntropyAccumulator); err != nil {
-			return err
-		}
-		return nil
-	})
+	// runComputation(&wg, setError, func() error {
+	// 	var err error
+	// 	if posteriorState.EntropyAccumulator, err = computeEntropyAccumulator(block.Header,  priorState.EntropyAccumulator); err != nil {
+	// 		return err
+	// 	}
+	// 	return nil
+	// })
 
 	wg.Wait()
 
@@ -116,11 +123,24 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 
 }
 
-func computeSafroleBasicState(header header.Header, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorDisputes Disputes) (SafroleBasicState, error) {
+func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging [constants.NumValidators]types.ValidatorKeyset, posteriorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, posteriorDisputes Disputes, posteriorEntropyAccumulator [4][32]byte) (SafroleBasicState, error) {
 	var err error
 	var posteriorValidatorKeysetsPending [constants.NumValidators]types.ValidatorKeyset
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
-	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+	var posteriorSealingKeySequence sealingkeysequence.SealingKeySequence
+	var posteriorTicketAccumulator []ticket.Ticket
+	// TODO: verify here if the tickets given are actually ordered by vrf output
+	for _, extrinsicTicket := range tickets {
+		vrfOutput, err := bandersnatch.BandersnatchRingVRFProofOutput(extrinsicTicket.ValidityProof)
+		if err != nil {
+			return SafroleBasicState{}, err
+		}
+		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
+			VerifiablyRandomIdentifier: vrfOutput,
+			EntryIndex:                 extrinsicTicket.EntryIndex,
+		})
+	}
+	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		// posteriorValidatorKeysetsPending
 		for index, _ := range posteriorValidatorKeysetsPending {
 			if posteriorDisputes.PunishEd25519Key(priorValidatorKeysetsStaging[index].ToEd25519PublicKey()) {
@@ -138,14 +158,68 @@ func computeSafroleBasicState(header header.Header, tickets extrinsics.Tickets, 
 		if posteriorEpochTicketSubmissionsRoot, err = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:]); err != nil {
 			return SafroleBasicState{}, nil
 		}
+
+		// posteriorSealingKeySequence
+		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= constants.TicketSubmissionEndingSlotPhaseNumber && len(priorSafroleBasicState.TicketAccumulator) == constants.NumTimeslotsPerEpoch {
+			var reorderedTickets [constants.NumTimeslotsPerEpoch]ticket.Ticket
+			index := 0
+			// outside-in
+			for i, j := 0, constants.NumTimeslotsPerEpoch-1; i <= j; i, j = i+1, j-1 {
+				if i == j {
+					// When both indices meet, assign the middle element only once.
+					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[i]
+					index++
+				} else {
+					// Assign first the element from the start then from the end.
+					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[i]
+					index++
+					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[j]
+					index++
+				}
+			}
+			posteriorSealingKeySequence = sealingkeysequence.NewSealKeyTicketSeries(reorderedTickets)
+		} else {
+			var bandersnatchKeys [constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey
+			for i := 0; i < constants.NumTimeslotsPerEpoch; i++ {
+				iSerialized, err := serializer.Serialize(uint32(i))
+				if err != nil {
+					return SafroleBasicState{}, err
+				}
+				hashedEntropyValue := blake2b.Sum256(append(posteriorEntropyAccumulator[2][:], iSerialized...))
+				posteriorActiveValidatorPKsIndex := binary.LittleEndian.Uint32(hashedEntropyValue[:4])
+				bandersnatchKeys[i] = posteriorValidatorKeysetsActive[int(posteriorActiveValidatorPKsIndex)%len(posteriorValidatorKeysetsActive)].ToBandersnatchPublicKey()
+			}
+			posteriorSealingKeySequence = sealingkeysequence.NewBandersnatchKeysSeries(bandersnatchKeys)
+		}
 	} else {
 		posteriorValidatorKeysetsPending = priorSafroleBasicState.ValidatorKeysetsPending
 
 		posteriorEpochTicketSubmissionsRoot = priorSafroleBasicState.EpochTicketSubmissionsRoot
+
+		posteriorSealingKeySequence = priorSafroleBasicState.SealingKeySequence
+
+		for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
+			// if not in new tickets, the add
+			alreadyInNewTickets := false
+			for _, newTicket := range posteriorTicketAccumulator {
+				if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
+					alreadyInNewTickets = true
+				}
+			}
+			if !alreadyInNewTickets {
+				posteriorTicketAccumulator = append(posteriorTicketAccumulator, priorTicket)
+			}
+		}
+		sort.Slice(posteriorTicketAccumulator, func(i, j int) bool {
+			return bytes.Compare(posteriorTicketAccumulator[i].VerifiablyRandomIdentifier[:], posteriorTicketAccumulator[j].VerifiablyRandomIdentifier[:]) < 0
+		})
 	}
+
 	return SafroleBasicState{
 		ValidatorKeysetsPending:    posteriorValidatorKeysetsPending,
 		EpochTicketSubmissionsRoot: posteriorEpochTicketSubmissionsRoot,
+		SealingKeySequence:         posteriorSealingKeySequence,
+		TicketAccumulator:          posteriorTicketAccumulator[:int(math.Min(float64(len(posteriorTicketAccumulator)), float64(constants.NumTimeslotsPerEpoch)))],
 	}, nil
 }
 
@@ -154,14 +228,14 @@ func computePriorServiceAccountState() (map[types.ServiceIndex]ServiceAccount, e
 	return map[types.ServiceIndex]ServiceAccount{}, nil
 }
 
-func computeEntropyAccumulator(header header.Header, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
+func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
 	posteriorEntropyAccumulator := [4][32]byte{}
 	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput((header.VRFSignature))
 	if err != nil {
 		return [4][32]byte{}, err
 	}
 	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(priorEntropyAccumulator[0][:], randomVRFOutput[:]...))
-	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 { // new epoch
+	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() { // new epoch
 		posteriorEntropyAccumulator[1] = priorEntropyAccumulator[0]
 		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[1]
 		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[2]
@@ -178,15 +252,15 @@ func computeValidatorKeysetsStaging() ([constants.NumValidators]types.ValidatorK
 	return [constants.NumValidators]types.ValidatorKeyset{}, nil
 }
 
-func computeValidatorKeysetsActive(header header.Header, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorSafroleBasicState SafroleBasicState) ([constants.NumValidators]types.ValidatorKeyset, error) {
-	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset, priorSafroleBasicState SafroleBasicState) ([constants.NumValidators]types.ValidatorKeyset, error) {
+	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		return priorSafroleBasicState.ValidatorKeysetsPending, nil
 	}
 	return priorValidatorKeysetsActive, nil
 }
 
-func computeValidatorKeysetsPriorEpoch(header header.Header, priorValidatorKeysetsPriorEpoch [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset) ([constants.NumValidators]types.ValidatorKeyset, error) {
-	if header.TimeSlot%constants.NumTimeslotsPerEpoch == 0 {
+func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsPriorEpoch [constants.NumValidators]types.ValidatorKeyset, priorValidatorKeysetsActive [constants.NumValidators]types.ValidatorKeyset) ([constants.NumValidators]types.ValidatorKeyset, error) {
+	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		return priorValidatorKeysetsActive, nil
 	}
 	return priorValidatorKeysetsPriorEpoch, nil

@@ -20,10 +20,18 @@ type Ed25519Signature [64]byte
 
 type Timeslot uint32
 
+func (t Timeslot) EpochIndex() int {
+	return int(t) / constants.NumTimeslotsPerEpoch
+}
+
+func (t Timeslot) SlotPhaseIndex() int {
+	return int(t) % constants.NumTimeslotsPerEpoch
+}
+
 type ValidatorIndex uint16
 
 func NewValidatorIndex(value uint16) (ValidatorIndex, error) {
-	if value >= constants.NumValidators {
+	if value >= uint16(constants.NumValidators) {
 		return 0, fmt.Errorf("invalid validator index value: must be less than %d", constants.NumValidators)
 	}
 	return ValidatorIndex(value), nil
@@ -32,7 +40,7 @@ func NewValidatorIndex(value uint16) (ValidatorIndex, error) {
 type TicketEntryIndex uint8
 
 func NewTicketEntryIndex(value uint8) (TicketEntryIndex, error) {
-	if value >= constants.NumTicketEntries {
+	if value >= uint8(constants.NumTicketEntries) {
 		return 0, fmt.Errorf("invalid ticket entry index value: must be less than %d", constants.NumTicketEntries)
 	}
 	return TicketEntryIndex(value), nil
@@ -43,7 +51,7 @@ type BlobLength uint32
 type CoreIndex uint16
 
 func NewCoreIndex(value uint16) (CoreIndex, error) {
-	if value >= constants.NumCores {
+	if value >= uint16(constants.NumCores) {
 		return 0, fmt.Errorf("invalid core index value: must be less than %d", constants.NumCores)
 	}
 	return CoreIndex(value), nil

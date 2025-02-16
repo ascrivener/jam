@@ -1,9 +1,9 @@
-package serializer
+package state
 
 import (
 	"golang.org/x/crypto/blake2b"
 
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -61,7 +61,7 @@ func sliceToArray32(b []byte) [32]byte {
 
 // --- State Serializer ---
 
-func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
+func StateSerializer(state State) (map[[32]byte][]byte, error) {
 	serialized := make(map[[32]byte][]byte)
 
 	type StateComponent struct {
@@ -117,7 +117,7 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 		})
 
 		// Process StorageDictionary.
-		ones, err := Serialize(uint32(1<<32 - 1))
+		ones, err := serializer.Serialize(uint32(1<<32 - 1))
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +136,7 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 		}
 
 		// Process PreimageLookup.
-		onesMinusOne, err := Serialize(uint32(1<<32 - 2))
+		onesMinusOne, err := serializer.Serialize(uint32(1<<32 - 2))
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 			lookupKey := k
 			timeslots := t
 
-			blobLengthBytes, err := Serialize(uint32(lookupKey.BlobLength))
+			blobLengthBytes, err := serializer.Serialize(uint32(lookupKey.BlobLength))
 			if err != nil {
 				return nil, err
 			}
@@ -177,7 +177,7 @@ func StateSerializer(state state.State) (map[[32]byte][]byte, error) {
 
 	// Serialize each state component.
 	for _, comp := range stateComponents {
-		serializedData, err := Serialize(comp.data)
+		serializedData, err := serializer.Serialize(comp.data)
 		if err != nil {
 			return nil, err
 		}

@@ -10,7 +10,7 @@ import (
 	"sort"
 
 	"github.com/ascrivener/jam/bitsequence"
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/workreport"
 )
 
@@ -53,31 +53,19 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			return buf.WriteByte(byte(wo.Err))
 		}
 
-		// Special handling for state.SafroleBasicState.
-		if v.Type() == reflect.TypeOf(state.SafroleBasicState{}) {
-			safroleBasicState := v.Interface().(state.SafroleBasicState)
-			if err := serializeValue(reflect.ValueOf(safroleBasicState.ValidatorKeysetsPending), buf); err != nil {
-				return err
-			}
-			if err := serializeValue(reflect.ValueOf(safroleBasicState.EpochTicketSubmissionsRoot), buf); err != nil {
-				return err
-			}
-			if safroleBasicState.SealingKeySequence.IsSealKeyTickets() {
+		if v.Type() == reflect.TypeOf(sealingkeysequence.SealingKeySequence{}) {
+			sealingKeySequence := v.Interface().(sealingkeysequence.SealingKeySequence)
+			if sealingKeySequence.IsSealKeyTickets() {
 				if err := buf.WriteByte(0); err != nil {
 					return err
 				}
-				if err := serializeValue(reflect.ValueOf(safroleBasicState.SealingKeySequence.SealKeyTickets), buf); err != nil {
-					return err
-				}
+				return serializeValue(reflect.ValueOf(sealingKeySequence.SealKeyTickets), buf)
 			} else {
 				if err := buf.WriteByte(1); err != nil {
 					return err
 				}
-				if err := serializeValue(reflect.ValueOf(safroleBasicState.SealingKeySequence.BandersnatchKeys), buf); err != nil {
-					return err
-				}
+				return serializeValue(reflect.ValueOf(sealingKeySequence.BandersnatchKeys), buf)
 			}
-			return serializeValue(reflect.ValueOf(safroleBasicState.TicketAccumulator), buf)
 		}
 
 		// Special case for BitSequence

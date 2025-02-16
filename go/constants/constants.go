@@ -1,15 +1,17 @@
 package constants
 
-const NumValidators = 1023
+const NumValidators int = 1023
 
-const NumValidatorSafetyThreshold = 2*NumValidators/3 + 1
+const NumValidatorSafetyThreshold int = 2*NumValidators/3 + 1
 
-const NumTicketEntries = 2
+const NumTicketEntries int = 2
 
-const NumTimeslotsPerEpoch = 600
+const NumTimeslotsPerEpoch int = 600
 
-const NumCores = 341
+const TicketSubmissionEndingSlotPhaseNumber int = 500
 
-const AuthorizerQueueLength = 80
+const NumCores int = 341
 
-const MaxItemsInAuthorizationsPool = 8
+const AuthorizerQueueLength int = 80
+
+const MaxItemsInAuthorizationsPool int = 8
