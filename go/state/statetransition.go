@@ -281,8 +281,49 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 	return priorValidatorKeysetsPriorEpoch, nil
 }
 
+// destroys priorPendingReports
+func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) ([constants.NumCores]*PendingReport, error) {
+	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
+	for c, value := range priorPendingReports {
+		if value == nil {
+			continue
+		}
+		serializedWorkReport, err := serializer.Serialize(value.WorkReport)
+		if err != nil {
+			return [constants.NumCores]*PendingReport{}, err
+		}
+		workReportHash := blake2b.Sum256(serializedWorkReport)
+		if validJudgementsSum, exists := validJudgementsMap[workReportHash]; exists {
+			if validJudgementsSum < constants.TwoThirdsNumValidators {
+				priorPendingReports[c] = nil
+			}
+		}
+	}
+
+	return priorPendingReports, nil
+}
+
+// destroys postJudgementIntermediatePendingReports
+func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport) ([constants.NumCores]*PendingReport, error) {
+	// reusing this elsewhere?
+	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
+		if pendingReport == nil {
+			continue
+		}
+		nowAvailable := assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex))
+		timedOut := int(header.TimeSlot) >= int(pendingReport.Timeslot)+constants.UnavailableWorkTimeoutTimeslots
+		if nowAvailable || timedOut {
+			postJudgementIntermediatePendingReports[coreIndex] = nil
+		}
+	}
+	return postJudgementIntermediatePendingReports, nil
+}
+
 func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {
-	for coreIndex, _ := range postGuaranteesExtrinsicIntermediatePendingReports {
+	for coreIndex, value := range postGuaranteesExtrinsicIntermediatePendingReports {
+		if value == nil {
+			continue
+		}
 		for _, guarantee := range guarantees {
 			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
 				postGuaranteesExtrinsicIntermediatePendingReports[coreIndex] = &PendingReport{
@@ -294,6 +335,51 @@ func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtri
 		}
 	}
 	return postGuaranteesExtrinsicIntermediatePendingReports, nil
+}
+
+func computeAccumulatableWorkReports(assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory) []workreport.WorkReport {
+	immediatelyAccumulatableWorkReports := make([]workreport.WorkReport, 0)
+	queuedExecutionWorkReports := make([]struct {
+		WorkReport         workreport.WorkReport
+		WorkPackageHashSet map[[32]byte]struct{}
+	}, 0)
+	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
+		if pendingReport == nil {
+			continue
+		}
+		if !assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex)) {
+			continue
+		}
+		workReport := pendingReport.WorkReport
+		if len(workReport.RefinementContext.PrerequisiteWorkPackageHashes) == 0 && len(workReport.SegmentRootLookup) == 0 {
+			immediatelyAccumulatableWorkReports = append(immediatelyAccumulatableWorkReports, workReport)
+		} else {
+			if priorAccumulationHistory.ContainsWorkPackageHash(workReport.WorkPackageSpecification.WorkPackageHash) {
+				continue
+			}
+			workPackageHashSet := make(map[[32]byte]struct{})
+			for workPackageHash, _ := range workReport.RefinementContext.PrerequisiteWorkPackageHashes {
+				if !priorAccumulationHistory.ContainsWorkPackageHash(workPackageHash) {
+					workPackageHashSet[workPackageHash] = struct{}{}
+				}
+			}
+			for workPackageHash, _ := range workReport.SegmentRootLookup {
+				if !priorAccumulationHistory.ContainsWorkPackageHash(workPackageHash) {
+					workPackageHashSet[workPackageHash] = struct{}{}
+				}
+			}
+			queuedExecutionWorkReports = append(queuedExecutionWorkReports, struct {
+				WorkReport         workreport.WorkReport
+				WorkPackageHashSet map[[32]byte]struct{}
+			}{
+				WorkReport:         workReport,
+				WorkPackageHashSet: workPackageHashSet,
+			})
+		}
+	}
+	finish me. first pull out E i think so it can be reusable
+
+	return nil
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {

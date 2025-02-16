@@ -25,7 +25,7 @@ type State struct {
 		WorkReport        workreport.WorkReport
 		WorkPackageHashes map[[32]byte]struct{}
 	} // 12.3
-	AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{} // 12.1
+	AccumulationHistory AccumulationHistory // 12.1
 }
 
 type PrivilegedServices struct {
@@ -47,4 +47,15 @@ type SingleValidatorStatistics struct {
 	OctetsIntroduced       uint64
 	ReportsGuaranteed      uint64
 	AvailabilityAssurances uint64
+}
+
+type AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}
+
+func (a AccumulationHistory) ContainsWorkPackageHash(workPackageHash [32]byte) bool {
+	for _, workPackageHashSet := range a {
+		if _, exists := workPackageHashSet[workPackageHash]; exists {
+			return true
+		}
+	}
+	return false
 }

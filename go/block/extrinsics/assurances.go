@@ -2,6 +2,7 @@ package extrinsics
 
 import (
 	"github.com/ascrivener/jam/bitsequence"
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -22,4 +23,14 @@ func (a Assurances) HasValidatorIndex(vIndex types.ValidatorIndex) bool {
 		}
 	}
 	return false
+}
+
+func (a Assurances) AvailabilityContributionsForCoreSupermajority(coreIndex types.CoreIndex) bool {
+	sum := 0
+	for _, assurance := range a {
+		if assurance.CoreAvailabilityContributions.BitAt(int(coreIndex)) {
+			sum += 1
+		}
+	}
+	return sum > constants.TwoThirdsNumValidators
 }
