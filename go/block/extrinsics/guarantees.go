@@ -10,7 +10,7 @@ import (
 type Guarantees []Guarantee
 
 func (g Guarantees) ReporterValidatorIndices(validatorKeySets [constants.NumValidators]types.ValidatorKeyset) []types.ValidatorKeyset {
-	fix me 11.26
+	fix me //11.26
 	reportersKeysets := make([]types.ValidatorKeyset, 0)
 	for _, guarantee := range g {
 		for _, credentials := range guarantee.Credentials {
