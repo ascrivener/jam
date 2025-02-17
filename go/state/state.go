@@ -7,25 +7,22 @@ import (
 )
 
 type State struct {
-	AuthorizersPool            [constants.NumCores][][32]byte                                // 8.2
-	RecentBlocks               []RecentBlock                                                 // 7.1
-	SafroleBasicState          SafroleBasicState                                             // 6.3
-	ServiceAccounts            ServiceAccounts                                               // 9.2
-	EntropyAccumulator         [4][32]byte                                                   // 6.21
-	ValidatorKeysetsStaging    types.ValidatorKeysets                                        // 6.7
-	ValidatorKeysetsActive     types.ValidatorKeysets                                        // 6.7
-	ValidatorKeysetsPriorEpoch types.ValidatorKeysets                                        // 6.7
-	PendingReports             [constants.NumCores]*PendingReport                            // 11.1
-	MostRecentBlockTimeslot    types.Timeslot                                                // 6.1
-	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte // 8.1
-	PrivilegedServices         PrivilegedServices                                            // 9.9
-	Disputes                   types.Disputes                                                //10.1
-	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics         // 13.1
-	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]struct {
-		WorkReport        workreport.WorkReport
-		WorkPackageHashes map[[32]byte]struct{}
-	} // 12.3
-	AccumulationHistory AccumulationHistory // 12.1
+	AuthorizersPool            [constants.NumCores][][32]byte                                               // 8.2
+	RecentBlocks               []RecentBlock                                                                // 7.1
+	SafroleBasicState          SafroleBasicState                                                            // 6.3
+	ServiceAccounts            ServiceAccounts                                                              // 9.2
+	EntropyAccumulator         [4][32]byte                                                                  // 6.21
+	ValidatorKeysetsStaging    types.ValidatorKeysets                                                       // 6.7
+	ValidatorKeysetsActive     types.ValidatorKeysets                                                       // 6.7
+	ValidatorKeysetsPriorEpoch types.ValidatorKeysets                                                       // 6.7
+	PendingReports             [constants.NumCores]*PendingReport                                           // 11.1
+	MostRecentBlockTimeslot    types.Timeslot                                                               // 6.1
+	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // 8.1
+	PrivilegedServices         PrivilegedServices                                                           // 9.9
+	Disputes                   types.Disputes                                                               //10.1
+	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics                        // 13.1
+	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // 12.3
+	AccumulationHistory        AccumulationHistory                                                          // 12.1
 }
 
 type PrivilegedServices struct {
@@ -51,11 +48,12 @@ type SingleValidatorStatistics struct {
 
 type AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}
 
-func (a AccumulationHistory) ContainsWorkPackageHash(workPackageHash [32]byte) bool {
-	for _, workPackageHashSet := range a {
-		if _, exists := workPackageHashSet[workPackageHash]; exists {
-			return true
+func (a AccumulationHistory) ToUnionSet() map[[32]byte]struct{} {
+	set := make(map[[32]byte]struct{})
+	for _, accumulationSet := range a {
+		for key := range accumulationSet {
+			set[key] = struct{}{}
 		}
 	}
-	return false
+	return set
 }

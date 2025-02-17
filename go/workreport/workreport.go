@@ -73,3 +73,8 @@ func (wo WorkOutput) GetErr() (WorkExecutionError, bool) {
 	}
 	return 0, false
 }
+
+type WorkReportWithWorkPackageHashes struct {
+	WorkReport        WorkReport
+	WorkPackageHashes map[[32]byte]struct{}
+}
