@@ -338,7 +338,7 @@ func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtri
 }
 
 func computeAccumulatableWorkReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport {
-	// function utils
+	// 1. function utils
 	queueEdit := func(r []workreport.WorkReportWithWorkPackageHashes, accumulatedWorkPackageHashes map[[32]byte]struct{}) []workreport.WorkReportWithWorkPackageHashes {
 		updatedWorkReports := make([]workreport.WorkReportWithWorkPackageHashes, 0)
 		for _, w := range r {
@@ -380,7 +380,7 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 		return append(g, accumulationPriorityQueue(queueEdit(r, workReportsToWorkPackageHashes(g)))...)
 	}
 
-	// start processing
+	// 2. create immediate and queued WRs
 	immediatelyAccumulatableWorkReports := make([]workreport.WorkReport, 0)
 	queuedExecutionWorkReports := make([]workreport.WorkReportWithWorkPackageHashes, 0)
 	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
@@ -409,6 +409,7 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 	}
 	queuedExecutionWorkReports = queueEdit(queuedExecutionWorkReports, priorAccumulationHistory.ToUnionSet())
 
+	// 3. combine everything
 	m := int(header.TimeSlot) % constants.NumTimeslotsPerEpoch
 	var flattenedAfterM []workreport.WorkReportWithWorkPackageHashes
 	for _, inner := range priorAccumulationQueue[m:] {

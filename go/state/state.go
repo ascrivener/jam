@@ -19,7 +19,7 @@ type State struct {
 	MostRecentBlockTimeslot    types.Timeslot                                                               // 6.1
 	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // 8.1
 	PrivilegedServices         PrivilegedServices                                                           // 9.9
-	Disputes                   types.Disputes                                                               //10.1
+	Disputes                   types.Disputes                                                               // 10.1
 	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics                        // 13.1
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // 12.3
 	AccumulationHistory        AccumulationHistory                                                          // 12.1
