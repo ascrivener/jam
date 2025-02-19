@@ -1,0 +1,62 @@
+package pvm
+
+type Register uint64
+
+type RamAccess int
+
+const (
+	Immutable RamAccess = iota
+	Mutable
+	Inaccessible
+)
+
+type RAM struct {
+	Value  [BytesInRam]byte
+	Access [NumRamPages]RamAccess
+}
+
+type SimpleExitReasonType int
+
+const (
+	ExitHalt     SimpleExitReasonType = iota // ∎: regular halt
+	ExitPanic                                // ☇: panic
+	ExitOutOfGas                             // ∞: out-of-gas
+)
+
+type ComplexExitReasonType int
+
+const (
+	ExitHostCall  ComplexExitReasonType = iota // ̵h: host-call (with associated identifier)
+	ExitPageFault                              // F: page-fault (with associated ram address)
+)
+
+type ComplexExitReason struct {
+	Type      ComplexExitReasonType
+	Parameter Register
+}
+
+type ExitReason struct {
+	SimpleExitReason  *SimpleExitReasonType
+	ComplexExitReason *ComplexExitReason
+}
+
+// NewSimpleExitReason creates an ExitReason representing a simple exit.
+// It sets only the SimpleExitReason field.
+func NewSimpleExitReason(reason SimpleExitReasonType) ExitReason {
+	return ExitReason{
+		SimpleExitReason:  &reason,
+		ComplexExitReason: nil,
+	}
+}
+
+// NewComplexExitReason creates an ExitReason representing a complex exit.
+// It sets only the ComplexExitReason field.
+func NewComplexExitReason(reasonType ComplexExitReasonType, parameter Register) ExitReason {
+	return ExitReason{
+		SimpleExitReason: nil,
+		ComplexExitReason: &ComplexExitReason{
+			Type:      reasonType,
+			Parameter: parameter,
+		},
+	}
+}

@@ -59,7 +59,9 @@ func NewCoreIndex(value uint16) (CoreIndex, error) {
 
 type ServiceIndex uint32
 
-type GasValue int64
+type GasValue uint64
+
+type SignedGasValue int64
 
 type ValidatorKeyset [336]byte
 
