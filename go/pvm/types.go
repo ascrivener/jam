@@ -18,9 +18,10 @@ type RAM struct {
 type SimpleExitReasonType int
 
 const (
-	ExitHalt     SimpleExitReasonType = iota // ∎: regular halt
-	ExitPanic                                // ☇: panic
-	ExitOutOfGas                             // ∞: out-of-gas
+	ExitGo       SimpleExitReasonType = iota
+	ExitHalt                          // ∎: regular halt
+	ExitPanic                         // ☇: panic
+	ExitOutOfGas                      // ∞: out-of-gas
 )
 
 type ComplexExitReasonType int

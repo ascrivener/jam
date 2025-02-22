@@ -241,3 +241,11 @@ func writeIntOrUintLittleEndian(buf io.Writer, v reflect.Value) error {
 	_, err := buf.Write(tmp)
 	return err
 }
+
+func DecodeLittleEndianValue(b []byte) uint64 {
+	var x uint64
+	for i, v := range b {
+		x |= uint64(v) << (8 * i)
+	}
+	return x
+}
