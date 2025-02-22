@@ -101,6 +101,22 @@ func (bs *BitSequence) BitAt(i int) bool {
 	return (bs.buf[byteIndex] & (1 << uint(bitPos))) != 0
 }
 
+// SetBitAt sets the bit at index i to the specified value (true for 1, false for 0).
+// It assumes bits are stored in big-endian order within each byte (i.e. bit 0 is the most significant bit).
+func (bs *BitSequence) SetBitAt(i int, value bool) {
+	if i < 0 || i >= bs.bitLen {
+		panic("bit index out of range")
+	}
+	byteIndex := i / 8
+	bitPos := 7 - (i % 8) // calculate the position of the bit in the byte (big-endian)
+	mask := byte(1 << uint(bitPos))
+	if value {
+		bs.buf[byteIndex] |= mask
+	} else {
+		bs.buf[byteIndex] &^= mask
+	}
+}
+
 // Bytes returns the underlying []byte containing the packed bits.
 // Note that the final byte may have unused bits (in the least-significant positions).
 func (bs *BitSequence) Bytes() []byte {
