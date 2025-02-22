@@ -8,14 +8,16 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func SingleStep(instructions []byte, opcodeBitmask bitsequence.BitSequence, dynamicJumpTable []Register, instructionCounter Register, gas types.GasValue, registers [13]Register, ram RAM) (ExitReason, Register, types.SignedGasValue, [13]Register, RAM) {
+func SingleStep(instructions []byte, opcodeBitmask bitsequence.BitSequence, dynamicJumpTable []Register, instructionCounter Register, gas types.GasValue, registers [13]Register, ram RAM) (ExitReason, Register, types.SignedGasValue, [13]Register, RAM, error) {
 	exitReason := NewSimpleExitReason(ExitGo)
 	l := skip(instructionCounter, opcodeBitmask)
+	memoryAccessExceptionIndices := []RamIndex{}
 	nextInstructionCounter := instructionCounter + 1 + l
 	nextGas := types.SignedGasValue(gas)
 	nextRegisters := registers
 	nextRam := ram
-	switch getInstruction(instructions, instructionCounter) {
+	instruction := getInstruction(instructions, instructionCounter)
+	switch instruction {
 	case 0: // trap
 		gas = gas - 0
 		exitReason = NewSimpleExitReason(ExitPanic)
@@ -23,23 +25,57 @@ func SingleStep(instructions []byte, opcodeBitmask bitsequence.BitSequence, dyna
 		gas = gas - 0
 	case 10: // ecalli
 		gas = gas - 0
-		lx := Register(4)
-		if l < lx {
-			lx = l
-		}
+		lx := minRegister(4, l)
 		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+1, lx)), int(lx))
-		exitReason = NewComplexExitReason(ExitHostCall, Register(vx))
+		exitReason = NewComplexExitReason(ExitHostCall, vx)
 	case 20: // load_imm_64
 		gas = gas - 0
-		a := byte(12)
-		inst := getInstruction(instructions, instructionCounter+Register(1)) % 16
-		if inst < a {
-			a = inst
-		}
+		ra := minRegister(12, Register(getInstruction(instructions, instructionCounter+Register(1))%16))
 		vx := serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, 8))
-		nextRegisters[a] = Register(vx)
+		nextRegisters[ra] = Register(vx)
+	case 30:
+	case 31:
+	case 32:
+	case 33:
+		lx := minRegister(4, Register(getInstruction(instructions, instructionCounter+1)%8))
+		ly := minRegister(4, maxRegister(0, l-lx-1))
+		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, lx)), int(lx))
+		vy := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2+lx, ly)), int(ly))
+		gas = gas - 0
+		if instruction == 30 { // store_imm_u8
+			nextRam.mutate(vx, byte(vy), memoryAccessExceptionIndices)
+		} else if instruction == 31 { // store_imm_u16
+			serializedVy, err := serializer.Serialize(uint16(vy))
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, RAM{}, err
+			}
+			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+		} else if instruction == 32 { // store_imm_u32
+			serializedVy, err := serializer.Serialize(uint32(vy))
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, RAM{}, err
+			}
+			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+		} else { // // store_imm_u64
+			serializedVy, err := serializer.Serialize(vy)
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, RAM{}, err
+			}
+			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+		}
+	case 40: // jump
 	}
-	return exitReason, nextInstructionCounter, nextGas, nextRegisters, nextRam
+	// memory access exception handling
+	minRamIndex := minRamIndex(memoryAccessExceptionIndices)
+	if minRamIndex != nil {
+		if *minRamIndex < MinValidRamIndex {
+			exitReason = NewSimpleExitReason(ExitPanic)
+		} else {
+			exitReason = NewComplexExitReason(ExitPageFault, Register(BytesInPage*(*minRamIndex/BytesInPage)))
+		}
+	}
+
+	return exitReason, nextInstructionCounter, nextGas, nextRegisters, nextRam, nil
 }
 
 func getInstruction(instructions []byte, instructionCounter Register) byte {
@@ -73,7 +109,7 @@ func skip(instructionCounter Register, opcodeBitmask bitsequence.BitSequence) Re
 	return Register(j)
 }
 
-func signExtendImmediate(x uint64, n int) uint64 {
+func signExtendImmediate(x uint64, n int) Register {
 	// Check that n is one of the allowed sizes.
 	switch n {
 	case 1, 2, 3, 4, 8:
@@ -99,5 +135,39 @@ func signExtendImmediate(x uint64, n int) uint64 {
 	offset := ^mask
 
 	// The sign extension function is then:
-	return x + sign*offset
+	return Register(x + sign*offset)
+}
+
+func branch(b Register, C bool, instructionCounter Register) (ExitReason, Register) {
+	if !C {
+		return NewSimpleExitReason(ExitGo), instructionCounter
+	}
+
+}
+
+func minRegister(a, b Register) Register {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxRegister(a, b Register) Register {
+	if a < b {
+		return b
+	}
+	return a
+}
+
+func minRamIndex(ramIndices []RamIndex) *RamIndex {
+	if len(ramIndices) == 0 {
+		return nil
+	}
+	minRamIndex := ramIndices[0]
+	for _, ramIndex := range ramIndices {
+		if ramIndex < minRamIndex {
+			minRamIndex = ramIndex
+		}
+	}
+	return &minRamIndex
 }

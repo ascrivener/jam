@@ -4,6 +4,8 @@ type Register uint64
 
 type RamAccess int
 
+type RamIndex uint32
+
 const (
 	Immutable RamAccess = iota
 	Mutable
@@ -13,6 +15,36 @@ const (
 type RAM struct {
 	Value  [BytesInRam]byte
 	Access [NumRamPages]RamAccess
+}
+
+func (r RAM) accessForIndex(index RamIndex) RamAccess {
+	return r.Access[RamIndex(index)/BytesInPage]
+}
+
+func (r RAM) inspect(index Register, memoryAccessExceptionIndices []RamIndex) byte {
+	ramIndex := RamIndex(index)
+	if r.accessForIndex(ramIndex) == Inaccessible {
+		memoryAccessExceptionIndices = append(memoryAccessExceptionIndices, ramIndex)
+	}
+	return r.Value[ramIndex]
+}
+
+func (r *RAM) mutate(index Register, newByte byte, memoryAccessExceptionIndices []RamIndex) {
+	ramIndex := RamIndex(index)
+	if r.accessForIndex(ramIndex) != Mutable {
+		memoryAccessExceptionIndices = append(memoryAccessExceptionIndices, ramIndex)
+	}
+	r.Value[ramIndex] = newByte
+}
+
+func (r *RAM) mutateRange(start Register, newBytes []byte, memoryAccessExceptionIndices []RamIndex) {
+	for i, newByte := range newBytes {
+		ramIndex := RamIndex(start) + RamIndex(i)
+		if r.accessForIndex(ramIndex) != Mutable {
+			memoryAccessExceptionIndices = append(memoryAccessExceptionIndices, ramIndex)
+		}
+		r.Value[ramIndex] = newByte
+	}
 }
 
 type SimpleExitReasonType int
