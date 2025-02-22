@@ -347,7 +347,7 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 				continue
 			}
 			workPackageHashes := make(map[[32]byte]struct{})
-			for workPackageHash, _ := range w.WorkPackageHashes {
+			for workPackageHash := range w.WorkPackageHashes {
 				if _, exists := accumulatedWorkPackageHashes[workPackageHash]; !exists {
 					workPackageHashes[workPackageHash] = struct{}{}
 				}
@@ -395,10 +395,10 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 			immediatelyAccumulatableWorkReports = append(immediatelyAccumulatableWorkReports, workReport)
 		} else {
 			workPackageHashes := make(map[[32]byte]struct{})
-			for workPackageHash, _ := range workReport.RefinementContext.PrerequisiteWorkPackageHashes {
+			for workPackageHash := range workReport.RefinementContext.PrerequisiteWorkPackageHashes {
 				workPackageHashes[workPackageHash] = struct{}{}
 			}
-			for workPackageHash, _ := range workReport.SegmentRootLookup {
+			for workPackageHash := range workReport.SegmentRootLookup {
 				workPackageHashes[workPackageHash] = struct{}{}
 			}
 			queuedExecutionWorkReports = append(queuedExecutionWorkReports, workreport.WorkReportWithWorkPackageHashes{

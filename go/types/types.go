@@ -108,7 +108,7 @@ type Disputes struct {
 }
 
 func (d Disputes) PunishEd25519Key(key Ed25519PublicKey) bool {
-	for posteriorValidatorPunish, _ := range d.ValidatorPunishes {
+	for posteriorValidatorPunish := range d.ValidatorPunishes {
 		if key == posteriorValidatorPunish {
 			return true
 		}

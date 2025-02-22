@@ -25,7 +25,7 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 1: // fallthrough
 	case 10: // ecalli
 		lx := minInt(4, skipLength)
-		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+1, lx)), int(lx))
+		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+1, lx)), lx)
 		exitReason = NewComplexExitReason(ExitHostCall, vx)
 	case 20: // load_imm_64
 		ra := minInt(12, int(getInstruction(instructions, instructionCounter+Register(1))%16))
@@ -37,32 +37,32 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 33:
 		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)%8))
 		ly := minInt(4, maxInt(0, skipLength-lx-1))
-		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, lx)), int(lx))
-		vy := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)), int(ly))
+		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, lx)), lx)
+		vy := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)), ly)
 		if instruction == 30 { // store_imm_u8
-			nextRam.mutate(vx, byte(vy), memoryAccessExceptionIndices)
+			nextRam.mutate(vx, byte(vy), &memoryAccessExceptionIndices)
 		} else if instruction == 31 { // store_imm_u16
 			serializedVy, err := serializer.Serialize(uint16(vy))
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
 		} else if instruction == 32 { // store_imm_u32
 			serializedVy, err := serializer.Serialize(uint32(vy))
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
 		} else { // // store_imm_u64
 			serializedVy, err := serializer.Serialize(vy)
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serializedVy, memoryAccessExceptionIndices)
+			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
 		}
 	case 40: // jump
 		lx := minInt(4, skipLength)
-		vx := instructionCounter + Register(UnsignedToSigned(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+1, lx)), int(lx)))
+		vx := instructionCounter + Register(UnsignedToSigned(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+1, lx)), lx))
 		exitReason, nextInstructionCounter = branch(vx, true, instructionCounter, basicBlockBeginningOpcodes)
 	case 50:
 	case 51:
@@ -85,39 +85,39 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 		} else if instruction == 51 { // load_imm
 			nextRegisters[ra] = vx
 		} else if instruction == 52 { // load_u8
-			nextRegisters[ra] = Register(ram.inspect(vx, memoryAccessExceptionIndices))
+			nextRegisters[ra] = Register(ram.inspect(vx, &memoryAccessExceptionIndices))
 		} else if instruction == 53 { // load_i8
-			nextRegisters[ra] = signExtendImmediate(uint64(ram.inspect(vx, memoryAccessExceptionIndices)), 1)
+			nextRegisters[ra] = signExtendImmediate(uint64(ram.inspect(vx, &memoryAccessExceptionIndices)), 1)
 		} else if instruction == 54 { // load_u16
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 2, memoryAccessExceptionIndices)))
+			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 2, &memoryAccessExceptionIndices)))
 		} else if instruction == 55 { // load_i16
-			nextRegisters[ra] = signExtendImmediate(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 2, memoryAccessExceptionIndices)), 2)
+			nextRegisters[ra] = signExtendImmediate(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 2, &memoryAccessExceptionIndices)), 2)
 		} else if instruction == 56 { // load_u32
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 4, memoryAccessExceptionIndices)))
+			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 4, &memoryAccessExceptionIndices)))
 		} else if instruction == 57 { // load_i32
-			nextRegisters[ra] = signExtendImmediate(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 4, memoryAccessExceptionIndices)), 4)
+			nextRegisters[ra] = signExtendImmediate(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 4, &memoryAccessExceptionIndices)), 4)
 		} else if instruction == 58 { // load_u64
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 8, memoryAccessExceptionIndices)))
+			nextRegisters[ra] = Register(serializer.DecodeLittleEndianValue(ram.inspectRange(vx, 8, &memoryAccessExceptionIndices)))
 		} else if instruction == 59 { // store_u8
-			nextRam.mutate(vx, uint8(registers[ra]), memoryAccessExceptionIndices)
+			nextRam.mutate(vx, uint8(registers[ra]), &memoryAccessExceptionIndices)
 		} else if instruction == 60 { // store_u16
 			serialized, err := serializer.Serialize(uint16(registers[ra]))
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serialized, memoryAccessExceptionIndices)
+			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
 		} else if instruction == 61 { // store_u32
 			serialized, err := serializer.Serialize(uint32(registers[ra]))
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serialized, memoryAccessExceptionIndices)
-		} else if instruction == 62 { // store_u64
+			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
+		} else { // store_u64
 			serialized, err := serializer.Serialize(registers[ra])
 			if err != nil {
 				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
 			}
-			nextRam.mutateRange(vx, serialized, memoryAccessExceptionIndices)
+			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
 		}
 	}
 	// memory access exception handling
