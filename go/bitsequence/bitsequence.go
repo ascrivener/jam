@@ -283,3 +283,22 @@ func (bs *BitSequence) Xor(other *BitSequence) *BitSequence {
 	}
 	return result
 }
+
+// Rotate returns a new BitSequence with the bits rotated by the given amount.
+// A positive shift rotates the bits left (i.e. moves bits toward lower indices),
+// and a negative shift rotates the bits right (i.e. moves bits toward higher indices).
+func (bs *BitSequence) Rotate(shift int) *BitSequence {
+	n := bs.bitLen
+	newBS := NewZeros(n)
+	if n == 0 {
+		return newBS
+	}
+	// Normalize shift so that it is in the range [0, n).
+	shift = ((shift % n) + n) % n
+
+	for i := range n {
+		// The new bit at position i comes from the old bit at (i+shift) mod n.
+		newBS.SetBitAt(i, bs.BitAt((i+shift)%n))
+	}
+	return newBS
+}

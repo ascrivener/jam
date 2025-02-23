@@ -262,6 +262,7 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 158:
 	case 159:
 	case 160:
+	case 161:
 		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1))%16)
 		rb := minInt(12, int(getInstruction(instructions, instructionCounter+1)/16))
 		lx := minInt(4, maxInt(0, skipLength-1))
@@ -335,36 +336,46 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 			nextRegisters[ra] = signExtendImmediate(4, uint64(vx*(1<<(registers[rb]%32))))
 		case 145: // shlo_r_imm_alt_32
 			nextRegisters[ra] = signExtendImmediate(4, uint64(vx%(1<<32)/(1<<(registers[rb]%32))))
-		case 146:
-			// TODO: Add code for instruction 146
-		case 147:
-			// TODO: Add code for instruction 147
-		case 148:
-			// TODO: Add code for instruction 148
-		case 149:
-			// TODO: Add code for instruction 149
-		case 150:
-			// TODO: Add code for instruction 150
-		case 151:
-			// TODO: Add code for instruction 151
-		case 152:
-			// TODO: Add code for instruction 152
-		case 153:
-			// TODO: Add code for instruction 153
-		case 154:
-			// TODO: Add code for instruction 154
-		case 155:
-			// TODO: Add code for instruction 155
-		case 156:
-			// TODO: Add code for instruction 156
-		case 157:
-			// TODO: Add code for instruction 157
-		case 158:
-			// TODO: Add code for instruction 158
-		case 159:
-			// TODO: Add code for instruction 159
-		case 160:
-			// TODO: Add code for instruction 160
+		case 146: // shar_r_imm_alt_32
+			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(4, uint64(vx))/(1<<(registers[rb]%32))))
+		case 147: // cmov_iz_imm
+			if registers[rb] == 0 {
+				nextRegisters[ra] = vx
+			} else {
+				nextRegisters[ra] = registers[ra]
+			}
+		case 148: // cmov_nz_imm
+			if registers[rb] != 0 {
+				nextRegisters[ra] = vx
+			} else {
+				nextRegisters[ra] = registers[ra]
+			}
+		case 149: // add_imm_64
+			nextRegisters[ra] = registers[rb] + vx
+		case 150: // mul_imm_64
+			nextRegisters[ra] = registers[rb] * vx
+		case 151: // shlo_l_imm_64
+			nextRegisters[ra] = signExtendImmediate(8, uint64(registers[rb]*(1<<(vx%64))))
+		case 152: // shlo_r_imm_64
+			nextRegisters[ra] = signExtendImmediate(8, uint64(registers[rb]/(1<<(vx%64))))
+		case 153: // shar_r_imm_64
+			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(registers[rb]))/(1<<(vx%64))))
+		case 154: // neg_add_imm_64
+			nextRegisters[ra] = vx - registers[rb]
+		case 155: // shlo_l_imm_alt_64
+			nextRegisters[ra] = vx * (1 << (registers[rb] % 64))
+		case 156: // shlo_r_imm_alt_64
+			nextRegisters[ra] = vx / (1 << (registers[rb] % 64))
+		case 157: // shar_r_imm_alt_64
+			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(vx))/(1<<(registers[rb]%64))))
+		case 158: // rot_r_64_imm
+			nextRegisters[ra] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[rb])).Rotate(int(vx))))
+		case 159: // rot_r_64_imm_alt
+			nextRegisters[ra] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(vx)).Rotate(int(registers[rb]))))
+		case 160: // rot_r_32_imm
+			nextRegisters[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(registers[rb])).Rotate(int(vx))))
+		case 161: // rot_r_32_imm_alt
+			nextRegisters[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(vx)).Rotate(int(registers[rb]))))
 		}
 	}
 	// memory access exception handling
