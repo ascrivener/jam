@@ -302,3 +302,28 @@ func (bs *BitSequence) Rotate(shift int) *BitSequence {
 	}
 	return newBS
 }
+
+// Inverse returns a new BitSequence where every bit is the logical NOT of the original.
+func (bs *BitSequence) Invert() *BitSequence {
+	// Create a new buffer that’s a copy of the original buffer.
+	newBuf := make([]byte, len(bs.buf))
+	for i := range bs.buf {
+		newBuf[i] = ^bs.buf[i]
+	}
+
+	// If bitLen is not a multiple of 8, the final byte may include bits
+	// beyond bitLen that are not part of the BitSequence.
+	// We need to mask these bits so they remain 0.
+	rem := bs.bitLen % 8
+	if rem != 0 {
+		// Only the upper 'rem' bits are valid (bits 0..rem-1 in big-endian order).
+		// For example, if rem == 3, valid bits are the three most-significant bits.
+		mask := byte(0xFF << (8 - rem))
+		newBuf[len(newBuf)-1] &= mask
+	}
+
+	return &BitSequence{
+		buf:    newBuf,
+		bitLen: bs.bitLen,
+	}
+}

@@ -2,6 +2,7 @@ package pvm
 
 import (
 	"log"
+	"math/bits"
 	"slices"
 
 	"github.com/ascrivener/jam/bitsequence"
@@ -24,19 +25,19 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 		exitReason = NewSimpleExitReason(ExitPanic)
 	case 1: // fallthrough
 	case 10: // ecalli
-		lx := minInt(4, skipLength)
+		lx := min(4, skipLength)
 		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+1, lx)))
 		exitReason = NewComplexExitReason(ExitHostCall, vx)
 	case 20: // load_imm_64
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+Register(1))%16))
+		ra := min(12, int(getInstruction(instructions, instructionCounter+Register(1))%16))
 		vx := serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, 8))
 		nextRegisters[ra] = Register(vx)
 	case 30:
 	case 31:
 	case 32:
 	case 33:
-		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)%8))
-		ly := minInt(4, maxInt(0, skipLength-lx-1))
+		lx := min(4, int(getInstruction(instructions, instructionCounter+1)%8))
+		ly := min(4, max(0, skipLength-lx-1))
 		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
 		vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)))
 		if instruction == 30 { // store_imm_u8
@@ -52,7 +53,7 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
 		}
 	case 40: // jump
-		lx := minInt(4, skipLength)
+		lx := min(4, skipLength)
 		vx := instructionCounter + Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+1, lx))))
 		exitReason, nextInstructionCounter = branch(vx, true, instructionCounter, basicBlockBeginningOpcodes)
 	case 50:
@@ -68,8 +69,8 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 60:
 	case 61:
 	case 62:
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
-		lx := minInt(4, maxInt(0, skipLength-1))
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		lx := min(4, max(0, skipLength-1))
 		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
 		if instruction == 50 { // jump_ind
 			exitReason, nextInstructionCounter = djump(uint32(registers[ra]+vx), instructionCounter, dynamicJumpTable, basicBlockBeginningOpcodes)
@@ -105,10 +106,10 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 71:
 	case 72:
 	case 73:
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
-		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
+		ra := min(12, getInstruction(instructions, instructionCounter+1)%16)
+		lx := min(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
 		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
-		ly := minInt(4, maxInt(0, skipLength-lx-1))
+		ly := min(4, max(0, skipLength-lx-1))
 		vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)))
 		if instruction == 70 { // store_imm_ind_u8
 			ram.mutate(registers[ra]+vx, uint8(vy), &memoryAccessExceptionIndices)
@@ -133,10 +134,10 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 88:
 	case 89:
 	case 90:
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
-		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		lx := min(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
 		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
-		ly := minInt(4, maxInt(0, skipLength-lx-1))
+		ly := min(4, max(0, skipLength-lx-1))
 		vy := instructionCounter + Register(serializer.UnsignedToSigned(ly, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly))))
 		var cond bool
 		if instruction == 80 { // load_imm_jump
@@ -176,8 +177,8 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 109:
 	case 110:
 	case 111:
-		rd := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)/16))
+		rd := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)/16))
 		if instruction == 100 { // move_reg
 			nextRegisters[rd] = registers[ra]
 		} else if instruction == 101 { // sbrk
@@ -263,9 +264,9 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 	case 159:
 	case 160:
 	case 161:
-		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1))%16)
-		rb := minInt(12, int(getInstruction(instructions, instructionCounter+1)/16))
-		lx := minInt(4, maxInt(0, skipLength-1))
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1))%16)
+		rb := min(12, int(getInstruction(instructions, instructionCounter+1)/16))
+		lx := min(4, max(0, skipLength-1))
 		vx := signExtendImmediate(lx, uint64(serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx))))
 		switch instruction {
 		case 120: // store_ind_u8
@@ -319,7 +320,7 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 		case 140: // shar_r_imm_32
 			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(4, uint64(registers[rb]))/int64(1<<vx%32)))
 		case 141: // neg_add_imm_32
-			nextRegisters[ra] = signExtendImmediate(4, uint64(vx+(1<<32)-registers[rb]))
+			nextRegisters[ra] = signExtendImmediate(4, uint64(vx-registers[rb])) // TODO: change in GP
 		case 142: // set_gt_u_imm
 			if registers[rb] > vx {
 				nextRegisters[ra] = 1
@@ -361,14 +362,14 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 		case 153: // shar_r_imm_64
 			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(registers[rb]))/(1<<(vx%64))))
 		case 154: // neg_add_imm_64
-			nextRegisters[ra] = vx - registers[rb]
+			nextRegisters[ra] = vx - registers[rb] // TODO: change in GP
 		case 155: // shlo_l_imm_alt_64
 			nextRegisters[ra] = vx * (1 << (registers[rb] % 64))
 		case 156: // shlo_r_imm_alt_64
 			nextRegisters[ra] = vx / (1 << (registers[rb] % 64))
 		case 157: // shar_r_imm_alt_64
 			nextRegisters[ra] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(vx))/(1<<(registers[rb]%64))))
-		case 158: // rot_r_64_imm
+		case 158: // rot_r_64_imm TODO: these are left shifts but the name suggests right shifts, change in GP
 			nextRegisters[ra] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[rb])).Rotate(int(vx))))
 		case 159: // rot_r_64_imm_alt
 			nextRegisters[ra] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(vx)).Rotate(int(registers[rb]))))
@@ -376,6 +377,236 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 			nextRegisters[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(registers[rb])).Rotate(int(vx))))
 		case 161: // rot_r_32_imm_alt
 			nextRegisters[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(vx)).Rotate(int(registers[rb]))))
+		}
+	case 170:
+	case 171:
+	case 172:
+	case 173:
+	case 174:
+	case 175:
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		rb := min(12, int(getInstruction(instructions, instructionCounter+1)/16))
+		lx := min(4, max(0, skipLength-1))
+		vx := instructionCounter + Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx))))
+		switch instruction {
+		case 170: // branch_eq
+			exitReason, nextInstructionCounter = branch(vx, registers[ra] == registers[rb], instructionCounter, basicBlockBeginningOpcodes)
+		case 171: // branch_ne
+			exitReason, nextInstructionCounter = branch(vx, registers[ra] != registers[rb], instructionCounter, basicBlockBeginningOpcodes)
+		case 172: // branch_lt_u
+			exitReason, nextInstructionCounter = branch(vx, registers[ra] < registers[rb], instructionCounter, basicBlockBeginningOpcodes)
+		case 173: // branch_lt_s
+			exitReason, nextInstructionCounter = branch(vx, serializer.UnsignedToSigned(8, uint64(registers[ra])) == serializer.UnsignedToSigned(8, uint64(registers[rb])), instructionCounter, basicBlockBeginningOpcodes)
+		case 174: // branch_ge_u
+			exitReason, nextInstructionCounter = branch(vx, registers[ra] >= registers[rb], instructionCounter, basicBlockBeginningOpcodes)
+		case 175: // branch_ge_s
+			exitReason, nextInstructionCounter = branch(vx, serializer.UnsignedToSigned(8, uint64(registers[ra])) >= serializer.UnsignedToSigned(8, uint64(registers[rb])), instructionCounter, basicBlockBeginningOpcodes)
+		}
+	case 180: // load_imm_jump_ind
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		rb := min(12, int(getInstruction(instructions, instructionCounter+1)/16))
+		lx := min(4, int(getInstruction(instructions, instructionCounter+2)%8))
+		ly := min(4, max(0, skipLength-lx-2))
+		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+3, lx)))
+		vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+3+Register(lx), ly)))
+		exitReason, nextInstructionCounter = djump(uint32(registers[rb]+vy), instructionCounter, dynamicJumpTable, basicBlockBeginningOpcodes)
+		nextRegisters[ra] = vx
+	case 190:
+	case 191:
+	case 192:
+	case 193:
+	case 194:
+	case 195:
+	case 196:
+	case 197:
+	case 198:
+	case 199:
+	case 200:
+	case 201:
+	case 202:
+	case 203:
+	case 204:
+	case 205:
+	case 206:
+	case 207:
+	case 208:
+	case 209:
+	case 210:
+	case 211:
+	case 212:
+	case 213:
+	case 214:
+	case 215:
+	case 216:
+	case 217:
+	case 218:
+	case 219:
+	case 220:
+	case 221:
+	case 222:
+	case 223:
+	case 224:
+	case 225:
+	case 226:
+	case 227:
+	case 228:
+	case 229:
+	case 230:
+		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		rb := min(12, int(getInstruction(instructions, instructionCounter+1)/16))
+		rd := min(12, int(getInstruction(instructions, instructionCounter+2)))
+		switch instruction {
+		case 190: // add_32
+			nextRegisters[rd] = signExtendImmediate(4, uint64(registers[ra]+registers[rb]))
+		case 191: // sub_32
+			nextRegisters[rd] = signExtendImmediate(4, uint64(registers[ra]-registers[rb]))
+		case 192: // mul_32
+			nextRegisters[rd] = signExtendImmediate(4, uint64(registers[ra]*registers[rb]))
+		case 193: // div_u_32
+			if uint32(registers[rb]) == 0 {
+				nextRegisters[rd] = (1 << 64) - 1
+			} else {
+				nextRegisters[rd] = signExtendImmediate(4, uint64(uint32(registers[ra])/uint32(registers[rb])))
+			}
+		case 194: // div_s_32
+			a := serializer.UnsignedToSigned(4, uint64(uint32(registers[ra])))
+			b := serializer.UnsignedToSigned(4, uint64(uint32(registers[rb])))
+			if b == 0 {
+				nextRegisters[rd] = (1 << 64) - 1
+			} else if a == -(1<<31) && b == -1 {
+				nextRegisters[rd] = Register(a)
+			} else {
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, a/b))
+			}
+		case 195: // rem_u_32
+			if uint32(registers[rb]) == 0 {
+				nextRegisters[rd] = signExtendImmediate(4, uint64(uint32(registers[ra])))
+			} else {
+				nextRegisters[rd] = signExtendImmediate(4, uint64(uint32(registers[ra])%uint32(registers[rb])))
+			}
+		case 196: // rem_s_32
+			a := serializer.UnsignedToSigned(4, uint64(uint32(registers[ra])))
+			b := serializer.UnsignedToSigned(4, uint64(uint32(registers[rb])))
+			if a == -(1<<31) && b == -1 {
+				nextRegisters[rd] = 0
+			} else {
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, smod(a, b)))
+			}
+		case 197: // shlo_l_32
+			nextRegisters[rd] = signExtendImmediate(4, uint64(uint32(registers[ra]*(1<<(registers[rb]%32)))))
+		case 198: // shlo_r_32
+			nextRegisters[rd] = signExtendImmediate(4, uint64(uint32(registers[ra])/(1<<(registers[rb]%32))))
+		case 199: // shar_r_32
+			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(4, uint64(uint32(registers[ra])))/(1<<(registers[rb]%32))))
+		case 200: // add_64
+			nextRegisters[rd] = registers[ra] + registers[rb]
+		case 201: // sub_64
+			nextRegisters[rd] = registers[ra] - registers[rb] // TODO: change in GP
+		case 202: // mul_64
+			nextRegisters[rd] = registers[ra] * registers[rb]
+		case 203: // div_u_64
+			if registers[rb] == 0 {
+				nextRegisters[rd] = (1 << 64) - 1
+			} else {
+				nextRegisters[rd] = registers[ra] / registers[rb]
+			}
+		case 204: // div_s_64
+			if registers[rb] == 0 {
+				nextRegisters[rd] = (1 << 64) - 1
+			} else if serializer.UnsignedToSigned(8, uint64(registers[ra])) == -(1<<63) && serializer.UnsignedToSigned(8, uint64(registers[rb])) == -1 {
+				nextRegisters[rd] = registers[ra]
+			} else {
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(registers[ra]))/serializer.UnsignedToSigned(8, uint64(registers[rb]))))
+			}
+		case 205: // rem_u_64
+			if registers[rb] == 0 {
+				nextRegisters[rd] = registers[ra]
+			} else {
+				nextRegisters[rd] = registers[ra] % registers[rb]
+			}
+		case 206: // rem_s_64
+			if serializer.UnsignedToSigned(8, uint64(registers[ra])) == -(1<<63) && serializer.UnsignedToSigned(8, uint64(registers[rb])) == -1 {
+				nextRegisters[rd] = 0
+			} else {
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, smod(serializer.UnsignedToSigned(8, uint64(registers[ra])), serializer.UnsignedToSigned(8, uint64(registers[rb])))))
+			}
+		case 207: // shlo_l_64
+			nextRegisters[rd] = registers[ra] * (1 << (registers[rb] % 64))
+		case 208: // shlo_r_64
+			nextRegisters[rd] = registers[ra] / (1 << (registers[rb] % 64))
+		case 209: // shar_r_64
+			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(registers[ra]))/(1<<(registers[rb]%64))))
+		case 210: // and
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).And(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
+		case 211:
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Xor(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
+		case 212:
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Or(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
+		case 213:
+			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(serializer.UnsignedToSigned(8, uint64(registers[ra])), serializer.UnsignedToSigned(8, uint64(registers[rb])))))
+		case 214:
+			hi, _ := bits.Mul64(uint64(registers[ra]), uint64(registers[rb]))
+			nextRegisters[rd] = Register(hi)
+		case 215:
+			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, mulDiv2Pow64(serializer.UnsignedToSigned(8, uint64(registers[ra])), uint64(registers[rb]))))
+		case 216:
+			if registers[ra] < registers[rb] {
+				nextRegisters[rd] = 1
+			} else {
+				nextRegisters[rd] = 0
+			}
+		case 217:
+			if serializer.UnsignedToSigned(8, uint64(registers[ra])) < serializer.UnsignedToSigned(8, uint64(registers[rb])) {
+				nextRegisters[rd] = 1
+			} else {
+				nextRegisters[rd] = 0
+			}
+		case 218:
+			if registers[rb] == 0 {
+				nextRegisters[rd] = registers[ra]
+			} else {
+				nextRegisters[rd] = registers[rd]
+			}
+		case 219:
+			if registers[rb] != 0 {
+				nextRegisters[rd] = registers[ra]
+			} else {
+				nextRegisters[rd] = registers[rd]
+			}
+		case 220: // rot_l_64 TODO: these are wrong in the GP I think, fix in the GP.
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Rotate(-int(registers[rb]))))
+		case 221: // rot_l_32
+			nextRegisters[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(registers[ra])).Rotate(-int(registers[rb]))))
+		case 222: // rot_r_64
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Rotate(int(registers[rb]))))
+		case 223: // rot_r_32
+			nextRegisters[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(4, uint64(registers[ra])).Rotate(int(registers[rb]))))
+		case 224: // and_inv
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceBE(8, uint64(registers[ra])).And(serializer.UintToBitSequenceBE(8, uint64(registers[rb])).Invert())))
+		case 225: // or_inv
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceBE(8, uint64(registers[ra])).Or(serializer.UintToBitSequenceBE(8, uint64(registers[rb])).Invert())))
+		case 226: // xnor
+			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceBE(8, uint64(registers[ra])).Xor(serializer.UintToBitSequenceBE(8, uint64(registers[rb]))).Invert()))
+		case 227: // max TODO: needs signed to unsigned before setting next register? fix in GP
+			l := serializer.UnsignedToSigned(8, uint64(registers[ra]))
+			r := serializer.UnsignedToSigned(8, uint64(registers[rb]))
+			if l > r {
+				nextRegisters[rd] = Register(l)
+			} else {
+				nextRegisters[rd] = Register(r)
+			}
+		case 228: // max_u
+			nextRegisters[rd] = max(registers[ra], registers[rb])
+		case 229: // min TODO: needs signed to unsigned before setting next register? fix in GP
+			l := serializer.UnsignedToSigned(8, uint64(registers[ra]))
+			r := serializer.UnsignedToSigned(8, uint64(registers[rb]))
+			if l < r {
+				nextRegisters[rd] = Register(l)
+			} else {
+				nextRegisters[rd] = Register(r)
+			}
+		case 230: // min_u
+			nextRegisters[rd] = min(registers[ra], registers[rb])
 		}
 	}
 	// memory access exception handling
@@ -472,20 +703,6 @@ func djump(a uint32, instructionCounter Register, dynamicJumpTable []Register, b
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a < b {
-		return b
-	}
-	return a
-}
-
 func minRamIndex(ramIndices []RamIndex) *RamIndex {
 	if len(ramIndices) == 0 {
 		return nil
@@ -539,4 +756,54 @@ func basicBlockBeginningOpcodes(instructions []byte, opcodes bitsequence.BitSequ
 		}
 	}
 	return *basicBlockBeginningOpcodes
+}
+
+func smod(a, b int64) int64 {
+	if b == 0 {
+		return a
+	}
+	absB := b
+	if b < 0 {
+		absB = -b
+	}
+	return a % absB
+}
+
+// floorProductDiv2Pow64Signed computes
+//
+//	⌊(a * b) / 2^64⌋
+//
+// for any int64 values a and b. This function correctly handles negative inputs.
+// The algorithm is based on first computing the 128‐bit product using bits.Mul64
+// (which treats its arguments as unsigned) and then applying corrections for the signs
+// of a and b.
+func floorProductDiv2Pow64Signed(a, b int64) int64 {
+	// Compute the full 128-bit product of a and b using unsigned arithmetic.
+	// Here we convert a and b to uint64 (their two's complement representations).
+	hi, _ := bits.Mul64(uint64(a), uint64(b))
+	// Start with the unsigned high word interpreted as int64.
+	res := int64(hi)
+	// If a is negative, subtract b from the result.
+	if a < 0 {
+		res -= b
+	}
+	// If b is negative, subtract a from the result.
+	if b < 0 {
+		res -= a
+	}
+	return res
+}
+
+// mulDiv2Pow64 computes floor((a * b) / 2^64) for an int64 a and a uint64 b.
+// It uses bits.Mul64 for the unsigned 128-bit product and applies a correction
+// when a is negative.
+func mulDiv2Pow64(a int64, b uint64) int64 {
+	// Multiply treating a as unsigned (its two's complement representation).
+	hi, _ := bits.Mul64(uint64(a), b)
+	res := int64(hi)
+	// For negative a, adjust by subtracting b.
+	if a < 0 {
+		res -= int64(b)
+	}
+	return res
 }
