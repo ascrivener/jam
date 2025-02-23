@@ -117,10 +117,7 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 		})
 
 		// Process StorageDictionary.
-		ones, err := serializer.Serialize(uint32(1<<32 - 1))
-		if err != nil {
-			return nil, err
-		}
+		ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
 		for k, v := range sAccount.StorageDictionary {
 			// Capture k and v.
 			keyK := k
@@ -136,10 +133,7 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 		}
 
 		// Process PreimageLookup.
-		onesMinusOne, err := serializer.Serialize(uint32(1<<32 - 2))
-		if err != nil {
-			return nil, err
-		}
+		onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
 		for h, p := range sAccount.PreimageLookup {
 			// Capture h and p.
 			hashH := h
@@ -160,10 +154,7 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 			lookupKey := k
 			timeslots := t
 
-			blobLengthBytes, err := serializer.Serialize(uint32(lookupKey.BlobLength))
-			if err != nil {
-				return nil, err
-			}
+			blobLengthBytes := serializer.EncodeLittleEndian(4, uint64(lookupKey.BlobLength))
 			preimageHash := blake2b.Sum256(lookupKey.Preimage[:])
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [32]byte {

@@ -13,12 +13,17 @@ const (
 )
 
 type RAM struct {
-	Value  [BytesInRam]byte
-	Access [NumRamPages]RamAccess
+	Value           [RamSize]byte
+	Access          [NumRamPages]RamAccess
+	BeginningOfHeap *RamIndex // nil if no heap
 }
 
 func (r *RAM) accessForIndex(index RamIndex) RamAccess {
-	return r.Access[RamIndex(index)/BytesInPage]
+	return r.Access[index/PageSize]
+}
+
+func (r *RAM) setAccessForIndex(index RamIndex, access RamAccess) {
+	r.Access[index/PageSize] = access
 }
 
 func (r *RAM) inspect(index Register, memoryAccessExceptionIndices *[]RamIndex) byte {

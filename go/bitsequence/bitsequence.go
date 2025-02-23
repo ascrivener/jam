@@ -3,6 +3,7 @@ package bitsequence
 import (
 	"encoding/hex"
 	"fmt"
+	"math/bits"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,18 @@ func New() *BitSequence {
 	return &BitSequence{
 		buf:    []byte{},
 		bitLen: 0,
+	}
+}
+
+// NewZeros creates a new BitSequence with n bits, all initialized to 0.
+func NewZeros(n int) *BitSequence {
+	if n < 0 {
+		panic("NewZeros: negative bit length")
+	}
+	numBytes := (n + 7) / 8 // calculates how many bytes are needed to store n bits
+	return &BitSequence{
+		buf:    make([]byte, numBytes), // slice is zero-initialized
+		bitLen: n,
 	}
 }
 
@@ -160,4 +173,113 @@ func (k BitSeqKey) ToBitSequence() *BitSequence {
 		buf:    data,
 		bitLen: bitLen,
 	}
+}
+
+// SumBits returns the total number of bits set to true in the BitSequence.
+func (bs *BitSequence) SumBits() int {
+	count := 0
+	fullBytes := bs.bitLen / 8
+	// Count ones for all full bytes.
+	for i := range fullBytes {
+		count += bits.OnesCount8(bs.buf[i])
+	}
+	// Count ones in the last partial byte (if any).
+	remaining := bs.bitLen % 8
+	if remaining > 0 {
+		// Create a mask to only consider the upper 'remaining' bits.
+		mask := byte(0xFF << (8 - remaining))
+		count += bits.OnesCount8(bs.buf[fullBytes] & mask)
+	}
+	return count
+}
+
+// LeadingZeros returns the number of consecutive 0 bits
+// starting from the beginning (bit index 0) of the BitSequence.
+func (bs *BitSequence) LeadingZeros() int {
+	count := 0
+	for i := 0; i < bs.bitLen; i++ {
+		if bs.BitAt(i) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// TrailingZeros returns the number of consecutive 0 bits starting from the last bit
+// of the BitSequence (i.e. from index bs.bitLen-1 backwards).
+func (bs *BitSequence) TrailingZeros() int {
+	count := 0
+	// Iterate from the last bit (index bs.bitLen-1) backwards.
+	for i := bs.bitLen - 1; i >= 0; i-- {
+		if bs.BitAt(i) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+// And returns a new BitSequence resulting from the bitwise AND of bs and other.
+// It panics if the two sequences have different lengths.
+func (bs *BitSequence) And(other *BitSequence) *BitSequence {
+	if bs.bitLen != other.bitLen {
+		panic("BitSequence.And: bit sequences must have the same length")
+	}
+	numBytes := (bs.bitLen + 7) / 8
+	result := &BitSequence{
+		buf:    make([]byte, numBytes),
+		bitLen: bs.bitLen,
+	}
+	for i := range numBytes {
+		result.buf[i] = bs.buf[i] & other.buf[i]
+	}
+	// For a partially used last byte, ensure bits beyond bitLen remain zero.
+	if rem := bs.bitLen % 8; rem != 0 {
+		mask := byte(0xFF << (8 - rem))
+		result.buf[numBytes-1] &= mask
+	}
+	return result
+}
+
+// Or returns a new BitSequence resulting from the bitwise OR of bs and other.
+// It panics if the two sequences have different lengths.
+func (bs *BitSequence) Or(other *BitSequence) *BitSequence {
+	if bs.bitLen != other.bitLen {
+		panic("BitSequence.Or: bit sequences must have the same length")
+	}
+	numBytes := (bs.bitLen + 7) / 8
+	result := &BitSequence{
+		buf:    make([]byte, numBytes),
+		bitLen: bs.bitLen,
+	}
+	for i := range numBytes {
+		result.buf[i] = bs.buf[i] | other.buf[i]
+	}
+	if rem := bs.bitLen % 8; rem != 0 {
+		mask := byte(0xFF << (8 - rem))
+		result.buf[numBytes-1] &= mask
+	}
+	return result
+}
+
+// Xor returns a new BitSequence resulting from the bitwise XOR of bs and other.
+// It panics if the two sequences have different lengths.
+func (bs *BitSequence) Xor(other *BitSequence) *BitSequence {
+	if bs.bitLen != other.bitLen {
+		panic("BitSequence.Xor: bit sequences must have the same length")
+	}
+	numBytes := (bs.bitLen + 7) / 8
+	result := &BitSequence{
+		buf:    make([]byte, numBytes),
+		bitLen: bs.bitLen,
+	}
+	for i := range numBytes {
+		result.buf[i] = bs.buf[i] ^ other.buf[i]
+	}
+	if rem := bs.bitLen % 8; rem != 0 {
+		mask := byte(0xFF << (8 - rem))
+		result.buf[numBytes-1] &= mask
+	}
+	return result
 }

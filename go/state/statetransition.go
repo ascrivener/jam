@@ -174,11 +174,8 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 			posteriorSealingKeySequence = sealingkeysequence.NewSealKeyTicketSeries(reorderedTickets)
 		} else {
 			var bandersnatchKeys [constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey
-			for i := 0; i < constants.NumTimeslotsPerEpoch; i++ {
-				iSerialized, err := serializer.Serialize(uint32(i))
-				if err != nil {
-					return SafroleBasicState{}, err
-				}
+			for i := range constants.NumTimeslotsPerEpoch {
+				iSerialized := serializer.EncodeLittleEndian(4, uint64(i))
 				hashedEntropyValue := blake2b.Sum256(append(posteriorEntropyAccumulator[2][:], iSerialized...))
 				posteriorActiveValidatorPKsIndex := binary.LittleEndian.Uint32(hashedEntropyValue[:4])
 				bandersnatchKeys[i] = posteriorValidatorKeysetsActive[int(posteriorActiveValidatorPKsIndex)%len(posteriorValidatorKeysetsActive)].ToBandersnatchPublicKey()

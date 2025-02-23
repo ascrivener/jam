@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math/bits"
 	"reflect"
 	"sort"
@@ -76,7 +75,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		}
 
 		// Otherwise, for structs, iterate over and serialize all fields.
-		for i := 0; i < v.NumField(); i++ {
+		for i := range v.NumField() {
 			if err := serializeValue(v.Field(i), buf); err != nil {
 				return err
 			}
@@ -89,10 +88,23 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 	case reflect.Array, reflect.Slice:
 		return serializeSlice(v, buf)
 
-	// Handle all integer types (signed and unsigned) by writing their little-endian representation.
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return writeIntOrUintLittleEndian(buf, v)
+		// Handle all integer types (signed and unsigned) by writing their little-endian representation.
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		l := int(v.Type().Size()) // number of octets to encode
+		signedVal := v.Int()
+		var x uint64
+		if signedVal < 0 {
+			x = SignedToUnsigned(l, signedVal)
+		} else {
+			x = uint64(signedVal)
+		}
+		buf.Write(EncodeLittleEndian(l, x))
+		return nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		l := int(v.Type().Size())
+		x := v.Uint()
+		buf.Write(EncodeLittleEndian(l, x))
+		return nil
 
 	default:
 		return fmt.Errorf("unsupported type: %s", v.Type().String())
@@ -205,47 +217,97 @@ func appendLengthEncoding(v reflect.Value, buf *bytes.Buffer) error {
 	return nil
 }
 
-// writeIntOrUintLittleEndian writes an integer (signed or unsigned) in little-endian format.
-func writeIntOrUintLittleEndian(buf io.Writer, v reflect.Value) error {
-	// Determine the number of bytes for this integer type.
-	size := int(v.Type().Size())
-	tmp := make([]byte, size)
-
-	// Extract the value as a uint64.
-	// For signed types, v.Int() returns the two's complement value.
-	var value uint64
-	switch v.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		value = uint64(v.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		value = v.Uint()
-	default:
-		return fmt.Errorf("unsupported type: %s", v.Type())
+func EncodeLittleEndian(octets int, x uint64) []byte {
+	result := make([]byte, octets)
+	for i := range octets {
+		result[i] = byte(x % 256)
+		x /= 256
 	}
-
-	// Write the value into the temporary buffer in little-endian order.
-	switch size {
-	case 1:
-		tmp[0] = byte(value)
-	case 2:
-		binary.LittleEndian.PutUint16(tmp, uint16(value))
-	case 4:
-		binary.LittleEndian.PutUint32(tmp, uint32(value))
-	case 8:
-		binary.LittleEndian.PutUint64(tmp, value)
-	default:
-		return io.ErrShortWrite
-	}
-
-	// Write the bytes to the provided writer.
-	_, err := buf.Write(tmp)
-	return err
+	return result
 }
 
-func DecodeLittleEndianValue(b []byte) uint64 {
+func DecodeLittleEndian(b []byte) uint64 {
 	var x uint64
 	for i, v := range b {
 		x |= uint64(v) << (8 * i)
+	}
+	return x
+}
+
+// UnsignedToSigned converts an unsigned integer x (assumed to be in [0, 2^(8*n)))
+// into its two's complement signed representation as an int64.
+// If x is less than 2^(8*n-1), it is interpreted as positive; otherwise, we subtract 2^(8*n).
+func UnsignedToSigned(octets int, x uint64) int64 {
+	totalBits := 8 * octets
+	if totalBits > 64 {
+		panic(fmt.Sprintf("Unsupported octet width: %d (max 8 allowed)", octets))
+	}
+	signBit := uint64(1) << uint(totalBits-1)
+	modVal := uint64(1) << uint(totalBits)
+	if x < signBit {
+		return int64(x)
+	}
+	return int64(x) - int64(modVal)
+}
+
+// SignedToUnsigned converts a signed integer a, assumed to be in the range
+// [ -2^(8*l-1), 2^(8*l-1) - 1 ], into its unsigned natural representation
+// in [0, 2^(8*l)).
+func SignedToUnsigned(octets int, a int64) uint64 {
+	totalBits := 8 * octets
+	modVal := uint64(1) << uint(totalBits)
+	// Adjust a so that negative values wrap around properly.
+	return (modVal + uint64(a)) % modVal
+}
+
+// UintToBitsLE converts an unsigned integer x (with x in [0, 2^(8*n)))
+// into a bit vector of length 8*n in little-endian order. That is, the bit at index 0
+// is the least-significant bit of x.
+func UintToBitSequenceLE(octets int, x uint64) *bitsequence.BitSequence {
+	total := 8 * octets
+	bs := bitsequence.NewZeros(total) // Create a BitSequence of 'total' bits, all initialized to false.
+	for i := range total {
+		// Set bit i if the i-th bit of x (starting from LSB) is 1.
+		bs.SetBitAt(i, ((x>>uint(i))&1) == 1)
+	}
+	return bs
+}
+
+// BitsToUintLE converts a bit vector (in little-endian order) back into an unsigned integer.
+// It assumes bits[0] is the least-significant bit.
+func BitSequenceToUintLE(bs *bitsequence.BitSequence) uint64 {
+	var x uint64 = 0
+	total := bs.Len()
+	for i := range total {
+		if bs.BitAt(i) {
+			x |= 1 << uint(i)
+		}
+	}
+	return x
+}
+
+// UintToBitsBE converts an unsigned integer x (with x in [0, 2^(8*n)))
+// into a bit vector of length 8*n in big-endian order. That is, the bit at index 0
+// is the most-significant bit.
+func UintToBitSequenceBE(octets int, x uint64) *bitsequence.BitSequence {
+	total := 8 * octets
+	bs := bitsequence.NewZeros(total)
+	for i := range total {
+		// For big-endian, bit at index i corresponds to the bit at position (total-1-i) in x.
+		bs.SetBitAt(i, ((x>>uint(total-1-i))&1) == 1)
+	}
+	return bs
+}
+
+// BitsToUintBE converts a bit vector (in big-endian order) back into an unsigned integer.
+// It assumes bits[0] is the most-significant bit.
+func BitSequenceToUintBE(bs *bitsequence.BitSequence) uint64 {
+	total := bs.Len()
+	var x uint64 = 0
+	for i := range total {
+		if bs.BitAt(i) {
+			x |= 1 << uint(total-1-i)
+		}
 	}
 	return x
 }
