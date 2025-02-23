@@ -119,6 +119,78 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 			}
 			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
 		}
+	case 70:
+	case 71:
+	case 72:
+	case 73:
+		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
+		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, lx)), lx)
+		ly := minInt(4, maxInt(0, skipLength-lx-1))
+		vy := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)), ly)
+		if instruction == 70 { // store_imm_ind_u8
+			ram.mutate(registers[ra]+vx, uint8(vy), &memoryAccessExceptionIndices)
+		} else if instruction == 71 { // store_imm_ind_u16
+			serialized, err := serializer.Serialize(uint16(vy))
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
+			}
+			ram.mutateRange(registers[ra]+vx, serialized, &memoryAccessExceptionIndices)
+		} else if instruction == 72 { // store_imm_ind_u32
+			serialized, err := serializer.Serialize(uint32(vy))
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
+			}
+			ram.mutateRange(registers[ra]+vx, serialized, &memoryAccessExceptionIndices)
+		} else { // store_imm_ind_u64
+			serialized, err := serializer.Serialize(vy)
+			if err != nil {
+				return ExitReason{}, 0, 0, [13]Register{}, &RAM{}, err
+			}
+			ram.mutateRange(registers[ra]+vx, serialized, &memoryAccessExceptionIndices)
+		}
+	case 80:
+	case 81:
+	case 82:
+	case 83:
+	case 84:
+	case 85:
+	case 86:
+	case 87:
+	case 88:
+	case 89:
+	case 90:
+		ra := minInt(12, int(getInstruction(instructions, instructionCounter+1)%16))
+		lx := minInt(4, int(getInstruction(instructions, instructionCounter+1)/16)%8)
+		vx := signExtendImmediate(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2, lx)), lx)
+		ly := minInt(4, maxInt(0, skipLength-lx-1))
+		vy := instructionCounter + Register(UnsignedToSigned(serializer.DecodeLittleEndianValue(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)), ly))
+		var cond bool
+		if instruction == 80 { // load_imm_jump
+			nextRegisters[ra] = vx
+			cond = true
+		} else if instruction == 81 { // branch_eq_imm
+			cond = registers[ra] == vx
+		} else if instruction == 82 { // branch_ne_imm
+			cond = registers[ra] != vx
+		} else if instruction == 83 { // branch_lt_u_imm
+			cond = registers[ra] < vx
+		} else if instruction == 84 { // branch_le_u_imm
+			cond = registers[ra] <= vx
+		} else if instruction == 85 { // branch_ge_u_imm
+			cond = registers[ra] >= vx
+		} else if instruction == 86 { // branch_gt_u_imm
+			cond = registers[ra] > vx
+		} else if instruction == 87 { // branch_lt_s_imm
+			cond = (UnsignedToSigned(uint64(registers[ra]), 8) < UnsignedToSigned(uint64(vx), 8))
+		} else if instruction == 88 { // branch_le_s_imm
+			cond = (UnsignedToSigned(uint64(registers[ra]), 8) <= UnsignedToSigned(uint64(vx), 8))
+		} else if instruction == 89 { // branch_ge_s_imm
+			cond = (UnsignedToSigned(uint64(registers[ra]), 8) >= UnsignedToSigned(uint64(vx), 8))
+		} else { // branch_gt_s_imm
+			cond = (UnsignedToSigned(uint64(registers[ra]), 8) > UnsignedToSigned(uint64(vx), 8))
+		}
+		exitReason, nextInstructionCounter = branch(vy, cond, instructionCounter, basicBlockBeginningOpcodes)
 	}
 	// memory access exception handling
 	minRamIndex := minRamIndex(memoryAccessExceptionIndices)
