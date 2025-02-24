@@ -61,7 +61,7 @@ func sliceToArray32(b []byte) [32]byte {
 
 // --- State Serializer ---
 
-func StateSerializer(state State) (map[[32]byte][]byte, error) {
+func StateSerializer(state State) map[[32]byte][]byte {
 	serialized := make(map[[32]byte][]byte)
 
 	type StateComponent struct {
@@ -168,12 +168,9 @@ func StateSerializer(state State) (map[[32]byte][]byte, error) {
 
 	// Serialize each state component.
 	for _, comp := range stateComponents {
-		serializedData, err := serializer.Serialize(comp.data)
-		if err != nil {
-			return nil, err
-		}
+		serializedData := serializer.Serialize(comp.data)
 		serialized[comp.keyFunc()] = serializedData
 	}
 
-	return serialized, nil
+	return serialized
 }

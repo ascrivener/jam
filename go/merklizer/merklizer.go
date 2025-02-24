@@ -8,11 +8,8 @@ import (
 	"github.com/ascrivener/jam/state"
 )
 
-func MerklizeState(s state.State) ([32]byte, error) {
-	serializedState, err := state.StateSerializer(s)
-	if err != nil {
-		return [32]byte{}, err
-	}
+func MerklizeState(s state.State) [32]byte {
+	serializedState := state.StateSerializer(s)
 	bitSeqKeyMap := make(map[bitsequence.BitSeqKey][]byte)
 	for k, v := range serializedState {
 		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = v
@@ -21,18 +18,15 @@ func MerklizeState(s state.State) ([32]byte, error) {
 	return merklizeStateRecurser(bitSeqKeyMap)
 }
 
-func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) ([32]byte, error) {
+func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) [32]byte {
 	if len(bitSeqKeyMap) == 0 {
-		return [32]byte{}, nil
+		return [32]byte{}
 	}
 	if len(bitSeqKeyMap) == 1 {
 		bs := bitsequence.New()
 		for key, value := range bitSeqKeyMap {
 			if len(value) <= 32 {
-				serializedEmbeddedValueSize, err := serializer.Serialize(uint8(len(value)))
-				if err != nil {
-					return [32]byte{}, err
-				}
+				serializedEmbeddedValueSize := serializer.Serialize(uint8(len(value)))
 				bs.AppendBits([]bool{true, false})
 				bs.Concat(bitsequence.FromBytes(serializedEmbeddedValueSize).SubsequenceFrom(2))
 				bs.Concat(key.ToBitSequence().SubsequenceTo(248))
@@ -48,7 +42,7 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) ([32]b
 			}
 			break
 		}
-		return blake2b.Sum256(bs.Bytes()), nil
+		return blake2b.Sum256(bs.Bytes())
 	}
 
 	leftMap := make(map[bitsequence.BitSeqKey][]byte)
@@ -73,18 +67,12 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) ([32]b
 		}
 	}
 
-	leftSubtrieHash, err := merklizeStateRecurser(leftMap)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	rightSubtrieHash, err := merklizeStateRecurser(rightMap)
-	if err != nil {
-		return [32]byte{}, err
-	}
+	leftSubtrieHash := merklizeStateRecurser(leftMap)
+	rightSubtrieHash := merklizeStateRecurser(rightMap)
 	bs := bitsequence.New()
 	bs.AppendBit(false)
 	bs.Concat(bitsequence.FromBytes(leftSubtrieHash[:]).SubsequenceFrom(1))
 	bs.Concat(bitsequence.FromBytes(rightSubtrieHash[:]))
 
-	return blake2b.Sum256(bs.Bytes()), nil
+	return blake2b.Sum256(bs.Bytes())
 }

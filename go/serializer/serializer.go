@@ -2,7 +2,6 @@ package serializer
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"math/bits"
 	"reflect"
@@ -15,80 +14,68 @@ import (
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
 // For struct fields it recurses; if a field is a byte array/slice, it returns the raw bytes.
-func Serialize(v interface{}) ([]byte, error) {
+func Serialize(v any) []byte {
 	var buf bytes.Buffer
-	if err := serializeValue(reflect.ValueOf(v), &buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	serializeValue(reflect.ValueOf(v), &buf)
+	return buf.Bytes()
 }
 
 // serializeValue is the recursive helper that writes the serialized form of v into buf.
-func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
-	// If v is a pointer, encode nil as 0; otherwise, write 1 and serialize its element.
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return buf.WriteByte(0)
-		}
-		if err := buf.WriteByte(1); err != nil {
-			return err
-		}
-		return serializeValue(v.Elem(), buf)
-	}
-
+func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			buf.WriteByte(0)
+		} else {
+			buf.WriteByte(1)
+		}
+		serializeValue(v.Elem(), buf)
+		return
 	case reflect.Struct:
-		// Special handling for workreport.WorkOutput.
-		if v.Type() == reflect.TypeOf(workreport.WorkOutput{}) {
+		// Special handling based on the concrete type of the struct.
+		switch v.Type() {
+		case reflect.TypeOf(workreport.WorkOutput{}):
 			wo := v.Interface().(workreport.WorkOutput)
 			if !wo.HasError() {
 				// Tag 0 indicates valid data; then, recursively encode the Data field.
-				if err := buf.WriteByte(0); err != nil {
-					return err
-				}
-				return serializeValue(reflect.ValueOf(wo.Data), buf)
-			}
-			// If there is an error, write the error value as a single octet.
-			return buf.WriteByte(byte(wo.Err))
-		}
-
-		if v.Type() == reflect.TypeOf(sealingkeysequence.SealingKeySequence{}) {
-			sealingKeySequence := v.Interface().(sealingkeysequence.SealingKeySequence)
-			if sealingKeySequence.IsSealKeyTickets() {
-				if err := buf.WriteByte(0); err != nil {
-					return err
-				}
-				return serializeValue(reflect.ValueOf(sealingKeySequence.SealKeyTickets), buf)
+				buf.WriteByte(0)
+				serializeValue(reflect.ValueOf(wo.Data), buf)
 			} else {
-				if err := buf.WriteByte(1); err != nil {
-					return err
-				}
-				return serializeValue(reflect.ValueOf(sealingKeySequence.BandersnatchKeys), buf)
+				// Write the error value as a single octet.
+				buf.WriteByte(byte(wo.Err))
 			}
-		}
-
-		// Special case for BitSequence
-		if v.Type() == reflect.TypeOf(bitsequence.BitSequence{}) {
+			return
+		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
+			sks := v.Interface().(sealingkeysequence.SealingKeySequence)
+			if sks.IsSealKeyTickets() {
+				buf.WriteByte(0)
+				serializeValue(reflect.ValueOf(sks.SealKeyTickets), buf)
+			} else {
+				buf.WriteByte(1)
+				serializeValue(reflect.ValueOf(sks.BandersnatchKeys), buf)
+			}
+			return
+		case reflect.TypeOf(bitsequence.BitSequence{}):
 			bs := v.Interface().(bitsequence.BitSequence)
-			_, err := buf.Write(bs.Bytes())
-			return err
-		}
-
-		// Otherwise, for structs, iterate over and serialize all fields.
-		for i := range v.NumField() {
-			if err := serializeValue(v.Field(i), buf); err != nil {
-				return err
+			buf.Write(bs.Bytes())
+			return
+		default:
+			// For other structs, iterate over all fields.
+			for i := 0; i < v.NumField(); i++ {
+				serializeValue(v.Field(i), buf)
 			}
+			return
 		}
-		return nil
 
 	case reflect.Map:
-		return serializeMap(v, buf)
+		serializeMap(v, buf)
+		return
 
 	case reflect.Array, reflect.Slice:
-		return serializeSlice(v, buf)
+		serializeSlice(v, buf)
+		return
 
-		// Handle all integer types (signed and unsigned) by writing their little-endian representation.
+	// Handle integer types by writing their little-endian representation.
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		l := int(v.Type().Size()) // number of octets to encode
 		signedVal := v.Int()
@@ -99,22 +86,23 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			x = uint64(signedVal)
 		}
 		buf.Write(EncodeLittleEndian(l, x))
-		return nil
+		return
+
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		l := int(v.Type().Size())
 		x := v.Uint()
 		buf.Write(EncodeLittleEndian(l, x))
-		return nil
+		return
 
 	default:
-		return fmt.Errorf("unsupported type: %s", v.Type().String())
+		panic(fmt.Sprintf("unsupported kind: %s", v.Kind()))
 	}
 }
 
 // serializeMap handles map serialization.
 // For maps with value type struct{} (used as sets), it serializes the sorted keys.
 // Otherwise, it writes the length encoding, then each key/value pair in key order.
-func serializeMap(v reflect.Value, buf *bytes.Buffer) error {
+func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 	// Extract and sort the map keys.
 	keys := v.MapKeys()
 	sort.Slice(keys, func(i, j int) bool {
@@ -137,46 +125,31 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) error {
 	// If the map is used as a set (value type is struct{}), simply serialize the keys.
 	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
 		for _, key := range keys {
-			if err := serializeValue(key, buf); err != nil {
-				return err
-			}
+			serializeValue(key, buf)
 		}
-		return nil
-	}
-
-	// For a normal map, first append the length encoding.
-	if err := appendLengthEncoding(v, buf); err != nil {
-		return err
-	}
-	// Then serialize each key followed by its associated value.
-	for _, key := range keys {
-		if err := serializeValue(key, buf); err != nil {
-			return err
-		}
-		if err := serializeValue(v.MapIndex(key), buf); err != nil {
-			return err
+	} else {
+		// For a normal map, first append the length encoding.
+		buf.Write(EncodeLength(v))
+		// Then serialize each key followed by its associated value.
+		for _, key := range keys {
+			serializeValue(key, buf)
+			serializeValue(v.MapIndex(key), buf)
 		}
 	}
-	return nil
 }
 
 // serializeSlice handles array/slice serialization.
 // For slices (but not arrays), it encodes the length first.
 // For boolean slices, it bit-packs the booleans; otherwise, it serializes each element.
-func serializeSlice(v reflect.Value, buf *bytes.Buffer) error {
+func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
 	if v.Kind() == reflect.Slice {
-		if err := appendLengthEncoding(v, buf); err != nil {
-			return err
-		}
+		buf.Write(EncodeLength(v))
 	}
 
 	// For other slices/arrays, serialize each element.
-	for i := 0; i < v.Len(); i++ {
-		if err := serializeValue(v.Index(i), buf); err != nil {
-			return err
-		}
+	for i := range v.Len() {
+		serializeValue(v.Index(i), buf)
 	}
-	return nil
 }
 
 // appendLengthEncoding encodes the length (v.Len()) of a collection into buf.
@@ -184,37 +157,34 @@ func serializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 //  1. x == 0: output a single 0x00 octet.
 //  2. x fits in a computed header + remainder format.
 //  3. Otherwise, output 0xFF followed by x as 8 little-endian octets.
-func appendLengthEncoding(v reflect.Value, buf *bytes.Buffer) error {
+func EncodeLength(v reflect.Value) []byte {
 	x := uint64(v.Len())
+	var result []byte
 	if x == 0 {
-		return buf.WriteByte(0x00)
+		return []byte{0x00}
 	}
 
 	// Compute l = floor(log2(x)) / 7.
 	l := uint((bits.Len64(x) - 1) / 7)
 	if l <= 7 && x < (uint64(1)<<(7*l+1)) {
+		// Compute the header byte.
 		header := (1 << 8) - (1 << (8 - l)) + (x >> (8 * l))
-		if err := buf.WriteByte(byte(header)); err != nil {
-			return err
-		}
+		result = append(result, byte(header))
 		if l > 0 {
+			// Compute the remainder and append its bytes in little-endian order.
 			remainder := x & ((uint64(1) << (8 * l)) - 1)
 			for i := uint(0); i < l; i++ {
-				if err := buf.WriteByte(byte((remainder >> (8 * i)) & 0xFF)); err != nil {
-					return err
-				}
+				result = append(result, byte((remainder>>(8*i))&0xFF))
 			}
 		}
 	} else {
-		// Fallback: x < 2^64. Write 0xFF followed by x in 8 little-endian octets.
-		if err := buf.WriteByte(0xFF); err != nil {
-			return err
-		}
-		if err := binary.Write(buf, binary.LittleEndian, x); err != nil {
-			return err
+		// Fallback: write 0xFF followed by x in 8 little-endian octets.
+		result = append(result, 0xFF)
+		for i := range 8 {
+			result = append(result, byte((x>>(8*i))&0xFF))
 		}
 	}
-	return nil
+	return result
 }
 
 func EncodeLittleEndian(octets int, x uint64) []byte {

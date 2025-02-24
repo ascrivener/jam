@@ -279,16 +279,13 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 }
 
 // destroys priorPendingReports
-func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) ([constants.NumCores]*PendingReport, error) {
+func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
 	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
 	for c, value := range priorPendingReports {
 		if value == nil {
 			continue
 		}
-		serializedWorkReport, err := serializer.Serialize(value.WorkReport)
-		if err != nil {
-			return [constants.NumCores]*PendingReport{}, err
-		}
+		serializedWorkReport := serializer.Serialize(value.WorkReport)
 		workReportHash := blake2b.Sum256(serializedWorkReport)
 		if validJudgementsSum, exists := validJudgementsMap[workReportHash]; exists {
 			if validJudgementsSum < constants.TwoThirdsNumValidators {
@@ -297,7 +294,7 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 		}
 	}
 
-	return priorPendingReports, nil
+	return priorPendingReports
 }
 
 // destroys postJudgementIntermediatePendingReports

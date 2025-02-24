@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"fmt"
 	"log"
 	"math/bits"
 	"slices"
@@ -10,98 +11,65 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJumpTable []Register, instructionCounter Register, gas types.GasValue, registers [13]Register, ram *RAM) (ExitReason, Register, types.SignedGasValue, [13]Register, *RAM, error) {
-	exitReason := NewSimpleExitReason(ExitGo)
-	skipLength := skip(instructionCounter, opcodes)
-	basicBlockBeginningOpcodes := basicBlockBeginningOpcodes(instructions, opcodes)
-	memoryAccessExceptionIndices := []RamIndex{}
-	nextInstructionCounter := instructionCounter + 1 + Register(skipLength)
-	nextGas := types.SignedGasValue(gas)
-	nextRegisters := registers
-	nextRam := ram
-	instruction := getInstruction(instructions, instructionCounter)
+type State struct {
+	InstructionCounter Register
+	Gas                types.SignedGasValue
+	Registers          [13]Register
+	RAM                *RAM
+	ExitReason         ExitReason
+}
+
+type InstructionContext struct {
+	State                      *State // Contains instruction counter, registers, RAM, gas, etc.
+	Instructions               []byte // The instruction stream.
+	Instruction                byte
+	CurInstructionCounter      Register
+	Opcodes                    bitsequence.BitSequence // The bitsequence of special opcodes.
+	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
+	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
+	SkipLength                 int                     // Computed skip length for the current instruction.
+	MemAccessExceptionIndices  *[]RamIndex             // Pointer to a slice collecting memory access exceptions.
+}
+
+type InstructionHandler func(ctx *InstructionContext)
+
+var dispatchTable map[byte]InstructionHandler
+
+func SingleStep(state *State, instructions []byte, opcodes bitsequence.BitSequence, dynamicJumpTable []Register) {
+	instruction := getInstruction(instructions, state.InstructionCounter)
+	skipLength := skip(state.InstructionCounter, opcodes)
+
+	curIC := state.InstructionCounter
+	state.InstructionCounter += 1 + Register(skipLength)
+
+	ctx := InstructionContext{
+		State:                      state,
+		Instructions:               instructions,
+		Instruction:                instruction,
+		CurInstructionCounter:      curIC,
+		Opcodes:                    opcodes,
+		DynamicJumpTable:           dynamicJumpTable,
+		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes(instructions, opcodes),
+		SkipLength:                 skipLength,
+		MemAccessExceptionIndices:  &[]RamIndex{},
+	}
+
+	if instructionHandler, ok := dispatchTable[instruction]; ok && instructionHandler != nil {
+		instructionHandler(&ctx)
+	} else {
+		panic(fmt.Errorf("unknown instruction: %d", instruction))
+	}
+
+	minRamIndex := minRamIndex(*ctx.MemAccessExceptionIndices)
+	if minRamIndex != nil {
+		if *minRamIndex < MinValidRamIndex {
+			state.ExitReason = NewSimpleExitReason(ExitPanic)
+		} else {
+			state.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
+		}
+	}
+
 	switch instruction {
-	case 0: // trap
-		exitReason = NewSimpleExitReason(ExitPanic)
-	case 1: // fallthrough
-	case 10: // ecalli
-		lx := min(4, skipLength)
-		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+1, lx)))
-		exitReason = NewComplexExitReason(ExitHostCall, vx)
-	case 20: // load_imm_64
-		ra := min(12, int(getInstruction(instructions, instructionCounter+Register(1))%16))
-		vx := serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, 8))
-		nextRegisters[ra] = Register(vx)
-	case 30:
-	case 31:
-	case 32:
-	case 33:
-		lx := min(4, int(getInstruction(instructions, instructionCounter+1)%8))
-		ly := min(4, max(0, skipLength-lx-1))
-		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
-		vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2+Register(lx), ly)))
-		if instruction == 30 { // store_imm_u8
-			nextRam.mutate(vx, byte(vy), &memoryAccessExceptionIndices)
-		} else if instruction == 31 { // store_imm_u16
-			serializedVy := serializer.EncodeLittleEndian(2, uint64(vy))
-			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
-		} else if instruction == 32 { // store_imm_u32
-			serializedVy := serializer.EncodeLittleEndian(4, uint64(vy))
-			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
-		} else { // // store_imm_u64
-			serializedVy := serializer.EncodeLittleEndian(8, uint64(vy))
-			nextRam.mutateRange(vx, serializedVy, &memoryAccessExceptionIndices)
-		}
-	case 40: // jump
-		lx := min(4, skipLength)
-		vx := instructionCounter + Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+1, lx))))
-		exitReason, nextInstructionCounter = branch(vx, true, instructionCounter, basicBlockBeginningOpcodes)
-	case 50:
-	case 51:
-	case 52:
-	case 53:
-	case 54:
-	case 55:
-	case 56:
-	case 57:
-	case 58:
-	case 59:
-	case 60:
-	case 61:
-	case 62:
-		ra := min(12, int(getInstruction(instructions, instructionCounter+1)%16))
-		lx := min(4, max(0, skipLength-1))
-		vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(instructions, instructionCounter+2, lx)))
-		if instruction == 50 { // jump_ind
-			exitReason, nextInstructionCounter = djump(uint32(registers[ra]+vx), instructionCounter, dynamicJumpTable, basicBlockBeginningOpcodes)
-		} else if instruction == 51 { // load_imm
-			nextRegisters[ra] = vx
-		} else if instruction == 52 { // load_u8
-			nextRegisters[ra] = Register(ram.inspect(vx, &memoryAccessExceptionIndices))
-		} else if instruction == 53 { // load_i8
-			nextRegisters[ra] = signExtendImmediate(1, uint64(ram.inspect(vx, &memoryAccessExceptionIndices)))
-		} else if instruction == 54 { // load_u16
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndian(ram.inspectRange(vx, 2, &memoryAccessExceptionIndices)))
-		} else if instruction == 55 { // load_i16
-			nextRegisters[ra] = signExtendImmediate(2, serializer.DecodeLittleEndian(ram.inspectRange(vx, 2, &memoryAccessExceptionIndices)))
-		} else if instruction == 56 { // load_u32
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndian(ram.inspectRange(vx, 4, &memoryAccessExceptionIndices)))
-		} else if instruction == 57 { // load_i32
-			nextRegisters[ra] = signExtendImmediate(4, serializer.DecodeLittleEndian(ram.inspectRange(vx, 4, &memoryAccessExceptionIndices)))
-		} else if instruction == 58 { // load_u64
-			nextRegisters[ra] = Register(serializer.DecodeLittleEndian(ram.inspectRange(vx, 8, &memoryAccessExceptionIndices)))
-		} else if instruction == 59 { // store_u8
-			nextRam.mutate(vx, uint8(registers[ra]), &memoryAccessExceptionIndices)
-		} else if instruction == 60 { // store_u16
-			serialized := serializer.EncodeLittleEndian(2, uint64(registers[ra]))
-			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
-		} else if instruction == 61 { // store_u32
-			serialized := serializer.EncodeLittleEndian(4, uint64(registers[ra]))
-			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
-		} else { // store_u64
-			serialized := serializer.EncodeLittleEndian(8, uint64(registers[ra]))
-			nextRam.mutateRange(vx, serialized, &memoryAccessExceptionIndices)
-		}
 	case 70:
 	case 71:
 	case 72:
@@ -538,36 +506,36 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(8, uint64(registers[ra]))/(1<<(registers[rb]%64))))
 		case 210: // and
 			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).And(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
-		case 211:
+		case 211: // xor
 			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Xor(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
-		case 212:
+		case 212: // or
 			nextRegisters[rd] = Register(serializer.BitSequenceToUintLE(serializer.UintToBitSequenceLE(8, uint64(registers[ra])).Or(serializer.UintToBitSequenceLE(8, uint64(registers[rb])))))
-		case 213:
+		case 213: // mul_upper_s_s
 			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(serializer.UnsignedToSigned(8, uint64(registers[ra])), serializer.UnsignedToSigned(8, uint64(registers[rb])))))
-		case 214:
+		case 214: // mul_upper_u_u
 			hi, _ := bits.Mul64(uint64(registers[ra]), uint64(registers[rb]))
 			nextRegisters[rd] = Register(hi)
-		case 215:
+		case 215: // mul_upper_s_u
 			nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, mulDiv2Pow64(serializer.UnsignedToSigned(8, uint64(registers[ra])), uint64(registers[rb]))))
-		case 216:
+		case 216: // set_lt_u
 			if registers[ra] < registers[rb] {
 				nextRegisters[rd] = 1
 			} else {
 				nextRegisters[rd] = 0
 			}
-		case 217:
+		case 217: // set_lt_s
 			if serializer.UnsignedToSigned(8, uint64(registers[ra])) < serializer.UnsignedToSigned(8, uint64(registers[rb])) {
 				nextRegisters[rd] = 1
 			} else {
 				nextRegisters[rd] = 0
 			}
-		case 218:
+		case 218: // cmov_iz
 			if registers[rb] == 0 {
 				nextRegisters[rd] = registers[ra]
 			} else {
 				nextRegisters[rd] = registers[rd]
 			}
-		case 219:
+		case 219: // cmov_nz
 			if registers[rb] != 0 {
 				nextRegisters[rd] = registers[ra]
 			} else {
@@ -619,7 +587,7 @@ func SingleStep(instructions []byte, opcodes bitsequence.BitSequence, dynamicJum
 		}
 	}
 
-	return exitReason, nextInstructionCounter, nextGas, nextRegisters, nextRam, nil
+	return exitReason, nextInstructionCounter, nextGas, nextRegisters, nextRam
 }
 
 func getInstruction(instructions []byte, instructionCounter Register) byte {
@@ -634,10 +602,7 @@ func getInstructionRange(instructions []byte, instructionCounter Register, count
 	if start >= len(instructions) {
 		return []byte{}
 	}
-	end := start + count
-	if end > len(instructions) {
-		end = len(instructions)
-	}
+	end := min(start+count, len(instructions))
 	return instructions[start:end]
 }
 
