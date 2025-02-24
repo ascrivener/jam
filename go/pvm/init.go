@@ -2,10 +2,10 @@ package pvm
 
 func init() {
 	dispatchTable = map[byte]InstructionHandler{
-		0:  handleTrap,        // trap
-		1:  handleFallthrough, // fallthrough
-		10: handleEcalli,      // ecalli
-		20: handleLoadImm64,   // load_imm_64
+		0:  handleTrap,
+		1:  handleFallthrough,
+		10: handleEcalli,
+		20: handleLoadImm64,
 		30: handleTwoImmValues,
 		31: handleTwoImmValues,
 		32: handleTwoImmValues,
