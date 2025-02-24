@@ -559,9 +559,9 @@ func SingleStep(state *State, instructions []byte, opcodes bitsequence.BitSequen
 			l := serializer.UnsignedToSigned(8, uint64(registers[ra]))
 			r := serializer.UnsignedToSigned(8, uint64(registers[rb]))
 			if l > r {
-				nextRegisters[rd] = Register(l)
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, l))
 			} else {
-				nextRegisters[rd] = Register(r)
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, r))
 			}
 		case 228: // max_u
 			nextRegisters[rd] = max(registers[ra], registers[rb])
@@ -569,9 +569,9 @@ func SingleStep(state *State, instructions []byte, opcodes bitsequence.BitSequen
 			l := serializer.UnsignedToSigned(8, uint64(registers[ra]))
 			r := serializer.UnsignedToSigned(8, uint64(registers[rb]))
 			if l < r {
-				nextRegisters[rd] = Register(l)
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, l))
 			} else {
-				nextRegisters[rd] = Register(r)
+				nextRegisters[rd] = Register(serializer.SignedToUnsigned(8, r))
 			}
 		case 230: // min_u
 			nextRegisters[rd] = min(registers[ra], registers[rb])
