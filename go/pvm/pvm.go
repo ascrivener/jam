@@ -92,13 +92,14 @@ func deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	}
 
 	// 5. The next L_c bytes are c.
-	// 6. The following L_c bytes are for k.
-	if offset+int(L_c)*2 != len(p) {
+	// 6. The following L_c/8 bytes are for k, so that number of bits in k = L_c
+	if offset+int(L_c)+int(L_c)/8 != len(p) {
 		return nil, k, nil, false
 	}
 	c = p[offset : offset+int(L_c)]
-	kBuf := p[offset+int(L_c) : offset+int(L_c)*2]
+	kBuf := p[offset+int(L_c) : offset+int(L_c)+int(L_c)/8]
 
+	// Construct k from kBuf
 	k = *bitsequence.FromBytes(kBuf)
 
 	return c, k, jArr, true
