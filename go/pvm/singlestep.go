@@ -29,31 +29,45 @@ type InstructionContext struct {
 	MemAccessExceptionIndices  *[]RamIndex             // Pointer to a slice collecting memory access exceptions.
 }
 
+type SingleStepContext struct {
+	State                      *State                  // Contains instruction counter, registers, RAM, gas, etc.
+	Instructions               []byte                  // The instruction stream.
+	Opcodes                    bitsequence.BitSequence // The bitsequence of special opcodes.
+	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
+	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
+	// Pre-allocated slice to hold RAM exception indices.
+	MemAccessExceptions []RamIndex
+}
+
 type InstructionHandler func(ctx *InstructionContext)
 
-var dispatchTable map[byte]InstructionHandler
+var dispatchTable [256]InstructionHandler
 
-func SingleStep(state *State, instructions []byte, opcodes bitsequence.BitSequence, dynamicJumpTable []Register) {
-	instruction := getInstruction(instructions, state.InstructionCounter)
-	skipLength := skip(state.InstructionCounter, opcodes)
+var terminationOpcodes [256]bool
 
-	curIC := state.InstructionCounter
-	state.InstructionCounter += 1 + Register(skipLength)
+func SingleStep(singleStepContext *SingleStepContext) {
+	// Reset the pre-allocated slice without allocating new memory.
+	singleStepContext.MemAccessExceptions = singleStepContext.MemAccessExceptions[:0]
+	instruction := getInstruction(singleStepContext.Instructions, singleStepContext.State.InstructionCounter)
+	skipLength := skip(singleStepContext.State.InstructionCounter, singleStepContext.Opcodes)
+
+	curIC := singleStepContext.State.InstructionCounter
+	singleStepContext.State.InstructionCounter += 1 + Register(skipLength)
 
 	ctx := InstructionContext{
-		State:                      state,
-		Instructions:               instructions,
+		State:                      singleStepContext.State,
+		Instructions:               singleStepContext.Instructions,
 		Instruction:                instruction,
 		CurInstructionCounter:      curIC,
-		Opcodes:                    opcodes,
-		DynamicJumpTable:           dynamicJumpTable,
-		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes(instructions, opcodes),
+		Opcodes:                    singleStepContext.Opcodes,
+		DynamicJumpTable:           singleStepContext.DynamicJumpTable,
+		BasicBlockBeginningOpcodes: singleStepContext.BasicBlockBeginningOpcodes,
 		SkipLength:                 skipLength,
-		MemAccessExceptionIndices:  &[]RamIndex{},
+		MemAccessExceptionIndices:  &singleStepContext.MemAccessExceptions,
 	}
 
-	if instructionHandler, ok := dispatchTable[instruction]; ok && instructionHandler != nil {
-		instructionHandler(&ctx)
+	if handler := dispatchTable[instruction]; handler != nil {
+		handler(&ctx)
 	} else {
 		panic(fmt.Errorf("unknown instruction: %d", instruction))
 	}
@@ -61,9 +75,9 @@ func SingleStep(state *State, instructions []byte, opcodes bitsequence.BitSequen
 	minRamIndex := minRamIndex(*ctx.MemAccessExceptionIndices)
 	if minRamIndex != nil {
 		if *minRamIndex < MinValidRamIndex {
-			state.ExitReason = NewSimpleExitReason(ExitPanic)
+			singleStepContext.State.ExitReason = NewSimpleExitReason(ExitPanic)
 		} else {
-			state.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
+			singleStepContext.State.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
 		}
 	}
 }
@@ -157,48 +171,6 @@ func minRamIndex(ramIndices []RamIndex) *RamIndex {
 		}
 	}
 	return &minRamIndex
-}
-
-func instructionIsBasicBlockTermination(b byte) bool {
-	switch b {
-	case 0:
-	case 1:
-	case 40:
-	case 50:
-	case 80:
-	case 81:
-	case 82:
-	case 83:
-	case 84:
-	case 85:
-	case 86:
-	case 87:
-	case 88:
-	case 89:
-	case 90:
-	case 170:
-	case 171:
-	case 174:
-	case 175:
-	case 172:
-	case 173:
-	case 180:
-		return true
-	}
-	return false
-}
-
-func basicBlockBeginningOpcodes(instructions []byte, opcodes bitsequence.BitSequence) bitsequence.BitSequence {
-	basicBlockBeginningOpcodes := bitsequence.New()
-	bits := make([]bool, len(instructions))
-	basicBlockBeginningOpcodes.AppendBits(bits)
-	basicBlockBeginningOpcodes.SetBitAt(0, true)
-	for n, instruction := range instructions {
-		if opcodes.BitAt(n) && instructionIsBasicBlockTermination(instruction) {
-			basicBlockBeginningOpcodes.SetBitAt(n+1+skip(Register(n), opcodes), true)
-		}
-	}
-	return *basicBlockBeginningOpcodes
 }
 
 func smod(a, b int64) int64 {

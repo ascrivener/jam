@@ -1,7 +1,7 @@
 package pvm
 
 func init() {
-	dispatchTable = map[byte]InstructionHandler{
+	dispatchTable = [256]InstructionHandler{
 		0:   handleTrap,
 		1:   handleFallthrough,
 		10:  handleEcalli,
@@ -141,5 +141,30 @@ func init() {
 		228: handleThreeReg,
 		229: handleThreeReg,
 		230: handleThreeReg,
+	}
+
+	terminationOpcodes = [256]bool{
+		0:   true,
+		1:   true,
+		40:  true,
+		50:  true,
+		80:  true,
+		81:  true,
+		82:  true,
+		83:  true,
+		84:  true,
+		85:  true,
+		86:  true,
+		87:  true,
+		88:  true,
+		89:  true,
+		90:  true,
+		170: true,
+		171: true,
+		172: true,
+		173: true,
+		174: true,
+		175: true,
+		180: true,
 	}
 }

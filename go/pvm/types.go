@@ -110,3 +110,11 @@ func NewComplexExitReason(reasonType ComplexExitReasonType, parameter Register) 
 		},
 	}
 }
+
+func (er ExitReason) IsSimple() bool {
+	return er.SimpleExitReason != nil
+}
+
+func (er ExitReason) IsComplex() bool {
+	return er.ComplexExitReason != nil
+}

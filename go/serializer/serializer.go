@@ -173,18 +173,67 @@ func EncodeLength(v reflect.Value) []byte {
 		if l > 0 {
 			// Compute the remainder and append its bytes in little-endian order.
 			remainder := x & ((uint64(1) << (8 * l)) - 1)
-			for i := uint(0); i < l; i++ {
-				result = append(result, byte((remainder>>(8*i))&0xFF))
-			}
+			result = append(result, EncodeLittleEndian(int(l), remainder)...)
 		}
 	} else {
 		// Fallback: write 0xFF followed by x in 8 little-endian octets.
 		result = append(result, 0xFF)
-		for i := range 8 {
-			result = append(result, byte((x>>(8*i))&0xFF))
-		}
+		result = append(result, EncodeLittleEndian(8, x)...)
 	}
 	return result
+}
+
+// countLeadingOnes counts the number of consecutive 1 bits
+// starting from the most significant bit in an 8‐bit value.
+func countLeadingOnes(b byte) int {
+	count := 0
+	for i := 7; i >= 0; i-- {
+		if (b & (1 << i)) != 0 {
+			count++
+		} else {
+			break
+		}
+	}
+	return count
+}
+
+// DecodeLength decodes a length value encoded by EncodeLength from p.
+// It returns the decoded length x, the number of bytes consumed, and ok==true on success.
+func DecodeLength(p []byte) (x uint64, n int, ok bool) {
+	if len(p) == 0 {
+		return 0, 0, false
+	}
+
+	header := p[0]
+	// Case 1: x == 0
+	if header == 0x00 {
+		return 0, 1, true
+	}
+	// Case 2: fallback marker
+	if header == 0xFF {
+		if len(p) < 9 {
+			return 0, 0, false
+		}
+		x = DecodeLittleEndian(p[1:9])
+		return x, 1 + 8, true
+	}
+	// Case 3: header + remainder.
+	// Determine l = number of extra bytes from the header.
+	l := countLeadingOnes(header)
+	// Compute base = (1<<8) - (1 << (8 - l))
+	// For example, if l == 1 then base = 256 - (1 << 7) = 256 - 128 = 128.
+	base := byte(int(1<<8) - (1 << (8 - l)))
+	// headerPart is the high part of x.
+	high := uint64(header - base)
+	// Make sure there are enough bytes for the remainder.
+	if len(p) < 1+int(l) {
+		return 0, 0, false
+	}
+	// Read the remainder (l bytes in little-endian order).
+	remainder := DecodeLittleEndian(p[1 : 1+int(l)])
+	// Reconstruct x.
+	x = (high << (8 * l)) | remainder
+	return x, 1 + int(l), true
 }
 
 func EncodeLittleEndian(octets int, x uint64) []byte {
