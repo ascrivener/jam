@@ -216,10 +216,10 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // destroys postAccumulationIntermediateServiceAccounts
-func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts ServiceAccounts) (ServiceAccounts, error) {
+func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *ServiceAccounts) {
 	for _, preimage := range preimages {
 		hashedPreimage := blake2b.Sum256(preimage.Data)
-		serviceAccount := postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex]
+		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex]
 		if _, exists := serviceAccount.PreimageLookup[hashedPreimage]; exists {
 			continue
 		}
@@ -231,13 +231,12 @@ func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentB
 		} else if len(availabilityTimeslots) > 0 {
 			continue
 		}
-		postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex].PreimageLookup[hashedPreimage] = preimage.Data
-		postAccumulationIntermediateServiceAccounts[preimage.ServiceIndex].PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
+		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookup[hashedPreimage] = preimage.Data
+		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
 			Preimage:   hashedPreimage,
 			BlobLength: types.BlobLength(len(preimage.Data)),
 		}] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
 	}
-	return postAccumulationIntermediateServiceAccounts, nil
 }
 
 func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
@@ -279,7 +278,7 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 }
 
 // destroys priorPendingReports
-func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
+func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports *[constants.NumCores]*PendingReport) {
 	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
 	for c, value := range priorPendingReports {
 		if value == nil {
@@ -293,12 +292,10 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 			}
 		}
 	}
-
-	return priorPendingReports
 }
 
 // destroys postJudgementIntermediatePendingReports
-func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport) ([constants.NumCores]*PendingReport, error) {
+func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports *[constants.NumCores]*PendingReport) {
 	// reusing this elsewhere?
 	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
 		if pendingReport == nil {
@@ -310,7 +307,6 @@ func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Head
 			postJudgementIntermediatePendingReports[coreIndex] = nil
 		}
 	}
-	return postJudgementIntermediatePendingReports, nil
 }
 
 func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {

@@ -14,29 +14,23 @@ type State struct {
 	Gas                types.SignedGasValue
 	Registers          [13]Register
 	RAM                *RAM
-	ExitReason         ExitReason
-}
-
-type InstructionContext struct {
-	State                      *State // Contains instruction counter, registers, RAM, gas, etc.
-	Instructions               []byte // The instruction stream.
-	Instruction                byte
-	CurInstructionCounter      Register
-	Opcodes                    bitsequence.BitSequence // The bitsequence of special opcodes.
-	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
-	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
-	SkipLength                 int                     // Computed skip length for the current instruction.
-	MemAccessExceptionIndices  *[]RamIndex             // Pointer to a slice collecting memory access exceptions.
 }
 
 type SingleStepContext struct {
-	State                      *State                  // Contains instruction counter, registers, RAM, gas, etc.
+	State                      *State // Contains instruction counter, registers, RAM, gas, etc.
+	ExitReason                 ExitReason
 	Instructions               []byte                  // The instruction stream.
 	Opcodes                    bitsequence.BitSequence // The bitsequence of special opcodes.
 	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
 	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
 	// Pre-allocated slice to hold RAM exception indices.
 	MemAccessExceptions []RamIndex
+}
+
+type InstructionContext struct {
+	SingleStepContext *SingleStepContext
+	Instruction       byte
+	SkipLength        int // Computed skip length for the current instruction.
 }
 
 type InstructionHandler func(ctx *InstructionContext)
@@ -48,36 +42,31 @@ var terminationOpcodes [256]bool
 func SingleStep(singleStepContext *SingleStepContext) {
 	// Reset the pre-allocated slice without allocating new memory.
 	singleStepContext.MemAccessExceptions = singleStepContext.MemAccessExceptions[:0]
-	instruction := getInstruction(singleStepContext.Instructions, singleStepContext.State.InstructionCounter)
-	skipLength := skip(singleStepContext.State.InstructionCounter, singleStepContext.Opcodes)
-
-	curIC := singleStepContext.State.InstructionCounter
-	singleStepContext.State.InstructionCounter += 1 + Register(skipLength)
+	priorIC := singleStepContext.State.InstructionCounter
 
 	ctx := InstructionContext{
-		State:                      singleStepContext.State,
-		Instructions:               singleStepContext.Instructions,
-		Instruction:                instruction,
-		CurInstructionCounter:      curIC,
-		Opcodes:                    singleStepContext.Opcodes,
-		DynamicJumpTable:           singleStepContext.DynamicJumpTable,
-		BasicBlockBeginningOpcodes: singleStepContext.BasicBlockBeginningOpcodes,
-		SkipLength:                 skipLength,
-		MemAccessExceptionIndices:  &singleStepContext.MemAccessExceptions,
+		SingleStepContext: singleStepContext,
+		Instruction:       getInstruction(singleStepContext.Instructions, singleStepContext.State.InstructionCounter),
+		SkipLength:        skip(singleStepContext.State.InstructionCounter, singleStepContext.Opcodes),
 	}
 
-	if handler := dispatchTable[instruction]; handler != nil {
+	if handler := dispatchTable[ctx.Instruction]; handler != nil {
 		handler(&ctx)
 	} else {
-		panic(fmt.Errorf("unknown instruction: %d", instruction))
+		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
 
-	minRamIndex := minRamIndex(*ctx.MemAccessExceptionIndices)
+	// default instruction counter increment
+	if priorIC == singleStepContext.State.InstructionCounter {
+		singleStepContext.State.InstructionCounter += 1 + Register(ctx.SkipLength)
+	}
+
+	minRamIndex := minRamIndex(ctx.SingleStepContext.MemAccessExceptions)
 	if minRamIndex != nil {
 		if *minRamIndex < MinValidRamIndex {
-			singleStepContext.State.ExitReason = NewSimpleExitReason(ExitPanic)
+			singleStepContext.ExitReason = NewSimpleExitReason(ExitPanic)
 		} else {
-			singleStepContext.State.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
+			singleStepContext.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
 		}
 	}
 }

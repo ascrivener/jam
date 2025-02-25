@@ -1,5 +1,11 @@
 package pvm
 
+import (
+	"fmt"
+
+	"github.com/ascrivener/jam/constants"
+)
+
 type Register uint64
 
 type RamAccess int
@@ -7,15 +13,54 @@ type RamAccess int
 type RamIndex uint32
 
 const (
-	Immutable RamAccess = iota
+	Inaccessible RamAccess = iota
+	Immutable
 	Mutable
-	Inaccessible
 )
 
 type RAM struct {
 	Value           [RamSize]byte
 	Access          [NumRamPages]RamAccess
 	BeginningOfHeap *RamIndex // nil if no heap
+}
+
+func NewRAM(readData, writeData []byte, arguments Arguments, z, stackSize int) *RAM {
+	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
+	var beginningOfHeap *RamIndex
+	if len(writeData)+int(z) > 0 { // then we actually have a heap
+		beginningOfHeap = new(RamIndex)
+		*beginningOfHeap = heapStart
+	}
+	ram := &RAM{
+		Value:           [RamSize]byte{},
+		Access:          [NumRamPages]RamAccess{},
+		BeginningOfHeap: beginningOfHeap,
+	}
+	// read-only section
+	ram.setSectionValue(readData, MajorZoneSize)
+	ram.setSectionAccess(MajorZoneSize, RamIndex(TotalSizeNeededPages(len(readData))), Immutable)
+	// heap
+	ram.setSectionValue(writeData, heapStart)
+	ram.setSectionAccess(heapStart, RamIndex(TotalSizeNeededPages(len(writeData))+z*PageSize), Mutable)
+	// stack
+	ram.setSectionAccess(RamIndex((1<<32)-2*MajorZoneSize-ArgumentsZoneSize-TotalSizeNeededPages(stackSize)), RamIndex(TotalSizeNeededPages(stackSize)), Mutable)
+	// arguments
+	ram.setSectionValue(arguments, RamIndex((1<<32)-MajorZoneSize-ArgumentsZoneSize))
+	ram.setSectionAccess(RamIndex((1<<32)-MajorZoneSize-ArgumentsZoneSize), RamIndex(TotalSizeNeededPages(len(arguments))), Immutable)
+	return ram
+}
+
+func (r *RAM) setSectionAccess(start, len RamIndex, access RamAccess) {
+	firstPage := start / PageSize
+	lastPage := (start + len - 1) / PageSize
+	for i := firstPage; i <= lastPage; i++ {
+		r.setAccessForIndex(i, access)
+	}
+}
+
+func (r *RAM) setSectionValue(srcValues []byte, start RamIndex) {
+	end := start + RamIndex(len(srcValues))
+	copy(r.Value[start:end], srcValues[:end-start])
 }
 
 func (r *RAM) accessForIndex(index RamIndex) RamAccess {
@@ -117,4 +162,13 @@ func (er ExitReason) IsSimple() bool {
 
 func (er ExitReason) IsComplex() bool {
 	return er.ComplexExitReason != nil
+}
+
+type Arguments []byte
+
+func NewArguments(value []byte) (a Arguments, e error) {
+	if len(value) >= ArgumentsZoneSize {
+		return a, fmt.Errorf("invalid core index value: must be less than %d", constants.NumCores)
+	}
+	return Arguments(value), nil
 }

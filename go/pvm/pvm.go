@@ -6,50 +6,123 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func Ψ(programBlob []byte, instructionCounter Register, gas types.GasValue, registers [13]Register, ram *RAM) *State {
-	instructions, opcodes, dynamicJumpTable, ok := deblob(programBlob)
+type PVM struct {
+	ProgramBlob []byte
+	State       *State
+}
+
+func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.SignedGasValue) *PVM {
+	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
-		return &State{
+		return nil
+	}
+	return &PVM{
+		ProgramBlob: programBlob,
+		State: &State{
 			InstructionCounter: instructionCounter,
-			Gas:                types.SignedGasValue(gas),
+			Gas:                gas,
 			Registers:          registers,
 			RAM:                ram,
-			ExitReason:         NewSimpleExitReason(ExitPanic),
-		}
+		},
 	}
-	// initialState
-	state := &State{
-		InstructionCounter: instructionCounter,
-		Gas:                types.SignedGasValue(gas),
-		Registers:          registers,
-		RAM:                ram,
-		ExitReason:         NewSimpleExitReason(ExitGo),
+}
+
+func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, r [13]Register, ram *RAM, ok bool) {
+	offset := 0
+
+	// 1. Decode E3(|o|): the encoded number of elements in o.
+	if offset+3 > len(p) {
+		return nil, r, nil, false
 	}
-	basicBlockBeginningOpcodes := basicBlockBeginningOpcodes(instructions, opcodes)
+	L_o := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
+	offset += 3
+
+	// 2. Decode E3(|w|): the encoded number of elements in w.
+	if offset+3 > len(p) {
+		return nil, r, nil, false
+	}
+	L_w := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
+	offset += 3
+
+	// 3. Decode E2(z): the encoded z
+	if offset+2 > len(p) {
+		return nil, r, nil, false
+	}
+	z := int(serializer.DecodeLittleEndian(p[offset : offset+2]))
+	offset += 2
+
+	// 4. Decode E3(s): encoded s
+	if offset+3 > len(p) {
+		return nil, r, nil, false
+	}
+	s := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
+	offset += 3
+
+	// 5. Decode o and w
+	if offset+L_o > len(p) {
+		return nil, r, nil, false
+	}
+	o := p[offset : offset+L_o]
+	offset += L_o
+	if offset+L_w > len(p) {
+		return nil, r, nil, false
+	}
+	w := p[offset : offset+L_w]
+	offset += int(L_w)
+
+	// 6. Decode E4(|c|)
+	if offset+4 > len(p) {
+		return nil, r, nil, false
+	}
+	L_c := serializer.DecodeLittleEndian(p[offset : offset+4])
+	offset += 4
+	if offset+int(L_c) != len(p) {
+		return nil, r, nil, false
+	}
+	c = p[offset : offset+int(L_c)]
+
+	if 5*MajorZoneSize+TotalSizeNeededMajorZones(L_o)+TotalSizeNeededMajorZones(L_w+z*PageSize)+TotalSizeNeededMajorZones(int(s))+ArgumentsZoneSize > (1 << 32) {
+		return nil, r, nil, false
+	}
+
+	r[0] = (1 << 32) - (1 << 16)
+	r[1] = (1 << 32) - 2*MajorZoneSize - ArgumentsZoneSize
+	r[7] = (1 << 32) - MajorZoneSize - ArgumentsZoneSize
+	r[8] = Register(len(arguments))
+
+	return c, r, NewRAM(o, w, arguments, z, s), true
+}
+
+func (pvm *PVM) Ψ() (*State, ExitReason) {
+	instructions, opcodes, dynamicJumpTable, ok := deblob(pvm.ProgramBlob)
+	if !ok {
+		return pvm.State, NewSimpleExitReason(ExitPanic)
+	}
 	singleStepContext := &SingleStepContext{
-		State:                      state,
+		State:                      pvm.State,
+		ExitReason:                 NewSimpleExitReason(ExitGo),
 		Instructions:               instructions,
 		Opcodes:                    opcodes,
 		DynamicJumpTable:           dynamicJumpTable,
-		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes,
+		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes(instructions, opcodes),
 		MemAccessExceptions:        make([]RamIndex, 0, 16),
 	}
 	for {
 		SingleStep(singleStepContext)
-		exitReason := singleStepContext.State.ExitReason
+		exitReason := singleStepContext.ExitReason
 		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
 			// Continue executing if the exit reason is still "go".
 			continue
 		}
 		// Otherwise, adjust for out-of-gas or panic/halt conditions.
 		if singleStepContext.State.Gas < 0 {
-			singleStepContext.State.ExitReason = NewSimpleExitReason(ExitOutOfGas)
+			singleStepContext.ExitReason = NewSimpleExitReason(ExitOutOfGas)
 		} else if exitReason.IsSimple() &&
 			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
 			// Reset the instruction counter on panic/halt.
 			singleStepContext.State.InstructionCounter = 0
 		}
-		return singleStepContext.State
+		return singleStepContext.State, singleStepContext.ExitReason
 	}
 }
 
