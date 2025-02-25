@@ -81,13 +81,13 @@ func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, r [13]Reg
 	}
 	c = p[offset : offset+int(L_c)]
 
-	if 5*MajorZoneSize+TotalSizeNeededMajorZones(L_o)+TotalSizeNeededMajorZones(L_w+z*PageSize)+TotalSizeNeededMajorZones(int(s))+ArgumentsZoneSize > (1 << 32) {
+	if 5*MajorZoneSize+TotalSizeNeededMajorZones(L_o)+TotalSizeNeededMajorZones(L_w+z*PageSize)+TotalSizeNeededMajorZones(int(s))+ArgumentsZoneSize > RamSize {
 		return nil, r, nil, false
 	}
 
-	r[0] = (1 << 32) - (1 << 16)
-	r[1] = (1 << 32) - 2*MajorZoneSize - ArgumentsZoneSize
-	r[7] = (1 << 32) - MajorZoneSize - ArgumentsZoneSize
+	r[0] = RamSize - MajorZoneSize
+	r[1] = RamSize - 2*MajorZoneSize - ArgumentsZoneSize
+	r[7] = RamSize - MajorZoneSize - ArgumentsZoneSize
 	r[8] = Register(len(arguments))
 
 	return c, r, NewRAM(o, w, arguments, z, s), true

@@ -43,10 +43,10 @@ func NewRAM(readData, writeData []byte, arguments Arguments, z, stackSize int) *
 	ram.setSectionValue(writeData, heapStart)
 	ram.setSectionAccess(heapStart, RamIndex(TotalSizeNeededPages(len(writeData))+z*PageSize), Mutable)
 	// stack
-	ram.setSectionAccess(RamIndex((1<<32)-2*MajorZoneSize-ArgumentsZoneSize-TotalSizeNeededPages(stackSize)), RamIndex(TotalSizeNeededPages(stackSize)), Mutable)
+	ram.setSectionAccess(RamIndex(RamSize-2*MajorZoneSize-ArgumentsZoneSize-TotalSizeNeededPages(stackSize)), RamIndex(TotalSizeNeededPages(stackSize)), Mutable)
 	// arguments
-	ram.setSectionValue(arguments, RamIndex((1<<32)-MajorZoneSize-ArgumentsZoneSize))
-	ram.setSectionAccess(RamIndex((1<<32)-MajorZoneSize-ArgumentsZoneSize), RamIndex(TotalSizeNeededPages(len(arguments))), Immutable)
+	ram.setSectionValue(arguments, RamIndex(RamSize-MajorZoneSize-ArgumentsZoneSize))
+	ram.setSectionAccess(RamIndex(RamSize-MajorZoneSize-ArgumentsZoneSize), RamIndex(TotalSizeNeededPages(len(arguments))), Immutable)
 	return ram
 }
 
