@@ -16,26 +16,6 @@ type State struct {
 	RAM                *RAM
 }
 
-func (s *State) DeepCopy() *State {
-	newState := &State{
-		InstructionCounter: s.InstructionCounter,
-		Gas:                s.Gas,
-		Registers:          s.Registers, // Arrays are copied by value
-	}
-
-	if s.RAM != nil {
-		newState.RAM = &RAM{
-			Value:  s.RAM.Value,  // Arrays are copied by value
-			Access: s.RAM.Access, // Arrays are copied by value
-		}
-		if s.RAM.BeginningOfHeap != nil {
-			heapStart := *s.RAM.BeginningOfHeap
-			newState.RAM.BeginningOfHeap = &heapStart
-		}
-	}
-	return newState
-}
-
 type SingleStepContext struct {
 	State                      *State // Contains instruction counter, registers, RAM, gas, etc.
 	ExitReason                 ExitReason

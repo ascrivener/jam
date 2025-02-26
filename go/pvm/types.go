@@ -22,6 +22,7 @@ type RAM struct {
 	Value           [RamSize]byte
 	Access          [NumRamPages]RamAccess
 	BeginningOfHeap *RamIndex // nil if no heap
+	RollbackLog     map[RamIndex]byte
 }
 
 func NewRAM(readData, writeData []byte, arguments Arguments, z, stackSize int) *RAM {
@@ -35,6 +36,7 @@ func NewRAM(readData, writeData []byte, arguments Arguments, z, stackSize int) *
 		Value:           [RamSize]byte{},
 		Access:          [NumRamPages]RamAccess{},
 		BeginningOfHeap: beginningOfHeap,
+		RollbackLog:     make(map[RamIndex]byte),
 	}
 	// read-only section
 	ram.setSectionValue(readData, MajorZoneSize)
@@ -98,17 +100,48 @@ func (r *RAM) mutate(index Register, newByte byte, memoryAccessExceptionIndices 
 	if r.accessForIndex(ramIndex) != Mutable {
 		*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
 	}
+	// Initialize the changes map if needed.
+	if r.RollbackLog == nil {
+		r.RollbackLog = make(map[RamIndex]byte)
+	}
+	// Store the original value only once (for rollback).
+	if _, exists := r.RollbackLog[ramIndex]; !exists {
+		r.RollbackLog[ramIndex] = r.Value[ramIndex]
+	}
+	// Write directly to the value array.
 	r.Value[ramIndex] = newByte
 }
 
 func (r *RAM) mutateRange(start Register, newBytes []byte, memoryAccessExceptionIndices *[]RamIndex) {
+	if r.RollbackLog == nil {
+		r.RollbackLog = make(map[RamIndex]byte)
+	}
 	for i, newByte := range newBytes {
 		ramIndex := RamIndex(start) + RamIndex(i)
 		if r.accessForIndex(ramIndex) != Mutable {
 			*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
 		}
+		// Track the original value only once.
+		if _, exists := r.RollbackLog[ramIndex]; !exists {
+			r.RollbackLog[ramIndex] = r.Value[ramIndex]
+		}
+		// Write directly.
 		r.Value[ramIndex] = newByte
 	}
+}
+
+func (r *RAM) rollback() {
+	if r.RollbackLog == nil {
+		return
+	}
+	for addr, originalValue := range r.RollbackLog {
+		r.Value[addr] = originalValue
+	}
+	r.RollbackLog = nil
+}
+
+func (r *RAM) clearRollbackLog() {
+	r.RollbackLog = nil
 }
 
 type SimpleExitReasonType int

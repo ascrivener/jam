@@ -199,16 +199,20 @@ func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason,
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
+			pvm.State.RAM.clearRollbackLog()
 			return exitReason, pvm.State, x
 		}
 
 		hostCall := exitReason.ComplexExitReason.Parameter
-		stateBeforeHostCall := pvm.State.DeepCopy()
+		stateBeforeHostCall := *pvm.State
 		postHostCallExitReason, postHostCallX := f(int(hostCall), pvm.State, x)
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-			return postHostCallExitReason, stateBeforeHostCall, x
+			pvm.State.RAM.rollback() // Rollback changes
+			return postHostCallExitReason, &stateBeforeHostCall, x
 		}
+
+		pvm.State.RAM.clearRollbackLog()
 
 		if *postHostCallExitReason.SimpleExitReason == ExitGo {
 			pvm.State.InstructionCounter = stateBeforeHostCall.InstructionCounter + Register(1+skip(stateBeforeHostCall.InstructionCounter, pvm.Opcodes))
