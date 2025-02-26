@@ -2,6 +2,7 @@ package pvm
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/ascrivener/jam/constants"
 )
@@ -69,6 +70,10 @@ func (r *RAM) setSectionValue(srcValues []byte, start RamIndex) {
 
 func (r *RAM) accessForIndex(index RamIndex) RamAccess {
 	return r.Access[index/PageSize]
+}
+
+func (r *RAM) rangeLacks(access RamAccess, start, end RamIndex) bool {
+	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a == access }) == -1
 }
 
 func (r *RAM) setAccessForIndex(index RamIndex, access RamAccess) {

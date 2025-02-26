@@ -195,12 +195,12 @@ func (pvm *PVM[X]) BasicBlockBeginningOpcodes() bitsequence.BitSequence {
 	return *basicBlockBeginningOpcodes
 }
 
-func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason, *State, X) {
+func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason, X) {
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
 			pvm.State.RAM.clearRollbackLog()
-			return exitReason, pvm.State, x
+			return exitReason, x
 		}
 
 		hostCall := exitReason.ComplexExitReason.Parameter
@@ -208,8 +208,11 @@ func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason,
 		postHostCallExitReason, postHostCallX := f(int(hostCall), pvm.State, x)
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-			pvm.State.RAM.rollback() // Rollback changes
-			return postHostCallExitReason, &stateBeforeHostCall, x
+			pvm.State.RAM.rollback() // rollback changes
+			// Reset pvm.State to the snapshot from before the host call.
+			// Taking the address of stateBeforeHostCall will cause it to escape to the heap.
+			pvm.State = &stateBeforeHostCall
+			return postHostCallExitReason, x
 		}
 
 		pvm.State.RAM.clearRollbackLog()
@@ -220,6 +223,49 @@ func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason,
 			continue
 		}
 
-		return postHostCallExitReason, pvm.State, postHostCallX
+		return postHostCallExitReason, postHostCallX
 	}
+}
+
+type ArgumentInvocationExitReason struct {
+	SimpleExitReason *SimpleExitReasonType
+	Blob             *[]byte
+}
+
+func NewArgumentInvocationExitReasonSimple(reason SimpleExitReasonType) ArgumentInvocationExitReason {
+	return ArgumentInvocationExitReason{
+		SimpleExitReason: &reason,
+		Blob:             nil,
+	}
+}
+
+func NewArgumentInvocationExitReasonBlob(blob []byte) ArgumentInvocationExitReason {
+	return ArgumentInvocationExitReason{
+		SimpleExitReason: nil,
+		Blob:             &blob,
+	}
+}
+
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f func(int, *State, X) (ExitReason, X), x X) (types.SignedGasValue, ArgumentInvocationExitReason, X) {
+	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, types.SignedGasValue(gas))
+	if pvm == nil {
+		return types.SignedGasValue(gas), NewArgumentInvocationExitReasonSimple(ExitPanic), x
+	}
+	postHostCallExitReason, postHostCallX := pvm.ΨH(f, x)
+	if postHostCallExitReason.IsSimple() {
+		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
+			return pvm.State.Gas, NewArgumentInvocationExitReasonSimple(ExitOutOfGas), postHostCallX
+		}
+		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
+			start := pvm.State.Registers[7]
+			end := start + pvm.State.Registers[8]
+			if pvm.State.RAM.rangeLacks(Inaccessible, RamIndex(start), RamIndex(end)) {
+				blob := pvm.State.RAM.inspectRange(start, end-start, &[]RamIndex{})
+				return pvm.State.Gas, NewArgumentInvocationExitReasonBlob(blob), postHostCallX
+			} else {
+				return pvm.State.Gas, NewArgumentInvocationExitReasonBlob([]byte{}), postHostCallX
+			}
+		}
+	}
+	return pvm.State.Gas, NewArgumentInvocationExitReasonSimple(ExitPanic), postHostCallX
 }
