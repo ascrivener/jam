@@ -23,3 +23,5 @@ func TotalSizeNeededMajorZones(size int) int {
 func TotalSizeNeededPages(size int) int {
 	return PageSize * ((PageSize + size - 1) / PageSize)
 }
+
+const IsAuthorizedGasAllocation int = 50000000

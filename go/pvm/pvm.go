@@ -195,7 +195,7 @@ func (pvm *PVM[X]) BasicBlockBeginningOpcodes() bitsequence.BitSequence {
 	return *basicBlockBeginningOpcodes
 }
 
-func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason, X) {
+func (pvm *PVM[X]) ΨH(f HostFunction[X], x X) (ExitReason, X) {
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
@@ -205,7 +205,7 @@ func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason,
 
 		hostCall := exitReason.ComplexExitReason.Parameter
 		stateBeforeHostCall := *pvm.State
-		postHostCallExitReason, postHostCallX := f(int(hostCall), pvm.State, x)
+		postHostCallExitReason, postHostCallX := f(HostFunctionIdentifier(hostCall), pvm.State, x)
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
 			pvm.State.RAM.rollback() // rollback changes
@@ -227,26 +227,7 @@ func (pvm *PVM[X]) ΨH(f func(int, *State, X) (ExitReason, X), x X) (ExitReason,
 	}
 }
 
-type ArgumentInvocationExitReason struct {
-	SimpleExitReason *SimpleExitReasonType
-	Blob             *[]byte
-}
-
-func NewArgumentInvocationExitReasonSimple(reason SimpleExitReasonType) ArgumentInvocationExitReason {
-	return ArgumentInvocationExitReason{
-		SimpleExitReason: &reason,
-		Blob:             nil,
-	}
-}
-
-func NewArgumentInvocationExitReasonBlob(blob []byte) ArgumentInvocationExitReason {
-	return ArgumentInvocationExitReason{
-		SimpleExitReason: nil,
-		Blob:             &blob,
-	}
-}
-
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f func(int, *State, X) (ExitReason, X), x X) (types.SignedGasValue, ArgumentInvocationExitReason, X) {
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x X) (types.SignedGasValue, ArgumentInvocationExitReason, X) {
 	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, types.SignedGasValue(gas))
 	if pvm == nil {
 		return types.SignedGasValue(gas), NewArgumentInvocationExitReasonSimple(ExitPanic), x

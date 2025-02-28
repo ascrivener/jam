@@ -23,3 +23,5 @@ const MaxItemsInAuthorizationsPool int = 8
 const ValidatorCoreAssignmentsRotationPeriodInTimeslots int = 10
 
 const UnavailableWorkTimeoutTimeslots int = 5
+
+const MaxWorkItemsInPackage int = 4

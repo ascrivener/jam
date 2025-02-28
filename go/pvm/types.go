@@ -204,6 +204,25 @@ func (er ExitReason) IsComplex() bool {
 	return er.ComplexExitReason != nil
 }
 
+type ArgumentInvocationExitReason struct {
+	SimpleExitReason *SimpleExitReasonType
+	Blob             *[]byte
+}
+
+func NewArgumentInvocationExitReasonSimple(reason SimpleExitReasonType) ArgumentInvocationExitReason {
+	return ArgumentInvocationExitReason{
+		SimpleExitReason: &reason,
+		Blob:             nil,
+	}
+}
+
+func NewArgumentInvocationExitReasonBlob(blob []byte) ArgumentInvocationExitReason {
+	return ArgumentInvocationExitReason{
+		SimpleExitReason: nil,
+		Blob:             &blob,
+	}
+}
+
 type Arguments []byte
 
 func NewArguments(value []byte) (a Arguments, e error) {
