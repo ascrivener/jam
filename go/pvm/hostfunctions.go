@@ -40,25 +40,25 @@ const (
 	ExpungeID
 )
 
-type HostCallResult uint64
+type HostCallResultType uint64
 
 const maxUint64 = ^uint64(0)
 
 const (
 	// OK indicates general success.
-	HostCallOK   HostCallResult = 0
-	HostCallNone HostCallResult = HostCallResult(maxUint64 - 0) // 2^64 - 1: The item does not exist.
-	HostCallWhat HostCallResult = HostCallResult(maxUint64 - 1) // 2^64 - 2: Name unknown.
-	HostCallOOB  HostCallResult = HostCallResult(maxUint64 - 2) // 2^64 - 3: Memory index not accessible.
-	HostCallWho  HostCallResult = HostCallResult(maxUint64 - 3) // 2^64 - 4: Index unknown.
-	HostCallFull HostCallResult = HostCallResult(maxUint64 - 4) // 2^64 - 5: Storage full.
-	HostCallCore HostCallResult = HostCallResult(maxUint64 - 5) // 2^64 - 6: Core index unknown.
-	HostCallCash HostCallResult = HostCallResult(maxUint64 - 6) // 2^64 - 7: Insufficient funds.
-	HostCallLow  HostCallResult = HostCallResult(maxUint64 - 7) // 2^64 - 8: Gas limit too low.
-	HostCallHuh  HostCallResult = HostCallResult(maxUint64 - 8) // 2^64 - 9: Already solicited or cannot be forgotten.
+	HostCallOK   HostCallResultType = 0
+	HostCallNone HostCallResultType = HostCallResultType(maxUint64 - 0) // 2^64 - 1: The item does not exist.
+	HostCallWhat HostCallResultType = HostCallResultType(maxUint64 - 1) // 2^64 - 2: Name unknown.
+	HostCallOOB  HostCallResultType = HostCallResultType(maxUint64 - 2) // 2^64 - 3: Memory index not accessible.
+	HostCallWho  HostCallResultType = HostCallResultType(maxUint64 - 3) // 2^64 - 4: Index unknown.
+	HostCallFull HostCallResultType = HostCallResultType(maxUint64 - 4) // 2^64 - 5: Storage full.
+	HostCallCore HostCallResultType = HostCallResultType(maxUint64 - 5) // 2^64 - 6: Core index unknown.
+	HostCallCash HostCallResultType = HostCallResultType(maxUint64 - 6) // 2^64 - 7: Insufficient funds.
+	HostCallLow  HostCallResultType = HostCallResultType(maxUint64 - 7) // 2^64 - 8: Gas limit too low.
+	HostCallHuh  HostCallResultType = HostCallResultType(maxUint64 - 8) // 2^64 - 9: Already solicited or cannot be forgotten.
 )
 
-func IsValidHostCallError(code HostCallResult) bool {
+func IsValidHostCallError(code HostCallResultType) bool {
 	const reservedThreshold = ^uint64(0) - 12 // 2^64 - 13
 	return code != 0 && uint64(code) < reservedThreshold
 }
@@ -75,6 +75,22 @@ const (
 )
 
 type HostFunction[X any] func(HostFunctionIdentifier, *State, X) (ExitReason, X)
+
+// HostResult encapsulates the common return values from host functions
+type HostCallResult struct {
+	ExitReason     ExitReason
+	PostGas        types.SignedGasValue
+	Registers      [13]Register
+	RAM            *RAM
+	ServiceAccount state.ServiceAccount
+}
+
+type HostCallContext struct {
+	Gas            types.GasValue
+	Registers      [13]Register
+	RAM            *RAM
+	ServiceAccount state.ServiceAccount
+}
 
 const GasUsage types.GasValue = 10
 
@@ -95,7 +111,7 @@ func Gas(gas types.GasValue, registers [13]Register, args ...any) (ExitReason, t
 	return exitReason, postGas, registers, args
 }
 
-func Lookup(gas types.GasValue, registers [13]Register, ram *RAM, serviceAccount state.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
+func Lookup(ctx HostCallContext, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts) HostCallResult {
 	// Define regular preimage retrieval strategy
 	retrievePreimage := func(account *state.ServiceAccount, key [32]byte) *[]byte {
 		v, ok := account.PreimageLookup[key]
@@ -105,91 +121,112 @@ func Lookup(gas types.GasValue, registers [13]Register, ram *RAM, serviceAccount
 		return nil
 	}
 
-	return performLookup(gas, registers, ram, serviceAccount, serviceIndex, serviceAccounts, false, retrievePreimage)
+	return performLookup(ctx, serviceIndex, serviceAccounts, false, retrievePreimage)
 }
 
-func HistoricalLookup(gas types.GasValue, registers [13]Register, ram *RAM, _ IntegratedPVMsAndExportSequence, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts, timeslot types.Timeslot, serviceAccount state.ServiceAccount) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
+func HistoricalLookup(ctx HostCallContext, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts, timeslot types.Timeslot) HostCallResult {
 	// Define historical preimage retrieval strategy
 	retrievePreimage := func(account *state.ServiceAccount, key [32]byte) *[]byte {
 		return historicallookup.HistoricalLookup(*account, timeslot, key)
 	}
 
-	return performLookup(gas, registers, ram, serviceAccount, serviceIndex, serviceAccounts, true, retrievePreimage)
+	return performLookup(ctx, serviceIndex, serviceAccounts, true, retrievePreimage)
 }
 
-func Fetch(gas types.GasValue, registers [13]Register, ram *RAM, _ IntegratedPVMsAndExportSequence, importSegmentsIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, serviceAccount state.ServiceAccount) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
-	exitReason, postGas := checkGas(gas)
-	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
-		return exitReason, postGas, registers, ram, serviceAccount
-	}
-	var preimage *[]byte
-	switch registers[10] {
-	case 0:
-		serialized := serializer.Serialize(workPackage)
-		preimage = &serialized
-	case 1:
-		preimage = &authorizerOutput
-	case 2:
-		if registers[11] < Register(len(workPackage.WorkItems)) {
-			preimage = &workPackage.WorkItems[int(registers[11])].Payload
-		}
-	case 3:
-		if registers[11] < Register(len(workPackage.WorkItems)) {
-			blobHashesAndLengthsIntroduced := workPackage.WorkItems[int(registers[11])].BlobHashesAndLengthsIntroduced
-			if registers[12] < Register(len(blobHashesAndLengthsIntroduced)) {
-				blobHash := blobHashesAndLengthsIntroduced[int(registers[12])].BlobHash[:]
+func Fetch(ctx HostCallContext, importSegmentsIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte) HostCallResult {
+	return withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		var preimage *[]byte
+		switch ctx.Registers[10] {
+		case 0:
+			serialized := serializer.Serialize(workPackage)
+			preimage = &serialized
+		case 1:
+			preimage = &authorizerOutput
+		case 2:
+			if ctx.Registers[11] < Register(len(workPackage.WorkItems)) {
+				preimage = &workPackage.WorkItems[int(ctx.Registers[11])].Payload
+			}
+		case 3:
+			if ctx.Registers[11] < Register(len(workPackage.WorkItems)) {
+				blobHashesAndLengthsIntroduced := workPackage.WorkItems[int(ctx.Registers[11])].BlobHashesAndLengthsIntroduced
+				if ctx.Registers[12] < Register(len(blobHashesAndLengthsIntroduced)) {
+					blobHash := blobHashesAndLengthsIntroduced[int(ctx.Registers[12])].BlobHash[:]
+					preimage = &blobHash
+				}
+			}
+		case 4:
+			blobHashesAndLengthsIntroduced := workPackage.WorkItems[importSegmentsIndex].BlobHashesAndLengthsIntroduced
+			if ctx.Registers[11] < Register(len(blobHashesAndLengthsIntroduced)) {
+				blobHash := blobHashesAndLengthsIntroduced[int(ctx.Registers[11])].BlobHash[:]
 				preimage = &blobHash
 			}
+		case 5:
+			if ctx.Registers[11] < Register(len(importSegments)) && ctx.Registers[12] < Register(len(importSegments[ctx.Registers[11]])) {
+				segment := importSegments[ctx.Registers[11]][ctx.Registers[12]][:]
+				preimage = &segment
+			}
+		case 6:
+			if ctx.Registers[11] < Register(len(importSegments[importSegmentsIndex])) {
+				segment := importSegments[importSegmentsIndex][ctx.Registers[11]][:]
+				preimage = &segment
+			}
+		case 7:
+			preimage = &workPackage.ParameterizationBlob
 		}
-	case 4:
-		blobHashesAndLengthsIntroduced := workPackage.WorkItems[importSegmentsIndex].BlobHashesAndLengthsIntroduced
-		if registers[11] < Register(len(blobHashesAndLengthsIntroduced)) {
-			blobHash := blobHashesAndLengthsIntroduced[int(registers[11])].BlobHash[:]
-			preimage = &blobHash
-		}
-	case 5:
-		if registers[11] < Register(len(importSegments)) && registers[12] < Register(len(importSegments[registers[11]])) {
-			segment := importSegments[registers[11]][registers[12]][:]
-			preimage = &segment
-		}
-	case 6:
-		if registers[11] < Register(len(importSegments[importSegmentsIndex])) {
-			segment := importSegments[importSegmentsIndex][registers[11]][:]
-			preimage = &segment
-		}
-	case 7:
-		preimage = &workPackage.ParameterizationBlob
-	}
-	return processPreimage(
-		postGas,
-		registers,
-		ram,
-		serviceAccount,
-		preimage,
-		7,
-		8,
-		9,
-		7,
-	)
+		return processPreimage(
+			ctx,
+			postGas,
+			preimage,
+			7,
+			8,
+			9,
+			7,
+		)
+	})
 }
+
+// func Export(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence, exportSegmentOffset int) HostCallResult {
+// 	return withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+
+// 	})
+// }
 
 // helpers
 
-func getServiceAccount(registers [13]Register, serviceIndex types.ServiceIndex, serviceAccount state.ServiceAccount, serviceAccounts state.ServiceAccounts, isHistorical bool) *state.ServiceAccount {
+func withGasCheck(
+	ctx HostCallContext,
+	fn func(HostCallContext, types.SignedGasValue) HostCallResult,
+) HostCallResult {
+	exitReason, postGas := checkGas(ctx.Gas)
+	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
+		return HostCallResult{
+			ExitReason:     exitReason,
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	}
+
+	// Pass postGas as a separate parameter
+	return fn(ctx, postGas)
+}
+
+func getServiceAccount(ctx HostCallContext, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts, isHistorical bool) *state.ServiceAccount {
 	var a *state.ServiceAccount
 
 	if isHistorical {
-		if registers[7] == MaxRegister {
+		if ctx.Registers[7] == MaxRegister {
 			if s, ok := serviceAccounts[serviceIndex]; ok {
 				a = &s
 			}
-		} else if s, ok := serviceAccounts[types.ServiceIndex(registers[7])]; ok {
+		} else if s, ok := serviceAccounts[types.ServiceIndex(ctx.Registers[7])]; ok {
 			a = &s
 		}
 	} else {
-		if registers[7] == Register(serviceIndex) || registers[7] == MaxRegister {
-			a = &serviceAccount
-		} else if s, ok := serviceAccounts[types.ServiceIndex(registers[7])]; ok {
+		if ctx.Registers[7] == MaxRegister {
+			a = &ctx.ServiceAccount
+		} else if s, ok := serviceAccounts[types.ServiceIndex(ctx.Registers[7])]; ok {
 			a = &s
 		}
 	}
@@ -198,16 +235,14 @@ func getServiceAccount(registers [13]Register, serviceIndex types.ServiceIndex, 
 }
 
 func processPreimage(
+	ctx HostCallContext,
 	postGas types.SignedGasValue,
-	registers [13]Register,
-	ram *RAM,
-	serviceAccount state.ServiceAccount,
 	preimage *[]byte,
 	outputRegister int, // Register containing output address
 	offsetRegister int, // Register containing offset
 	lengthRegister int, // Register containing length
 	resultRegister int, // Register where result will be stored
-) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
+) HostCallResult {
 	exitReason := NewSimpleExitReason(ExitGo) // Default to success
 
 	preimageLen := 0
@@ -215,21 +250,21 @@ func processPreimage(
 		preimageLen = len(*preimage)
 	}
 
-	o := registers[outputRegister]
-	f := min(registers[offsetRegister], Register(preimageLen))
-	l := min(registers[lengthRegister], Register(preimageLen)-f)
+	o := ctx.Registers[outputRegister]
+	f := min(ctx.Registers[offsetRegister], Register(preimageLen))
+	l := min(ctx.Registers[lengthRegister], Register(preimageLen)-f)
 
-	if !ram.rangeUniform(RamAccess(WriteID), RamIndex(o), RamIndex(o+l)) {
+	if !ctx.RAM.rangeUniform(RamAccess(WriteID), RamIndex(o), RamIndex(o+l)) {
 		exitReason = NewSimpleExitReason(ExitPanic)
 	} else if preimage == nil {
-		registers[resultRegister] = Register(HostCallNone)
+		ctx.Registers[resultRegister] = Register(HostCallNone)
 	} else {
-		registers[resultRegister] = Register(preimageLen)
+		ctx.Registers[resultRegister] = Register(preimageLen)
 		slicedData := (*preimage)[int(f):int(f+l)]
-		ram.mutateRange(o, slicedData, &[]RamIndex{})
+		ctx.RAM.mutateRange(o, slicedData, &[]RamIndex{})
 	}
 
-	return exitReason, postGas, registers, ram, serviceAccount
+	return HostCallResult{exitReason, postGas, ctx.Registers, ctx.RAM, ctx.ServiceAccount}
 }
 
 // PreimageRetriever defines a function type for retrieving preimages
@@ -237,31 +272,31 @@ type PreimageRetriever func(account *state.ServiceAccount, key [32]byte) *[]byte
 
 // performLookup handles the common lookup logic for both regular and historical lookups
 func performLookup(
-	gas types.GasValue,
-	registers [13]Register,
-	ram *RAM,
-	serviceAccount state.ServiceAccount,
+	ctx HostCallContext,
 	serviceIndex types.ServiceIndex,
 	serviceAccounts state.ServiceAccounts,
 	isHistorical bool,
 	retrievePreimage PreimageRetriever,
-) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
-	exitReason, postGas := checkGas(gas)
-	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
-		return exitReason, postGas, registers, ram, serviceAccount
-	}
+) HostCallResult {
+	return withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		a := getServiceAccount(ctx, serviceIndex, serviceAccounts, isHistorical)
+		h := ctx.Registers[8]
 
-	a := getServiceAccount(registers, serviceIndex, serviceAccount, serviceAccounts, isHistorical)
-	h := registers[8]
+		var preimage *[]byte
+		if ctx.RAM.rangeHas(Inaccessible, RamIndex(h), RamIndex(h+32)) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		} else if a != nil {
+			var key [32]byte
+			copy(key[:], ctx.RAM.inspectRange(h, 32, &[]RamIndex{}))
+			preimage = retrievePreimage(a, key)
+		}
 
-	var preimage *[]byte
-	if ram.rangeHas(Inaccessible, RamIndex(h), RamIndex(h+32)) {
-		return NewSimpleExitReason(ExitPanic), postGas, registers, ram, serviceAccount
-	} else if a != nil {
-		var key [32]byte
-		copy(key[:], ram.inspectRange(h, 32, &[]RamIndex{}))
-		preimage = retrievePreimage(a, key)
-	}
-
-	return processPreimage(postGas, registers, ram, serviceAccount, preimage, 9, 10, 11, 7)
+		return processPreimage(ctx, postGas, preimage, 9, 10, 11, 7)
+	})
 }
