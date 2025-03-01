@@ -204,22 +204,32 @@ func (er ExitReason) IsComplex() bool {
 	return er.ComplexExitReason != nil
 }
 
-type ArgumentInvocationExitReason struct {
-	SimpleExitReason *SimpleExitReasonType
-	Blob             *[]byte
+type ExecutionErrorType int
+
+const (
+	ExecutionErrorOutOfGas ExecutionErrorType = iota
+	ExecutionErrorPanic
+	ExecutionErrorTarget
+	ExecutionErrorBAD
+	ExecutionErrorBIG
+)
+
+type ExecutionExitReason struct {
+	ExecutionError *ExecutionErrorType
+	Blob           *[]byte
 }
 
-func NewArgumentInvocationExitReasonSimple(reason SimpleExitReasonType) ArgumentInvocationExitReason {
-	return ArgumentInvocationExitReason{
-		SimpleExitReason: &reason,
-		Blob:             nil,
+func NewExecutionExitReasonError(reason ExecutionErrorType) ExecutionExitReason {
+	return ExecutionExitReason{
+		ExecutionError: &reason,
+		Blob:           nil,
 	}
 }
 
-func NewArgumentInvocationExitReasonBlob(blob []byte) ArgumentInvocationExitReason {
-	return ArgumentInvocationExitReason{
-		SimpleExitReason: nil,
-		Blob:             &blob,
+func NewExecutionExitReasonBlob(blob []byte) ExecutionExitReason {
+	return ExecutionExitReason{
+		ExecutionError: nil,
+		Blob:           &blob,
 	}
 }
 

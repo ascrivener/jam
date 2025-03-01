@@ -227,26 +227,26 @@ func (pvm *PVM[X]) ΨH(f HostFunction[X], x X) (ExitReason, X) {
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x X) (types.SignedGasValue, ArgumentInvocationExitReason, X) {
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x X) (types.SignedGasValue, ExecutionExitReason, X) {
 	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, types.SignedGasValue(gas))
 	if pvm == nil {
-		return types.SignedGasValue(gas), NewArgumentInvocationExitReasonSimple(ExitPanic), x
+		return types.SignedGasValue(gas), NewExecutionExitReasonError(ExecutionErrorPanic), x
 	}
 	postHostCallExitReason, postHostCallX := pvm.ΨH(f, x)
 	if postHostCallExitReason.IsSimple() {
 		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
-			return pvm.State.Gas, NewArgumentInvocationExitReasonSimple(ExitOutOfGas), postHostCallX
+			return pvm.State.Gas, NewExecutionExitReasonError(ExecutionErrorOutOfGas), postHostCallX
 		}
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			end := start + pvm.State.Registers[8]
 			if pvm.State.RAM.rangeLacks(Inaccessible, RamIndex(start), RamIndex(end)) {
 				blob := pvm.State.RAM.inspectRange(start, end-start, &[]RamIndex{})
-				return pvm.State.Gas, NewArgumentInvocationExitReasonBlob(blob), postHostCallX
+				return pvm.State.Gas, NewExecutionExitReasonBlob(blob), postHostCallX
 			} else {
-				return pvm.State.Gas, NewArgumentInvocationExitReasonBlob([]byte{}), postHostCallX
+				return pvm.State.Gas, NewExecutionExitReasonBlob([]byte{}), postHostCallX
 			}
 		}
 	}
-	return pvm.State.Gas, NewArgumentInvocationExitReasonSimple(ExitPanic), postHostCallX
+	return pvm.State.Gas, NewExecutionExitReasonError(ExecutionErrorPanic), postHostCallX
 }

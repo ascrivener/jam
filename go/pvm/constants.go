@@ -25,3 +25,9 @@ func TotalSizeNeededPages(size int) int {
 }
 
 const IsAuthorizedGasAllocation int = 50000000
+
+const ErasureCodedPiecesSize int = 684
+
+const ErasureCodedPiecesInSegment int = 6
+
+const SegmentSize int = ErasureCodedPiecesInSegment * ErasureCodedPiecesSize

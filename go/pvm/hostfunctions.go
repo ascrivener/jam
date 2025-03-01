@@ -1,6 +1,8 @@
 package pvm
 
-import "github.com/ascrivener/jam/types"
+import (
+	"github.com/ascrivener/jam/types"
+)
 
 type HostFunctionIdentifier int
 

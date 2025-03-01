@@ -25,3 +25,5 @@ const ValidatorCoreAssignmentsRotationPeriodInTimeslots int = 10
 const UnavailableWorkTimeoutTimeslots int = 5
 
 const MaxWorkItemsInPackage int = 4
+
+const ServiceCodeMaxSize int = 4000000
