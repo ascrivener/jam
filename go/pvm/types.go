@@ -72,8 +72,12 @@ func (r *RAM) accessForIndex(index RamIndex) RamAccess {
 	return r.Access[index/PageSize]
 }
 
-func (r *RAM) rangeLacks(access RamAccess, start, end RamIndex) bool {
-	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a == access }) == -1
+func (r *RAM) rangeHas(access RamAccess, start, end RamIndex) bool {
+	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a == access }) != -1
+}
+
+func (r *RAM) rangeUniform(access RamAccess, start, end RamIndex) bool {
+	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a != access }) == -1
 }
 
 func (r *RAM) setAccessForIndex(index RamIndex, access RamAccess) {
@@ -209,7 +213,7 @@ type ExecutionErrorType int
 const (
 	ExecutionErrorOutOfGas ExecutionErrorType = iota
 	ExecutionErrorPanic
-	ExecutionErrorTarget
+	ExecutionErrorInvalidNumExports
 	ExecutionErrorBAD
 	ExecutionErrorBIG
 )
@@ -231,6 +235,10 @@ func NewExecutionExitReasonBlob(blob []byte) ExecutionExitReason {
 		ExecutionError: nil,
 		Blob:           &blob,
 	}
+}
+
+func (er ExecutionExitReason) IsError() bool {
+	return er.ExecutionError != nil
 }
 
 type Arguments []byte

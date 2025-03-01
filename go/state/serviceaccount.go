@@ -10,13 +10,13 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccount struct {
-	StorageDictionary              map[[32]byte][]byte
-	PreimageLookup                 map[[32]byte][]byte
-	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot
-	CodeHash                       [32]byte
-	Balance                        types.Balance
-	MinimumGasForAccumulate        types.GasValue
-	MinimumGasForOnTransfer        types.GasValue
+	StorageDictionary              map[[32]byte][]byte                                    // s
+	PreimageLookup                 map[[32]byte][]byte                                    // p
+	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot // l
+	CodeHash                       [32]byte                                               // c
+	Balance                        types.Balance                                          // b
+	MinimumGasForAccumulate        types.GasValue                                         // g
+	MinimumGasForOnTransfer        types.GasValue                                         // m
 }
 
 func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {

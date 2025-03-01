@@ -4,10 +4,11 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/serializer"
-	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
+	"github.com/ascrivener/jam/workreport"
+	"golang.org/x/crypto/blake2b"
 )
 
 func isAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExitReason {
@@ -42,12 +43,13 @@ type IntegratedPVMsAndExportSequence struct {
 	ExportSequence [][]byte
 }
 
-func refine(serviceAccounts state.ServiceAccounts, workItemIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int) (ExecutionExitReason, [][]byte) {
+func refine(workItemIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int) (ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	var hf HostFunction[IntegratedPVMsAndExportSequence] = func(n HostFunctionIdentifier, state *State, m IntegratedPVMsAndExportSequence) (ExitReason, IntegratedPVMsAndExportSequence) {
 		return NewSimpleExitReason(ExitGo), m
 	}
 	workItem := workPackage.WorkItems[workItemIndex] // w
+	serviceAccounts := historicallookup.GetPosteriorServiceAccounts(workPackage.RefinementContext.LookupAnchorHeaderHash, workPackage.RefinementContext.Timeslot)
 	serviceAccount, ok := serviceAccounts[workItem.ServiceIdentifier]
 	if !ok {
 		return NewExecutionExitReasonError(ExecutionErrorBAD), [][]byte{}
@@ -60,6 +62,22 @@ func refine(serviceAccounts state.ServiceAccounts, workItemIndex int, workPackag
 		return NewExecutionExitReasonError(ExecutionErrorBIG), [][]byte{}
 	}
 
-	// a := serializer.Serialize([]any{workItem.ServiceIdentifier, workItem.})
-
+	a := serializer.Serialize(struct {
+		ServiceIndex                   types.ServiceIndex
+		BlobHashesAndLengthsIntroduced []struct {
+			BlobHash [32]byte
+			Length   int
+		}
+		WorkPackageHash   [32]byte
+		RefinementContext workreport.RefinementContext
+		Authorizer        [32]byte
+	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
+	_, r, integratedPVMsAndExportSequence := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, IntegratedPVMsAndExportSequence{
+		IntegratedPVMs: map[int]IntegratedPVM{},
+		ExportSequence: [][]byte{},
+	})
+	if r.IsError() && *r.ExecutionError == ExecutionErrorOutOfGas || *r.ExecutionError == ExecutionErrorPanic {
+		return r, [][]byte{}
+	}
+	return r, integratedPVMsAndExportSequence.ExportSequence
 }

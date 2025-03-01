@@ -38,3 +38,9 @@ func HistoricalLookup(serviceAccount state.ServiceAccount, timeslot types.Timesl
 
 	return nil
 }
+
+// gets posterior service accounts for a particular block with a header hash headerHash, timeslot timeslot
+// TODO: implement
+func GetPosteriorServiceAccounts(headerHash [32]byte, timeslot types.Timeslot) state.ServiceAccounts {
+	return make(state.ServiceAccounts)
+}

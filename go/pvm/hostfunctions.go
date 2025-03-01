@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -74,12 +75,68 @@ type HostFunction[X any] func(HostFunctionIdentifier, *State, X) (ExitReason, X)
 
 const GasUsage types.GasValue = 10
 
-func gas(gas types.GasValue, registers [13]Register, args ...any) (ExitReason, types.SignedGasValue, [13]Register, []any) {
+// checkGas performs the common gas check pattern and returns the exit reason and post-gas value
+func checkGas(gas types.GasValue) (ExitReason, types.SignedGasValue) {
 	if gas < GasUsage {
-		return NewSimpleExitReason(ExitOutOfGas), types.SignedGasValue(gas), registers, args
+		return NewSimpleExitReason(ExitOutOfGas), types.SignedGasValue(gas)
 	}
-	postGas := types.SignedGasValue(gas - GasUsage)
-	exitReason := NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), types.SignedGasValue(gas - GasUsage)
+}
+
+func gas(gas types.GasValue, registers [13]Register, args ...any) (ExitReason, types.SignedGasValue, [13]Register, []any) {
+	exitReason, postGas := checkGas(gas)
+	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
+		return exitReason, postGas, registers, args
+	}
 	registers[7] = Register(postGas)
 	return exitReason, postGas, registers, args
+}
+
+func lookup(gas types.GasValue, registers [13]Register, ram *RAM, serviceAccount state.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts state.ServiceAccounts) (ExitReason, types.SignedGasValue, [13]Register, *RAM, state.ServiceAccount) {
+	exitReason, postGas := checkGas(gas)
+	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
+		return exitReason, postGas, registers, ram, serviceAccount
+	}
+	var a *state.ServiceAccount
+	if registers[7] == Register(serviceIndex) || registers[7] == MaxRegister {
+		a = &serviceAccount
+	} else if s, ok := serviceAccounts[types.ServiceIndex(registers[7])]; ok {
+		a = &s
+	}
+	h := registers[8]
+	o := registers[9]
+
+	var preimage *[]byte
+	var inaccessible bool
+	if ram.rangeHas(Inaccessible, RamIndex(h), RamIndex(h+32)) {
+		inaccessible = true
+	} else if a != nil {
+		var key [32]byte
+		copy(key[:], ram.inspectRange(h, 32, &[]RamIndex{}))
+		v, ok := a.PreimageLookup[key]
+		if ok {
+			preimage = &v
+		}
+	}
+
+	preimageLen := 0
+	if preimage != nil {
+		preimageLen = len(*preimage)
+	}
+
+	f := min(registers[10], Register(preimageLen))
+	l := min(registers[11], Register(preimageLen)-f)
+
+	if inaccessible || !ram.rangeUniform(RamAccess(Write), RamIndex(o), RamIndex(o+l)) {
+		exitReason = NewSimpleExitReason(ExitPanic)
+	} else if preimage == nil {
+		registers[7] = Register(HostCallNone)
+	} else {
+		registers[7] = Register(preimageLen)
+		// Copy the sliced preimage data to RAM
+		slicedData := (*preimage)[int(f):int(f+l)]
+		ram.mutateRange(o, slicedData, &[]RamIndex{})
+	}
+
+	return exitReason, postGas, registers, ram, serviceAccount
 }

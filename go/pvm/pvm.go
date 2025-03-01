@@ -240,7 +240,7 @@ func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			end := start + pvm.State.Registers[8]
-			if pvm.State.RAM.rangeLacks(Inaccessible, RamIndex(start), RamIndex(end)) {
+			if !pvm.State.RAM.rangeHas(Inaccessible, RamIndex(start), RamIndex(end)) {
 				blob := pvm.State.RAM.inspectRange(start, end-start, &[]RamIndex{})
 				return pvm.State.Gas, NewExecutionExitReasonBlob(blob), postHostCallX
 			} else {
