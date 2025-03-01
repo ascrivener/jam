@@ -11,10 +11,10 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func isAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExitReason {
+func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExitReason {
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, state *State, _ struct{}) (ExitReason, struct{}) {
-		if n == Gas {
-			exitReason, _, _, _ := gas(types.GasValue(state.Gas), state.Registers, state.RAM)
+		if n == GasID {
+			exitReason, _, _, _ := Gas(types.GasValue(state.Gas), state.Registers, state.RAM)
 			return exitReason, struct{}{}
 		}
 		state.Registers[7] = Register(HostCallWhat)
@@ -43,7 +43,7 @@ type IntegratedPVMsAndExportSequence struct {
 	ExportSequence [][]byte
 }
 
-func refine(workItemIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int) (ExecutionExitReason, [][]byte) {
+func Refine(workItemIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int) (ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	var hf HostFunction[IntegratedPVMsAndExportSequence] = func(n HostFunctionIdentifier, state *State, m IntegratedPVMsAndExportSequence) (ExitReason, IntegratedPVMsAndExportSequence) {
 		return NewSimpleExitReason(ExitGo), m
