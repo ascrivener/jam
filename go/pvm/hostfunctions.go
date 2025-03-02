@@ -395,19 +395,19 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 				ctx.State.Registers[7] = Register(InnerFault)
 			}
 			ctx.State.Registers[8] = exitReason.ComplexExitReason.Parameter
-			ctx.Argument.IntegratedPVMs[n] = targetPVM
-			return NewSimpleExitReason(ExitGo)
+		} else {
+			switch *exitReason.SimpleExitReason {
+			case ExitOutOfGas:
+				ctx.State.Registers[7] = Register(InnerOOG)
+			case ExitPanic:
+				ctx.State.Registers[7] = Register(InnerPanic)
+			case ExitHalt:
+				ctx.State.Registers[7] = Register(InnerHalt)
+			default:
+				panic(fmt.Sprintf("unreachable: unhandled simple exit reason %v", *exitReason.SimpleExitReason))
+			}
 		}
-		switch *exitReason.SimpleExitReason {
-		case ExitOutOfGas:
-			ctx.State.Registers[7] = Register(InnerOOG)
-		case ExitPanic:
-			ctx.State.Registers[7] = Register(InnerPanic)
-		case ExitHalt:
-			ctx.State.Registers[7] = Register(InnerHalt)
-		default:
-			panic(fmt.Sprintf("unreachable: unhandled simple exit reason %v", *exitReason.SimpleExitReason))
-		}
+		// Always update the integrated PVM in one place
 		ctx.Argument.IntegratedPVMs[n] = targetPVM
 		return NewSimpleExitReason(ExitGo)
 	})
