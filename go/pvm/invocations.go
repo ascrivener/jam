@@ -5,22 +5,21 @@ import (
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
 )
 
 func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExitReason {
-	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, state *State, _ struct{}) (ExitReason, struct{}) {
+	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) ExitReason {
+		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		if n == GasID {
-			exitReason, _, _, _ := Gas(types.GasValue(state.Gas), state.Registers, state.RAM)
-			return exitReason, struct{}{}
+			return Gas(ctx.State, struct{}{})
 		}
-		state.Registers[7] = Register(HostCallWhat)
-		state.Gas = state.Gas - types.SignedGasValue(GasUsage)
-		return NewSimpleExitReason(ExitGo), struct{}{}
+		ctx.State.Registers[7] = Register(HostCallWhat)
+		return NewSimpleExitReason(ExitGo)
 	}
 	args := serializer.Serialize(struct {
 		WorkPackage wp.WorkPackage
@@ -29,7 +28,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExi
 		WorkPackage: workpackage,
 		Core:        core,
 	})
-	_, exitReason, _ := ΨM(workpackage.AuthorizationCode(), 0, types.GasValue(IsAuthorizedGasAllocation), args, hf, struct{}{})
+	exitReason := ΨM(workpackage.AuthorizationCode(), 0, types.GasValue(IsAuthorizedGasAllocation), args, hf, &struct{}{})
 	return exitReason
 }
 
@@ -44,13 +43,44 @@ type IntegratedPVMsAndExportSequence struct {
 	ExportSequence [][]byte
 }
 
-func Refine(workItemIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int) (ExecutionExitReason, [][]byte) {
+type HostFunctionContext[T any] struct {
+	State    *State
+	Argument *T
+}
+
+func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts state.ServiceAccounts) (ExecutionExitReason, [][]byte) {
 	// TODO: implement
-	var hf HostFunction[IntegratedPVMsAndExportSequence] = func(n HostFunctionIdentifier, state *State, m IntegratedPVMsAndExportSequence) (ExitReason, IntegratedPVMsAndExportSequence) {
-		return NewSimpleExitReason(ExitGo), m
-	}
 	workItem := workPackage.WorkItems[workItemIndex] // w
-	serviceAccounts := historicallookup.GetPosteriorServiceAccounts(workPackage.RefinementContext.LookupAnchorHeaderHash, workPackage.RefinementContext.Timeslot)
+	var hf HostFunction[IntegratedPVMsAndExportSequence] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
+		switch n {
+		case HistoricalLookupID:
+			return HistoricalLookup(ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
+		case FetchID:
+			return Fetch(ctx, workItemIndex, workPackage, authorizerOutput, importSegments)
+		case ExportID:
+			return Export(ctx, exportSegmentOffset)
+		case GasID:
+			return Gas(ctx.State, struct{}{})
+		case MachineID:
+			return Machine(ctx)
+		case PeekID:
+			return Peek(ctx)
+		case ZeroID:
+			return Zero(ctx)
+		case PokeID:
+			return Poke(ctx)
+		case VoidID:
+			return Void(ctx)
+		case InvokeID:
+			return Invoke(ctx)
+		case ExpungeID:
+			return Expunge(ctx)
+		default:
+			ctx.State.Registers[7] = Register(HostCallWhat)
+			return NewSimpleExitReason(ExitGo)
+		}
+	}
 	serviceAccount, ok := serviceAccounts[workItem.ServiceIdentifier]
 	if !ok {
 		return NewExecutionExitReasonError(ExecutionErrorBAD), [][]byte{}
@@ -73,10 +103,11 @@ func Refine(workItemIndex int, workPackage workpackage.WorkPackage, authorizerOu
 		RefinementContext workreport.RefinementContext
 		Authorizer        [32]byte
 	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
-	_, r, integratedPVMsAndExportSequence := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, IntegratedPVMsAndExportSequence{
+	integratedPVMsAndExportSequence := &IntegratedPVMsAndExportSequence{
 		IntegratedPVMs: map[int]IntegratedPVM{},
 		ExportSequence: [][]byte{},
-	})
+	}
+	r := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
 	if r.IsError() && *r.ExecutionError == ExecutionErrorOutOfGas || *r.ExecutionError == ExecutionErrorPanic {
 		return r, [][]byte{}
 	}

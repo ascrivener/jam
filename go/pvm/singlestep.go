@@ -11,65 +11,54 @@ import (
 )
 
 type State struct {
-	InstructionCounter Register
-	Gas                types.SignedGasValue
-	Registers          [13]Register
-	RAM                *ram.RAM
-}
-
-type SingleStepContext struct {
-	State                      *State // Contains instruction counter, registers, RAM, gas, etc.
-	ExitReason                 ExitReason
-	Instructions               []byte                  // The instruction stream.
-	Opcodes                    bitsequence.BitSequence // The bitsequence of special opcodes.
-	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
-	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
-	// Pre-allocated slice to hold RAM exception indices.
-	MemAccessExceptions []ram.RamIndex
+	Gas       types.SignedGasValue
+	Registers [13]Register
+	RAM       *ram.RAM
 }
 
 type InstructionContext struct {
-	SingleStepContext *SingleStepContext
-	Instruction       byte
-	SkipLength        int // Computed skip length for the current instruction.
+	MemAccessExceptions []ram.RamIndex
+	Instruction         byte
+	SkipLength          int // Computed skip length for the current instruction.
 }
 
-type InstructionHandler func(ctx *InstructionContext)
+type InstructionHandler func(pvm *PVM, ctx *InstructionContext) ExitReason
 
 var dispatchTable [256]InstructionHandler
 
 var terminationOpcodes [256]bool
 
-func SingleStep(singleStepContext *SingleStepContext) {
+func (pvm *PVM) SingleStep(MemAccessExceptions []ram.RamIndex) ExitReason {
 	// Reset the pre-allocated slice without allocating new memory.
-	singleStepContext.MemAccessExceptions = singleStepContext.MemAccessExceptions[:0]
-	priorIC := singleStepContext.State.InstructionCounter
+	MemAccessExceptions = MemAccessExceptions[:0]
+	priorIC := pvm.InstructionCounter
 
 	ctx := InstructionContext{
-		SingleStepContext: singleStepContext,
-		Instruction:       getInstruction(singleStepContext.Instructions, singleStepContext.State.InstructionCounter),
-		SkipLength:        skip(singleStepContext.State.InstructionCounter, singleStepContext.Opcodes),
+		MemAccessExceptions: MemAccessExceptions,
+		Instruction:         getInstruction(pvm.Instructions, pvm.InstructionCounter),
+		SkipLength:          skip(pvm.InstructionCounter, pvm.Opcodes),
 	}
 
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
-		handler(&ctx)
+		handler(pvm, &ctx)
 	} else {
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
 
 	// default instruction counter increment
-	if priorIC == singleStepContext.State.InstructionCounter {
-		singleStepContext.State.InstructionCounter += 1 + Register(ctx.SkipLength)
+	if priorIC == pvm.InstructionCounter {
+		pvm.InstructionCounter += 1 + Register(ctx.SkipLength)
 	}
 
-	minRamIndex := minRamIndex(ctx.SingleStepContext.MemAccessExceptions)
+	minRamIndex := minRamIndex(ctx.MemAccessExceptions)
 	if minRamIndex != nil {
 		if *minRamIndex < ram.MinValidRamIndex {
-			singleStepContext.ExitReason = NewSimpleExitReason(ExitPanic)
+			return NewSimpleExitReason(ExitPanic)
 		} else {
-			singleStepContext.ExitReason = NewComplexExitReason(ExitPageFault, Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
+			return NewComplexExitReason(ExitPageFault, Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
 		}
 	}
+	return NewSimpleExitReason(ExitGo)
 }
 
 func getInstruction(instructions []byte, instructionCounter Register) byte {

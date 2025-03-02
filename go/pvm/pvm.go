@@ -7,37 +7,49 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-type PVM[X any] struct {
-	Instructions     []byte
-	Opcodes          bitsequence.BitSequence
-	dynamicJumpTable []Register
-	State            *State
+type PVM struct {
+	Instructions               []byte
+	Opcodes                    bitsequence.BitSequence
+	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
+	DynamicJumpTable           []Register
+	InstructionCounter         Register
+	State                      *State
 }
 
-func NewPVM[X any](programBlob []byte, registers [13]Register, ram *ram.RAM, instructionCounter Register, gas types.GasValue) *PVM[X] {
+func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructionCounter Register, gas types.GasValue) *PVM {
 	instructions, opcodes, dynamicJumpTable, ok := Deblob(programBlob)
 	if !ok {
 		return nil
 	}
-	return &PVM[X]{
-		Instructions:     instructions,
-		Opcodes:          opcodes,
-		dynamicJumpTable: dynamicJumpTable,
+	basicBlockBeginningOpcodes := bitsequence.New()
+	bits := make([]bool, len(instructions))
+	basicBlockBeginningOpcodes.AppendBits(bits)
+	basicBlockBeginningOpcodes.SetBitAt(0, true)
+	for n, instruction := range instructions {
+		if opcodes.BitAt(n) && terminationOpcodes[instruction] {
+			basicBlockBeginningOpcodes.SetBitAt(n+1+skip(Register(n), opcodes), true)
+		}
+	}
+	return &PVM{
+		Instructions:               instructions,
+		Opcodes:                    opcodes,
+		BasicBlockBeginningOpcodes: *basicBlockBeginningOpcodes,
+		DynamicJumpTable:           dynamicJumpTable,
+		InstructionCounter:         instructionCounter,
 		State: &State{
-			InstructionCounter: instructionCounter,
-			Gas:                types.SignedGasValue(gas),
-			Registers:          registers,
-			RAM:                ram,
+			Gas:       types.SignedGasValue(gas),
+			Registers: registers,
+			RAM:       ram,
 		},
 	}
 }
 
-func InitializePVM[X any](programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.GasValue) *PVM[X] {
+func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.GasValue) *PVM {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
 		return nil
 	}
-	return NewPVM[X](programBlob, registers, ram, instructionCounter, gas)
+	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
 
 func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, regs [13]Register, r *ram.RAM, ok bool) {
@@ -158,100 +170,76 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	return c, k, jArr, true
 }
 
-func (pvm *PVM[X]) Ψ() ExitReason {
-	singleStepContext := &SingleStepContext{
-		State:                      pvm.State,
-		ExitReason:                 NewSimpleExitReason(ExitGo),
-		Instructions:               pvm.Instructions,
-		Opcodes:                    pvm.Opcodes,
-		DynamicJumpTable:           pvm.dynamicJumpTable,
-		BasicBlockBeginningOpcodes: pvm.BasicBlockBeginningOpcodes(),
-		MemAccessExceptions:        make([]ram.RamIndex, 0, 16),
-	}
+func (pvm *PVM) Ψ() ExitReason {
 	for {
-		SingleStep(singleStepContext)
-		exitReason := singleStepContext.ExitReason
+		exitReason := pvm.SingleStep(make([]ram.RamIndex, 0, 16))
 		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
 			// Continue executing if the exit reason is still "go".
 			continue
 		}
 		// Otherwise, adjust for out-of-gas or panic/halt conditions.
-		if singleStepContext.State.Gas < 0 {
-			singleStepContext.ExitReason = NewSimpleExitReason(ExitOutOfGas)
+		if pvm.State.Gas < 0 {
+			exitReason = NewSimpleExitReason(ExitOutOfGas)
 		} else if exitReason.IsSimple() &&
 			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
 			// Reset the instruction counter on panic/halt.
-			singleStepContext.State.InstructionCounter = 0
+			pvm.InstructionCounter = 0
 		}
-		return singleStepContext.ExitReason
+		return exitReason
 	}
 }
 
-func (pvm *PVM[X]) BasicBlockBeginningOpcodes() bitsequence.BitSequence {
-	basicBlockBeginningOpcodes := bitsequence.New()
-	bits := make([]bool, len(pvm.Instructions))
-	basicBlockBeginningOpcodes.AppendBits(bits)
-	basicBlockBeginningOpcodes.SetBitAt(0, true)
-	for n, instruction := range pvm.Instructions {
-		if pvm.Opcodes.BitAt(n) && terminationOpcodes[instruction] {
-			basicBlockBeginningOpcodes.SetBitAt(n+1+skip(Register(n), pvm.Opcodes), true)
-		}
-	}
-	return *basicBlockBeginningOpcodes
-}
-
-func (pvm *PVM[X]) ΨH(f HostFunction[X], x X) (ExitReason, X) {
+func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
 			pvm.State.RAM.ClearRollbackLog()
-			return exitReason, x
+			return exitReason
 		}
 
 		hostCall := exitReason.ComplexExitReason.Parameter
 		stateBeforeHostCall := *pvm.State
-		postHostCallExitReason, postHostCallX := f(HostFunctionIdentifier(hostCall), pvm.State, x)
+		postHostCallExitReason := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
 			pvm.State.RAM.Rollback() // rollback changes
 			// Reset pvm.State to the snapshot from before the host call.
 			// Taking the address of stateBeforeHostCall will cause it to escape to the heap.
 			pvm.State = &stateBeforeHostCall
-			return postHostCallExitReason, x
+			return postHostCallExitReason
 		}
 
 		pvm.State.RAM.ClearRollbackLog()
 
 		if *postHostCallExitReason.SimpleExitReason == ExitGo {
-			pvm.State.InstructionCounter = stateBeforeHostCall.InstructionCounter + Register(1+skip(stateBeforeHostCall.InstructionCounter, pvm.Opcodes))
-			x = postHostCallX // Update `x` with new value and continue
+			pvm.InstructionCounter = pvm.InstructionCounter + Register(1+skip(pvm.InstructionCounter, pvm.Opcodes))
 			continue
 		}
 
-		return postHostCallExitReason, postHostCallX
+		return postHostCallExitReason
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x X) (types.SignedGasValue, ExecutionExitReason, X) {
-	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, gas)
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) ExecutionExitReason {
+	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
-		return types.SignedGasValue(gas), NewExecutionExitReasonError(ExecutionErrorPanic), x
+		return NewExecutionExitReasonError(ExecutionErrorPanic)
 	}
-	postHostCallExitReason, postHostCallX := pvm.ΨH(f, x)
+	postHostCallExitReason := ΨH(pvm, f, x)
 	if postHostCallExitReason.IsSimple() {
 		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
-			return pvm.State.Gas, NewExecutionExitReasonError(ExecutionErrorOutOfGas), postHostCallX
+			return NewExecutionExitReasonError(ExecutionErrorOutOfGas)
 		}
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			end := start + pvm.State.Registers[8]
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, uint64(start), uint64(end)) {
 				blob := pvm.State.RAM.GetValueSlice(uint64(start), uint64(end))
-				return pvm.State.Gas, NewExecutionExitReasonBlob(blob), postHostCallX
+				return NewExecutionExitReasonBlob(blob)
 			} else {
-				return pvm.State.Gas, NewExecutionExitReasonBlob([]byte{}), postHostCallX
+				return NewExecutionExitReasonBlob([]byte{})
 			}
 		}
 	}
-	return pvm.State.Gas, NewExecutionExitReasonError(ExecutionErrorPanic), postHostCallX
+	return NewExecutionExitReasonError(ExecutionErrorPanic)
 }
