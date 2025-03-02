@@ -13,12 +13,8 @@ type PVM[X any] struct {
 	State            *State
 }
 
-func InitializePVM[X any](programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.SignedGasValue) *PVM[X] {
-	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
-	if !ok {
-		return nil
-	}
-	instructions, opcodes, dynamicJumpTable, ok := deblob(programBlob)
+func NewPVM[X any](programBlob []byte, registers [13]Register, ram *RAM, instructionCounter Register, gas types.GasValue) *PVM[X] {
+	instructions, opcodes, dynamicJumpTable, ok := Deblob(programBlob)
 	if !ok {
 		return nil
 	}
@@ -28,11 +24,19 @@ func InitializePVM[X any](programCodeFormat []byte, arguments Arguments, instruc
 		dynamicJumpTable: dynamicJumpTable,
 		State: &State{
 			InstructionCounter: instructionCounter,
-			Gas:                gas,
+			Gas:                types.SignedGasValue(gas),
 			Registers:          registers,
 			RAM:                ram,
 		},
 	}
+}
+
+func InitializePVM[X any](programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.GasValue) *PVM[X] {
+	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
+	if !ok {
+		return nil
+	}
+	return NewPVM[X](programBlob, registers, ram, instructionCounter, gas)
 }
 
 func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, r [13]Register, ram *RAM, ok bool) {
@@ -103,7 +107,7 @@ func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, r [13]Reg
 
 // deblob attempts to decompose p into three parts: c, k, and j.
 // It returns ok==false if p does not follow the expected structure.
-func deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok bool) {
+func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok bool) {
 	offset := 0
 
 	// 1. Decode E(|j|): the encoded number of elements in j.
@@ -228,7 +232,7 @@ func (pvm *PVM[X]) ΨH(f HostFunction[X], x X) (ExitReason, X) {
 }
 
 func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x X) (types.SignedGasValue, ExecutionExitReason, X) {
-	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, types.SignedGasValue(gas))
+	pvm := InitializePVM[X](programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
 		return types.SignedGasValue(gas), NewExecutionExitReasonError(ExecutionErrorPanic), x
 	}
@@ -241,7 +245,7 @@ func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types
 			start := pvm.State.Registers[7]
 			end := start + pvm.State.Registers[8]
 			if !pvm.State.RAM.rangeHas(Inaccessible, RamIndex(start), RamIndex(end)) {
-				blob := pvm.State.RAM.inspectRange(start, end-start, &[]RamIndex{})
+				blob := pvm.State.RAM.Value[start:end]
 				return pvm.State.Gas, NewExecutionExitReasonBlob(blob), postHostCallX
 			} else {
 				return pvm.State.Gas, NewExecutionExitReasonBlob([]byte{}), postHostCallX

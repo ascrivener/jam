@@ -34,7 +34,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExi
 
 type IntegratedPVM struct {
 	ProgramCode        []byte
-	Ram                *RAM
+	RAM                *RAM
 	InstructionCounter Register
 }
 

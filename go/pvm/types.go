@@ -2,7 +2,6 @@ package pvm
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/ascrivener/jam/constants"
 )
@@ -24,6 +23,12 @@ type RAM struct {
 	Access          [NumRamPages]RamAccess
 	BeginningOfHeap *RamIndex // nil if no heap
 	RollbackLog     map[RamIndex]byte
+}
+
+func NewEmptyRAM() *RAM {
+	return &RAM{
+		RollbackLog: make(map[RamIndex]byte),
+	}
 }
 
 func NewRAM(readData, writeData []byte, arguments Arguments, z, stackSize int) *RAM {
@@ -65,7 +70,7 @@ func (r *RAM) setSectionAccess(start, len RamIndex, access RamAccess) {
 
 func (r *RAM) setSectionValue(srcValues []byte, start RamIndex) {
 	end := start + RamIndex(len(srcValues))
-	copy(r.Value[start:end], srcValues[:end-start])
+	copy(r.Value[start:end], srcValues)
 }
 
 func (r *RAM) accessForIndex(index RamIndex) RamAccess {
@@ -73,11 +78,27 @@ func (r *RAM) accessForIndex(index RamIndex) RamAccess {
 }
 
 func (r *RAM) rangeHas(access RamAccess, start, end RamIndex) bool {
-	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a == access }) != -1
+	startPage := int(start / PageSize)
+	endPage := int(end / PageSize)
+
+	for i := startPage; i < endPage; i++ {
+		if r.Access[i] == access {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *RAM) rangeUniform(access RamAccess, start, end RamIndex) bool {
-	return slices.IndexFunc(r.Access[start:end], func(a RamAccess) bool { return a != access }) == -1
+	startPage := int(start / PageSize)
+	endPage := int(end / PageSize)
+
+	for i := startPage; i < endPage; i++ {
+		if r.Access[i] != access {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RAM) setAccessForIndex(index RamIndex, access RamAccess) {

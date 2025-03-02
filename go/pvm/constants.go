@@ -31,3 +31,5 @@ const ErasureCodedPiecesSize int = 684
 const ErasureCodedPiecesInSegment int = 6
 
 const SegmentSize int = ErasureCodedPiecesInSegment * ErasureCodedPiecesSize
+
+const WorkPackageManifestMaxEntries int = (1 << 11)

@@ -1,10 +1,13 @@
 package pvm
 
 import (
+	"fmt"
+
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/util"
 	"github.com/ascrivener/jam/workpackage"
 )
 
@@ -185,11 +188,440 @@ func Fetch(ctx HostCallContext, importSegmentsIndex int, workPackage workpackage
 	})
 }
 
-// func Export(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence, exportSegmentOffset int) HostCallResult {
-// 	return withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+func Export(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence, exportSegmentOffset int) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		preimage := ctx.Registers[7]
+		z := min(ctx.Registers[8], Register(SegmentSize))
+		if ctx.RAM.rangeHas(Inaccessible, RamIndex(preimage), RamIndex(preimage+z)) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		if exportSegmentOffset+len(integratedPVMsAndExportSequence.ExportSequence) >= WorkPackageManifestMaxEntries {
+			ctx.Registers[7] = Register(HostCallFull)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		x := util.OctetArrayZeroPadding(util.GetWrappedValues(ctx.RAM.Value[:], int(preimage), int(preimage+z)), SegmentSize)
+		ctx.Registers[7] = Register(exportSegmentOffset + len(integratedPVMsAndExportSequence.ExportSequence))
+		updatedSequence.ExportSequence = append(updatedSequence.ExportSequence, x)
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+	return hostResult, updatedSequence
+}
 
-// 	})
-// }
+func Machine(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedIntegratedPVMsAndExportSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		po := RamIndex(ctx.Registers[7])
+		pz := RamIndex(ctx.Registers[8])
+		i := ctx.Registers[9]
+		if ctx.RAM.rangeHas(Inaccessible, po, po+pz) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		p := ctx.RAM.Value[po : po+pz]
+		if _, _, _, ok := Deblob(p); !ok {
+			ctx.Registers[7] = Register(HostCallHuh)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		n := 0
+		for {
+			if _, ok := integratedPVMsAndExportSequence.IntegratedPVMs[n]; !ok {
+				break
+			}
+			n++
+		}
+		u := NewEmptyRAM()
+		ctx.Registers[7] = Register(n)
+		updatedIntegratedPVMsAndExportSequence.IntegratedPVMs[n] = IntegratedPVM{
+			ProgramCode:        p,
+			RAM:                u,
+			InstructionCounter: i,
+		}
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+	return hostResult, updatedIntegratedPVMsAndExportSequence
+}
+
+func Peek(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) HostCallResult {
+	return withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		// Extract the 4 parameters from registers
+		n := int(ctx.Registers[7])       // Source integrated PVM index
+		o := RamIndex(ctx.Registers[8])  // Destination memory address
+		s := RamIndex(ctx.Registers[9])  // Source memory address
+		z := RamIndex(ctx.Registers[10]) // Length to copy
+
+		// Check if destination range is accessible
+		if !ctx.RAM.rangeUniform(Mutable, o, o+z) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check if integrated PVM exists
+		sourcePVM, ok := integratedPVMsAndExportSequence.IntegratedPVMs[n]
+		if !ok {
+			ctx.Registers[7] = Register(HostCallWho)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		if sourcePVM.RAM.rangeHas(Inaccessible, s, s+z) {
+			ctx.Registers[7] = Register(HostCallOOB)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Copy the memory
+		sourceBytes := sourcePVM.RAM.Value[s : s+z]
+		for i := range sourceBytes {
+			destIdx := (o + RamIndex(i))
+			ctx.RAM.Value[destIdx] = sourceBytes[i]
+		}
+
+		// Set result to OK
+		ctx.Registers[7] = Register(HostCallOK)
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+}
+
+func Zero(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		// Extract the 3 parameters from registers
+		n := int(ctx.Registers[7])      // Target integrated PVM index
+		p := RamIndex(ctx.Registers[8]) // Start address
+		c := RamIndex(ctx.Registers[9]) // Count/length
+
+		// Check for invalid memory range
+		// p < 16 ∨ p + c ≥ 2^32 / ZP
+		if p < 16 || p+c >= (1<<32)/PageSize {
+			ctx.Registers[7] = Register(HostCallHuh)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check if integrated PVM exists
+		targetPVM, ok := updatedSequence.IntegratedPVMs[n]
+		if !ok {
+			ctx.Registers[7] = Register(HostCallWho)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Zero out the memory
+		zeros := make([]byte, int(c))
+		targetPVM.RAM.setSectionValue(zeros, p)
+
+		targetPVM.RAM.setSectionAccess(p, c, Mutable)
+
+		// Set result to OK
+		ctx.Registers[7] = Register(HostCallOK)
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+
+	return hostResult, updatedSequence
+}
+
+func Poke(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		// Extract the 4 parameters from registers
+		n := int(ctx.Registers[7])       // Target integrated PVM index
+		s := RamIndex(ctx.Registers[8])  // Source address in current context
+		o := RamIndex(ctx.Registers[9])  // Destination address in target PVM
+		z := RamIndex(ctx.Registers[10]) // Length to copy
+
+		// Check if source range is accessible in current context
+		if ctx.RAM.rangeHas(Inaccessible, s, s+z) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check if integrated PVM exists
+		targetPVM, ok := updatedSequence.IntegratedPVMs[n]
+		if !ok {
+			ctx.Registers[7] = Register(HostCallWho)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check if destination range is not all mutable in target PVM
+		if !targetPVM.RAM.rangeUniform(Mutable, o, o+z) {
+			ctx.Registers[7] = Register(HostCallOOB)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Copy memory from current context to target PVM
+		sourceData := make([]byte, int(z))
+		for i := range sourceData {
+			sourceIdx := (s + RamIndex(i))
+			sourceData[i] = ctx.RAM.Value[sourceIdx]
+		}
+
+		// Set the data in the target PVM
+		targetPVM.RAM.setSectionValue(sourceData, o)
+
+		// Set result to OK
+		ctx.Registers[7] = Register(HostCallOK)
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+
+	return hostResult, updatedSequence
+}
+
+func Void(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		// Extract the 3 parameters from registers
+		n := int(ctx.Registers[7])               // Target integrated PVM index
+		pPageIndex := RamIndex(ctx.Registers[8]) // Start address
+		cPages := RamIndex(ctx.Registers[9])     // length
+		pPageStart := RamIndex(pPageIndex * PageSize)
+		cPagesSize := RamIndex(cPages * PageSize)
+
+		// Check if integrated PVM exists
+		targetPVM, ok := updatedSequence.IntegratedPVMs[n]
+		if !ok {
+			ctx.Registers[7] = Register(HostCallWho)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check for invalid memory range
+		if pPageIndex < 16 || pPageIndex+cPages >= (1<<32)/PageSize || targetPVM.RAM.rangeHas(Inaccessible, pPageStart, pPageStart+cPagesSize) {
+			ctx.Registers[7] = Register(HostCallHuh)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Zero out the memory
+		zeros := make([]byte, int(cPagesSize))
+		targetPVM.RAM.setSectionValue(zeros, pPageStart)
+
+		// Set access to Inaccessible
+		targetPVM.RAM.setSectionAccess(pPageStart, cPagesSize, Inaccessible)
+
+		// Set result to OK
+		ctx.Registers[7] = Register(HostCallOK)
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+
+	return hostResult, updatedSequence
+}
+
+func Invoke(ctx HostCallContext, integratedPVMsAndExportSequence IntegratedPVMsAndExportSequence) (HostCallResult, IntegratedPVMsAndExportSequence) {
+	updatedSequence := integratedPVMsAndExportSequence
+	hostResult := withGasCheck(ctx, func(ctx HostCallContext, postGas types.SignedGasValue) HostCallResult {
+		// Extract the parameters from registers
+		n := int(ctx.Registers[7])      // Target integrated PVM index
+		o := RamIndex(ctx.Registers[8]) // Memory offset for gas/weight data
+
+		// Check if memory range o to o+112 is accessible for reading
+		if !ctx.RAM.rangeUniform(Mutable, o, o+112) {
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitPanic),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		// Check if integrated PVM exists
+		targetPVM, ok := updatedSequence.IntegratedPVMs[n]
+		if !ok {
+			ctx.Registers[7] = Register(HostCallWho)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+
+		gasData := ctx.RAM.Value[o : o+8]           // Assuming E8(g) is 64 bytes
+		registersData := ctx.RAM.Value[o+8 : o+112] // Assuming E#8(w) is 48 bytes
+
+		gas := types.GasValue(serializer.DecodeLittleEndian(gasData))
+		registers := [13]Register{}
+		for i := range 13 {
+			registers[i] = Register(serializer.DecodeLittleEndian(registersData[i*8 : i*8+8]))
+		}
+
+		pvm := NewPVM[struct{}](targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
+		if pvm == nil {
+			ctx.Registers[7] = Register(InnerPanic)
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		exitReason := pvm.Ψ()
+
+		// Update memory with new gas and registers
+		gasBytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Gas))
+		copy(ctx.RAM.Value[o:o+8], gasBytes)
+
+		for i := range 13 {
+			regBytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[i]))
+			copy(ctx.RAM.Value[o+8+RamIndex(i)*8:o+8+RamIndex(i)*8+8], regBytes)
+		}
+
+		targetPVM.InstructionCounter = pvm.State.InstructionCounter
+		// Handle instruction pointer update based on exit reason
+		if exitReason.IsComplex() {
+			if exitReason.ComplexExitReason.Type == ExitHostCall {
+				// If it's a host call, increment instruction pointer
+				targetPVM.InstructionCounter++
+				ctx.Registers[7] = Register(InnerHost)
+			} else {
+				ctx.Registers[7] = Register(InnerFault)
+			}
+			ctx.Registers[8] = exitReason.ComplexExitReason.Parameter
+			updatedSequence.IntegratedPVMs[n] = targetPVM
+			return HostCallResult{
+				ExitReason:     NewSimpleExitReason(ExitGo),
+				PostGas:        postGas,
+				Registers:      ctx.Registers,
+				RAM:            ctx.RAM,
+				ServiceAccount: ctx.ServiceAccount,
+			}
+		}
+		switch *exitReason.SimpleExitReason {
+		case ExitOutOfGas:
+			ctx.Registers[7] = Register(InnerOOG)
+		case ExitPanic:
+			ctx.Registers[7] = Register(InnerPanic)
+		case ExitHalt:
+			ctx.Registers[7] = Register(InnerHalt)
+		default:
+			panic(fmt.Sprintf("unreachable: unhandled simple exit reason %v", *exitReason.SimpleExitReason))
+		}
+		updatedSequence.IntegratedPVMs[n] = targetPVM
+		return HostCallResult{
+			ExitReason:     NewSimpleExitReason(ExitGo),
+			PostGas:        postGas,
+			Registers:      ctx.Registers,
+			RAM:            ctx.RAM,
+			ServiceAccount: ctx.ServiceAccount,
+		}
+	})
+
+	return hostResult, updatedSequence
+}
 
 // helpers
 
@@ -261,7 +693,7 @@ func processPreimage(
 	} else {
 		ctx.Registers[resultRegister] = Register(preimageLen)
 		slicedData := (*preimage)[int(f):int(f+l)]
-		ctx.RAM.mutateRange(o, slicedData, &[]RamIndex{})
+		copy(ctx.RAM.Value[o:o+Register(len(slicedData))], slicedData)
 	}
 
 	return HostCallResult{exitReason, postGas, ctx.Registers, ctx.RAM, ctx.ServiceAccount}
@@ -293,7 +725,7 @@ func performLookup(
 			}
 		} else if a != nil {
 			var key [32]byte
-			copy(key[:], ctx.RAM.inspectRange(h, 32, &[]RamIndex{}))
+			copy(key[:], ctx.RAM.Value[h:h+32])
 			preimage = retrievePreimage(a, key)
 		}
 
