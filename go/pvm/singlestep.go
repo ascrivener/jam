@@ -6,6 +6,7 @@ import (
 	"math/bits"
 
 	"github.com/ascrivener/jam/bitsequence"
+	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -13,7 +14,7 @@ type State struct {
 	InstructionCounter Register
 	Gas                types.SignedGasValue
 	Registers          [13]Register
-	RAM                *RAM
+	RAM                *ram.RAM
 }
 
 type SingleStepContext struct {
@@ -24,7 +25,7 @@ type SingleStepContext struct {
 	DynamicJumpTable           []Register              // Jump table for dynamic jumps.
 	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
 	// Pre-allocated slice to hold RAM exception indices.
-	MemAccessExceptions []RamIndex
+	MemAccessExceptions []ram.RamIndex
 }
 
 type InstructionContext struct {
@@ -63,10 +64,10 @@ func SingleStep(singleStepContext *SingleStepContext) {
 
 	minRamIndex := minRamIndex(ctx.SingleStepContext.MemAccessExceptions)
 	if minRamIndex != nil {
-		if *minRamIndex < MinValidRamIndex {
+		if *minRamIndex < ram.MinValidRamIndex {
 			singleStepContext.ExitReason = NewSimpleExitReason(ExitPanic)
 		} else {
-			singleStepContext.ExitReason = NewComplexExitReason(ExitPageFault, Register(PageSize*(*minRamIndex/PageSize)))
+			singleStepContext.ExitReason = NewComplexExitReason(ExitPageFault, Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
 		}
 	}
 }
@@ -149,7 +150,7 @@ func djump(a uint32, instructionCounter Register, dynamicJumpTable []Register, b
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter
 }
 
-func minRamIndex(ramIndices []RamIndex) *RamIndex {
+func minRamIndex(ramIndices []ram.RamIndex) *ram.RamIndex {
 	if len(ramIndices) == 0 {
 		return nil
 	}

@@ -3,6 +3,7 @@ package pvm
 import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/historicallookup"
+	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workpackage"
@@ -34,7 +35,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExi
 
 type IntegratedPVM struct {
 	ProgramCode        []byte
-	RAM                *RAM
+	RAM                *ram.RAM
 	InstructionCounter Register
 }
 

@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"slices"
 
+	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
 )
 
@@ -37,16 +38,16 @@ func handleTwoImmValues(ctx *InstructionContext) {
 	// Use the opcode from the context (assuming it's been set)
 	switch ctx.Instruction {
 	case 30: // store_imm_u8
-		ctx.SingleStepContext.State.RAM.mutate(vx, byte(vy), &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.Mutate(uint64(vx), byte(vy), &ctx.SingleStepContext.MemAccessExceptions)
 	case 31: // store_imm_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 32: // store_imm_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 33: // store_imm_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	default:
 		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", ctx.Instruction))
 	}
@@ -76,36 +77,36 @@ func handleOneRegOneImm(ctx *InstructionContext) {
 	case 51: // load_imm
 		ctx.SingleStepContext.State.Registers[ra] = vx
 	case 52: // load_u8
-		ctx.SingleStepContext.State.Registers[ra] = Register(ctx.SingleStepContext.State.RAM.inspect(vx, &ctx.SingleStepContext.MemAccessExceptions))
+		ctx.SingleStepContext.State.Registers[ra] = Register(ctx.SingleStepContext.State.RAM.Inspect(uint64(vx), &ctx.SingleStepContext.MemAccessExceptions))
 	case 53: // load_i8
-		val := ctx.SingleStepContext.State.RAM.inspect(vx, &ctx.SingleStepContext.MemAccessExceptions)
+		val := ctx.SingleStepContext.State.RAM.Inspect(uint64(vx), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = signExtendImmediate(1, uint64(val))
 	case 54: // load_u16
-		data := ctx.SingleStepContext.State.RAM.inspectRange(vx, 2, &ctx.SingleStepContext.MemAccessExceptions)
+		data := ctx.SingleStepContext.State.RAM.InspectRange(uint64(vx), uint64(vx+2), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 55: // load_i16
-		data := ctx.SingleStepContext.State.RAM.inspectRange(vx, 2, &ctx.SingleStepContext.MemAccessExceptions)
+		data := ctx.SingleStepContext.State.RAM.InspectRange(uint64(vx), uint64(vx+2), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = signExtendImmediate(2, serializer.DecodeLittleEndian(data))
 	case 56: // load_u32
-		data := ctx.SingleStepContext.State.RAM.inspectRange(vx, 4, &ctx.SingleStepContext.MemAccessExceptions)
+		data := ctx.SingleStepContext.State.RAM.InspectRange(uint64(vx), uint64(vx+4), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 57: // load_i32
-		data := ctx.SingleStepContext.State.RAM.inspectRange(vx, 4, &ctx.SingleStepContext.MemAccessExceptions)
+		data := ctx.SingleStepContext.State.RAM.InspectRange(uint64(vx), uint64(vx+4), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = signExtendImmediate(4, serializer.DecodeLittleEndian(data))
 	case 58: // load_u64
-		data := ctx.SingleStepContext.State.RAM.inspectRange(vx, 8, &ctx.SingleStepContext.MemAccessExceptions)
+		data := ctx.SingleStepContext.State.RAM.InspectRange(uint64(vx), uint64(vx+8), &ctx.SingleStepContext.MemAccessExceptions)
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 59: // store_u8
-		ctx.SingleStepContext.State.RAM.mutate(vx, uint8(ctx.SingleStepContext.State.Registers[ra]), &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.Mutate(uint64(vx), uint8(ctx.SingleStepContext.State.Registers[ra]), &ctx.SingleStepContext.MemAccessExceptions)
 	case 60: // store_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(ctx.SingleStepContext.State.Registers[ra]))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 61: // store_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(ctx.SingleStepContext.State.Registers[ra]))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 62: // store_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(ctx.SingleStepContext.State.Registers[ra]))
-		ctx.SingleStepContext.State.RAM.mutateRange(vx, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(vx), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	default:
 		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", ctx.Instruction))
 	}
@@ -130,16 +131,16 @@ func handleOneRegTwoImm(ctx *InstructionContext) {
 	// Use the opcode from the context to choose the correct store operation.
 	switch ctx.Instruction {
 	case 70: // store_imm_ind_u8
-		ctx.SingleStepContext.State.RAM.mutate(addr, uint8(vy), &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.Mutate(uint64(addr), uint8(vy), &ctx.SingleStepContext.MemAccessExceptions)
 	case 71: // store_imm_ind_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(addr, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(addr), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 72: // store_imm_ind_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(addr, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(addr), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	case 73: // store_imm_ind_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(vy))
-		ctx.SingleStepContext.State.RAM.mutateRange(addr, serialized, &ctx.SingleStepContext.MemAccessExceptions)
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(addr), serialized, &ctx.SingleStepContext.MemAccessExceptions)
 	default:
 		panic(fmt.Sprintf("handleTwoImmValuesIndirect: unexpected opcode %d", ctx.Instruction))
 	}
@@ -216,14 +217,14 @@ func handleTwoReg(ctx *InstructionContext) {
 		for ; h < MaxRegister; h++ {
 			// Check that the region of size registers[ra] starting at h is free.
 			for i := h; i < h+ctx.SingleStepContext.State.Registers[ra]; i++ {
-				if ctx.SingleStepContext.State.RAM.accessForIndex(RamIndex(i)) != Inaccessible {
+				if ctx.SingleStepContext.State.RAM.AccessForIndex(uint64(i)) != ram.Inaccessible {
 					// If any part is not free, skip to the next candidate.
 					continue outer
 				}
 			}
 			// Mark the region as mutable.
 			for i := h; i < h+ctx.SingleStepContext.State.Registers[ra]; i++ {
-				ctx.SingleStepContext.State.RAM.setAccessForIndex(RamIndex(i), Mutable)
+				ctx.SingleStepContext.State.RAM.SetIndexAccess(uint64(i), ram.Mutable)
 			}
 			// Return the starting address of the allocated region.
 			ctx.SingleStepContext.State.Registers[rd] = h
@@ -296,39 +297,39 @@ func handleTwoRegOneImm(ctx *InstructionContext) {
 
 	switch ctx.Instruction {
 	case 120: // store_ind_u8
-		ctx.SingleStepContext.State.RAM.mutate(ctx.SingleStepContext.State.Registers[rb]+Register(vx),
+		ctx.SingleStepContext.State.RAM.Mutate(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)),
 			byte(ctx.SingleStepContext.State.Registers[ra]), &ctx.SingleStepContext.MemAccessExceptions)
 	case 121: // store_ind_u16
-		ctx.SingleStepContext.State.RAM.mutateRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx),
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)),
 			serializer.EncodeLittleEndian(2, uint64(ctx.SingleStepContext.State.Registers[ra])), &ctx.SingleStepContext.MemAccessExceptions)
 	case 122: // store_ind_u32
-		ctx.SingleStepContext.State.RAM.mutateRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx),
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)),
 			serializer.EncodeLittleEndian(4, uint64(ctx.SingleStepContext.State.Registers[ra])), &ctx.SingleStepContext.MemAccessExceptions)
 	case 123: // store_ind_u64
-		ctx.SingleStepContext.State.RAM.mutateRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx),
+		ctx.SingleStepContext.State.RAM.MutateRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)),
 			serializer.EncodeLittleEndian(8, uint64(ctx.SingleStepContext.State.Registers[ra])), &ctx.SingleStepContext.MemAccessExceptions)
 	case 124: // load_ind_u8
-		ctx.SingleStepContext.State.Registers[ra] = Register(ctx.SingleStepContext.State.RAM.inspect(ctx.SingleStepContext.State.Registers[rb]+Register(vx), &ctx.SingleStepContext.MemAccessExceptions))
+		ctx.SingleStepContext.State.Registers[ra] = Register(ctx.SingleStepContext.State.RAM.Inspect(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), &ctx.SingleStepContext.MemAccessExceptions))
 	case 125: // load_ind_i8
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
-			serializer.UnsignedToSigned(1, uint64(ctx.SingleStepContext.State.RAM.inspect(ctx.SingleStepContext.State.Registers[rb]+Register(vx), &ctx.SingleStepContext.MemAccessExceptions)))))
+			serializer.UnsignedToSigned(1, uint64(ctx.SingleStepContext.State.RAM.Inspect(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), &ctx.SingleStepContext.MemAccessExceptions)))))
 	case 126: // load_ind_u16
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			ctx.SingleStepContext.State.RAM.inspectRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx), 2, &ctx.SingleStepContext.MemAccessExceptions)))
+			ctx.SingleStepContext.State.RAM.InspectRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)+2), &ctx.SingleStepContext.MemAccessExceptions)))
 	case 127: // load_ind_i16
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(2, serializer.DecodeLittleEndian(
-				ctx.SingleStepContext.State.RAM.inspectRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx), 2, &ctx.SingleStepContext.MemAccessExceptions)))))
+				ctx.SingleStepContext.State.RAM.InspectRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)+2), &ctx.SingleStepContext.MemAccessExceptions)))))
 	case 128: // load_ind_u32
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			ctx.SingleStepContext.State.RAM.inspectRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx), 4, &ctx.SingleStepContext.MemAccessExceptions)))
+			ctx.SingleStepContext.State.RAM.InspectRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)+4), &ctx.SingleStepContext.MemAccessExceptions)))
 	case 129: // load_ind_i32
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, serializer.DecodeLittleEndian(
-				ctx.SingleStepContext.State.RAM.inspectRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx), 4, &ctx.SingleStepContext.MemAccessExceptions)))))
+				ctx.SingleStepContext.State.RAM.InspectRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)+4), &ctx.SingleStepContext.MemAccessExceptions)))))
 	case 130: // load_ind_u64
 		ctx.SingleStepContext.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			ctx.SingleStepContext.State.RAM.inspectRange(ctx.SingleStepContext.State.Registers[rb]+Register(vx), 8, &ctx.SingleStepContext.MemAccessExceptions)))
+			ctx.SingleStepContext.State.RAM.InspectRange(uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)), uint64(ctx.SingleStepContext.State.Registers[rb]+Register(vx)+8), &ctx.SingleStepContext.MemAccessExceptions)))
 	case 131: // add_imm_32
 		ctx.SingleStepContext.State.Registers[ra] = signExtendImmediate(4, uint64(ctx.SingleStepContext.State.Registers[rb]+vx))
 	case 132: // and_imm
