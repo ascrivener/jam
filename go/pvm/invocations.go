@@ -48,10 +48,12 @@ type HostFunctionContext[T any] struct {
 	Argument *T
 }
 
+type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
+
 func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts state.ServiceAccounts) (ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
-	var hf HostFunction[IntegratedPVMsAndExportSequence] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case HistoricalLookupID:

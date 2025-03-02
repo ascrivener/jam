@@ -571,37 +571,3 @@ func withGasCheck[T any](
 	}
 	return fn(ctx)
 }
-
-func processPreimage(
-	ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
-	preimage *[]byte,
-	outputRegister int, // Register containing output address
-	offsetRegister int, // Register containing offset
-	lengthRegister int, // Register containing length
-	resultRegister int, // Register where result will be stored
-) ExitReason {
-	exitReason := NewSimpleExitReason(ExitGo) // Default to success
-
-	preimageLen := 0
-	if preimage != nil {
-		preimageLen = len(*preimage)
-	}
-
-	o := ctx.State.Registers[outputRegister]
-	f := min(ctx.State.Registers[offsetRegister], Register(preimageLen))
-
-	// l = min(ω11, |v| - f)
-	l := min(ctx.State.Registers[lengthRegister], Register(preimageLen)-f)
-
-	if !ctx.State.RAM.RangeUniform(ram.RamAccess(WriteID), uint64(o), uint64(o+l)) {
-		exitReason = NewSimpleExitReason(ExitPanic)
-	} else if preimage == nil {
-		ctx.State.Registers[resultRegister] = Register(HostCallNone)
-	} else {
-		ctx.State.Registers[resultRegister] = Register(preimageLen)
-		slicedData := (*preimage)[int(f):int(f+l)]
-		ctx.State.RAM.SetValueSlice(slicedData, uint64(o))
-	}
-
-	return exitReason
-}
