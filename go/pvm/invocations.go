@@ -115,3 +115,46 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	}
 	return r, integratedPVMsAndExportSequence.ExportSequence
 }
+
+type AccumulationStateComponents struct { // U
+	ServiceAccounts          state.ServiceAccounts                                         // d
+	UpcomingValidatorKeysets [constants.NumValidators]types.ValidatorKeyset                // i
+	AuthorizersQueue         [constants.NumCores][constants.AuthorizerQueueLength][32]byte // q
+	PrivilegedServices       state.PrivilegedServices                                      // x
+}
+
+type DefferredTransfer struct { // T
+	SenderServiceIndex   types.ServiceIndex     // s
+	ReceiverServiceIndex types.ServiceIndex     // d
+	BalanceTransfer      types.Balance          // a
+	Memo                 [TransferMemoSize]byte // m
+	GasLimit             types.GasValue         // g
+}
+
+type OperandTuple struct { // O
+	ExecutionExitReason ExecutionExitReason // o
+	PayloadHash         [32]byte            // l
+	WorkPackageHash     [32]byte            // k
+	WorkReportOutput    []byte              // a
+}
+
+type AccumulationResultContext struct { // X
+	AccumulatingServiceIndex types.ServiceIndex          // s
+	StateComponents          AccumulationStateComponents // u
+	DerivedServiceIndex      types.ServiceIndex          // i
+	DefferredTransfers       []DefferredTransfer         // t
+	PreimageResult           *[32]byte                   // y
+}
+
+type AccumulateInvocationContext struct {
+	AccumulationResultContext            AccumulationResultContext // x
+	ExceptionalAccumulationResultContext AccumulationResultContext // y
+}
+
+type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
+
+// func Accumulate(accumulationStateComponents AccumulationStateComponents, timeslot types.Timeslot, gas types.GasValue, operandTuples []OperandTuple) (AccumulationStateComponents, []DefferredTransfer, *[32]byte, types.GasValue) {
+// 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+
+// 	}
+// }

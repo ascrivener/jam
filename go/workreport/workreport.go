@@ -3,38 +3,38 @@ package workreport
 import "github.com/ascrivener/jam/types"
 
 type WorkReport struct {
-	WorkPackageSpecification AvailabilitySpecification
-	RefinementContext        RefinementContext
-	CoreIndex                types.CoreIndex
-	AuthorizerHash           [32]byte
-	Output                   []byte
-	SegmentRootLookup        map[[32]byte][32]byte
-	WorkResults              []WorkResult
+	WorkPackageSpecification AvailabilitySpecification // s
+	RefinementContext        RefinementContext         // x
+	CoreIndex                types.CoreIndex           // c
+	AuthorizerHash           [32]byte                  // a
+	Output                   []byte                    // o
+	SegmentRootLookup        map[[32]byte][32]byte     // l
+	WorkResults              []WorkResult              // r
 }
 
 type AvailabilitySpecification struct {
-	WorkPackageHash  [32]byte
-	WorkBundleLength types.BlobLength
-	ErasureRoot      [32]byte
-	SegmentRoot      [32]byte
-	SegmentCount     uint64
+	WorkPackageHash  [32]byte         // h
+	WorkBundleLength types.BlobLength // l
+	ErasureRoot      [32]byte         // u
+	SegmentRoot      [32]byte         // e
+	SegmentCount     uint64           // n
 }
 
 type RefinementContext struct {
-	AnchorHeaderHash              [32]byte
-	PosteriorStateRoot            [32]byte
-	PosteriorBEEFYRoot            [32]byte
-	LookupAnchorHeaderHash        [32]byte
-	Timeslot                      types.Timeslot
-	PrerequisiteWorkPackageHashes map[[32]byte]struct{}
+	AnchorHeaderHash              [32]byte              // a
+	PosteriorStateRoot            [32]byte              // s
+	PosteriorBEEFYRoot            [32]byte              // b
+	LookupAnchorHeaderHash        [32]byte              // l
+	Timeslot                      types.Timeslot        // t
+	PrerequisiteWorkPackageHashes map[[32]byte]struct{} // p
 }
 
 type WorkResult struct {
-	ServiceIndex           types.ServiceIndex
-	ServiceCodeHash        [32]byte
-	PayloadHash            [32]byte
-	GasPrioritizationRatio types.GasValue
-	WorkOutput             WorkOutput
+	ServiceIndex           types.ServiceIndex // s
+	ServiceCodeHash        [32]byte           // c
+	PayloadHash            [32]byte           // l
+	GasPrioritizationRatio types.GasValue     // g
+	WorkOutput             WorkOutput         // o
 }
 
 type WorkExecutionError byte
