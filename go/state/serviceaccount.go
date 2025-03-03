@@ -1,6 +1,9 @@
 package state
 
-import "github.com/ascrivener/jam/types"
+import (
+	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/types"
+)
 
 type ServiceAccounts map[types.ServiceIndex]ServiceAccount
 
@@ -19,7 +22,7 @@ type ServiceAccount struct {
 	MinimumGasForOnTransfer        types.GasValue                                         // m
 }
 
-func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
+func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 { // o
 	total := uint64(0)
 	for key := range s.PreimageLookupHistoricalStatus {
 		total += 81 + uint64(key.BlobLength)
@@ -30,6 +33,12 @@ func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
 	return total
 }
 
+// i
 func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
 	return uint32(2)*uint32(len(s.PreimageLookupHistoricalStatus)) + uint32(len(s.StorageDictionary))
+}
+
+// t
+func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
+	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*int(s.TotalItemsUsedInStorage()) + constants.ServiceMinimumBalancePerOctet*int(s.TotalOctetsUsedInStorage()))
 }

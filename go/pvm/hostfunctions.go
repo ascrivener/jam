@@ -10,6 +10,7 @@ import (
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
 	"github.com/ascrivener/jam/workpackage"
+	"golang.org/x/crypto/blake2b"
 )
 
 type HostFunctionIdentifier int
@@ -89,6 +90,214 @@ func Gas(state *State, args ...any) ExitReason {
 	return NewSimpleExitReason(ExitGo)
 }
 
+// VerifyAndReturnStateForAccessor implements the state lookup host function
+// as specified in the graypaper. It verifies access, computes a key hash,
+// and returns data from state if available.
+func Read(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
+
+		// Determine s* based on ω7
+		var sStar Register
+		if ctx.State.Registers[7] == Register(^uint64(0)) { // 2^64 - 1
+			sStar = Register(serviceIndex)
+		} else {
+			sStar = ctx.State.Registers[7]
+		}
+
+		// Determine 'a' based on s*
+		var a *s.ServiceAccount
+		if sStar == Register(serviceIndex) {
+			// a = s
+			a = &serviceAccount
+		} else if sStar <= Register(^uint32(0)) {
+			// Check if sStar can fit in uint32 range
+			if serviceAcc, ok := serviceAccounts[types.ServiceIndex(sStar)]; ok {
+				a = &serviceAcc
+			}
+		}
+
+		// Extract [ko, kz, o] from registers ω8⋅⋅⋅+3
+		ko := ctx.State.Registers[8] // Key offset
+		kz := ctx.State.Registers[9] // Key length
+		o := ctx.State.Registers[10] // Output offset
+
+		// Check if key memory range is accessible
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Determine 'v'
+		var preImage *[]byte
+
+		if a != nil {
+			// Create key by hashing service ID and memory contents
+			serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(sStar))
+			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
+			combinedBytes := append(serviceIdBytes, keyBytes...)
+
+			var keyArray [32]byte
+			h := blake2b.Sum256(combinedBytes)
+			copy(keyArray[:], h[:])
+
+			// Look up in state if available
+			if val, ok := a.StorageDictionary[keyArray]; ok {
+				preImage = &val
+			}
+		}
+
+		// Calculate f and l
+		var preImageLen int
+		if preImage != nil {
+			preImageLen = len(*preImage)
+		}
+
+		f := min(ctx.State.Registers[11], Register(preImageLen))
+		l := min(ctx.State.Registers[12], Register(preImageLen)-f)
+
+		// Check if output memory range is writable
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Set result in register 7 and copy data to memory
+		if preImage == nil {
+			ctx.State.Registers[7] = Register(HostCallNone)
+		} else {
+			ctx.State.Registers[7] = Register(preImageLen)
+			slicedData := (*preImage)[int(f):int(f+l)]
+			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
+		}
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
+		// Extract [ko, kz, vo, vz] from registers ω7⋅⋅⋅+4
+		ko := ctx.State.Registers[7]  // Key offset
+		kz := ctx.State.Registers[8]  // Key length
+		vo := ctx.State.Registers[9]  // Value offset
+		vz := ctx.State.Registers[10] // Value length
+
+		// Check if key memory range is accessible
+		keyValid := !ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap)
+		if !keyValid {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Compute the key hash
+		serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(serviceIndex))
+		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
+		combinedBytes := append(serviceIdBytes, keyBytes...)
+
+		var keyArray [32]byte
+		h := blake2b.Sum256(combinedBytes)
+		copy(keyArray[:], h[:])
+
+		// Prepare modified account
+		modifiedAccount := serviceAccount // Create a copy
+
+		// Handle according to vz (value length)
+		if vz == 0 {
+			// If vz = 0, remove entry
+			delete(modifiedAccount.StorageDictionary, keyArray)
+		} else {
+			// Check if value memory range is accessible
+			if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
+				return NewSimpleExitReason(ExitPanic)
+			}
+
+			// Write the value to the account storage
+			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
+			modifiedAccount.StorageDictionary[keyArray] = valueBytes
+		}
+
+		// Determine 'l' - length of previous value if it exists, NONE otherwise
+		var l Register
+		if val, ok := serviceAccount.StorageDictionary[keyArray]; ok {
+			l = Register(len(val))
+		} else {
+			l = Register(HostCallNone)
+		}
+
+		if modifiedAccount.ThresholdBalanceNeeded() > modifiedAccount.Balance {
+			ctx.State.Registers[7] = Register(HostCallFull)
+		} else {
+			ctx.State.Registers[7] = l
+			// Update the service account
+			*serviceAccount = *modifiedAccount
+		}
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+// AccountInfo represents the structured account information for serialization
+type AccountInfo struct {
+	CodeHash                       [32]byte                                                 // c
+	Balance                        types.Balance                                            // b
+	ThresholdBalanceNeeded         types.Balance                                            // t
+	MinimumGasForAccumulate        types.GasValue                                           // g
+	MinimumGasForOnTransfer        types.GasValue                                           // m
+	PreimageLookupHistoricalStatus map[s.PreimageLookupHistoricalStatusKey][]types.Timeslot // l
+	StorageItems                   uint32                                                   // i
+}
+
+func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
+		// Determine the target service account (t)
+		var targetAccount *s.ServiceAccount
+
+		// If ω7 = 2^64 - 1, use service account parameter, otherwise lookup by index
+		if ctx.State.Registers[7] == Register(^uint64(0)) {
+			s := serviceAccounts[serviceIndex]
+			targetAccount = &s
+		} else if ctx.State.Registers[7] <= Register(^uint32(0)) {
+			// Check if ω7 can fit in uint32 range
+			if account, ok := serviceAccounts[types.ServiceIndex(ctx.State.Registers[7])]; ok {
+				targetAccount = &account
+			}
+		}
+
+		// Get output offset (o) from ω8
+		outputOffset := ctx.State.Registers[8]
+
+		// If target account exists, encode its information
+		if targetAccount != nil {
+			// Create struct with account information
+			accountInfo := AccountInfo{
+				CodeHash:                       targetAccount.CodeHash,
+				Balance:                        targetAccount.Balance,
+				ThresholdBalanceNeeded:         targetAccount.ThresholdBalanceNeeded(),
+				MinimumGasForAccumulate:        targetAccount.MinimumGasForAccumulate,
+				MinimumGasForOnTransfer:        targetAccount.MinimumGasForOnTransfer,
+				PreimageLookupHistoricalStatus: targetAccount.PreimageLookupHistoricalStatus,
+				StorageItems:                   targetAccount.TotalItemsUsedInStorage(),
+			}
+
+			// Serialize the account information
+			serializedInfo := serializer.Serialize(accountInfo)
+
+			// Check if memory range is writable
+			if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(len(serializedInfo)), ram.NoWrap) {
+				return NewSimpleExitReason(ExitPanic)
+			}
+
+			// Write to memory
+			ctx.State.RAM.MutateRange(uint64(outputOffset), serializedInfo, ram.NoWrap, false)
+
+			// Set successful result
+			ctx.State.Registers[7] = Register(HostCallOK)
+		} else {
+			// Target account not found
+			ctx.State.Registers[7] = Register(HostCallNone)
+		}
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
 func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegmentsIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		var preimage *[]byte
@@ -155,7 +364,7 @@ func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegm
 }
 
 func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSegmentOffset int) ExitReason {
-	hostResult := withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		preimage := ctx.State.Registers[7]
 		z := min(ctx.State.Registers[8], Register(SegmentSize))
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(z), ram.NoWrap) {
@@ -170,11 +379,10 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 		ctx.Argument.ExportSequence = append(ctx.Argument.ExportSequence, x)
 		return NewSimpleExitReason(ExitGo)
 	})
-	return hostResult
 }
 
 func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
-	hostResult := withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		po := ctx.State.Registers[7]
 		pz := ctx.State.Registers[8]
 		i := ctx.State.Registers[9]
@@ -202,7 +410,6 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 		}
 		return NewSimpleExitReason(ExitGo)
 	})
-	return hostResult
 }
 
 func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {

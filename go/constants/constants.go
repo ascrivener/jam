@@ -27,3 +27,9 @@ const UnavailableWorkTimeoutTimeslots int = 5
 const MaxWorkItemsInPackage int = 4
 
 const ServiceCodeMaxSize int = 4000000
+
+const ServiceMinimumBalance int = 100 // Bs
+
+const ServiceMinimumBalancePerItem int = 10 // Bi
+
+const ServiceMinimumBalancePerOctet int = 1 // Bl
