@@ -11,6 +11,16 @@ const (
 
 var MinValidRamIndex RamIndex = MajorZoneSize
 
+// MemoryAccessMode defines how memory accesses beyond RamSize should be handled
+type MemoryAccessMode int
+
+const (
+	// NoWrap causes operations to fail when accessing memory beyond RamSize
+	NoWrap MemoryAccessMode = iota
+	// Wrap causes operations to wrap around when accessing memory beyond RamSize
+	Wrap
+)
+
 // Access permission types for RAM pages
 type RamAccess int
 
@@ -34,10 +44,11 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	value           [RamSize]byte
-	access          [NumRamPages]RamAccess
-	BeginningOfHeap *RamIndex // nil if no heap
-	rollbackLog     map[RamIndex]byte
+	value                        [RamSize]byte
+	access                       [NumRamPages]RamAccess
+	BeginningOfHeap              *RamIndex // nil if no heap
+	rollbackLog                  map[RamIndex]byte
+	memoryAccessExceptionIndices []RamIndex // Track memory access exceptions internally
 }
 
 //
@@ -66,199 +77,71 @@ func NewRAM(readData, writeData []byte, arguments []byte, z, stackSize int) *RAM
 		rollbackLog:     make(map[RamIndex]byte),
 	}
 	// read-only section
-	ram.SetValueSlice(readData, MajorZoneSize)
-	ram.SetSectionAccess(MajorZoneSize, uint64(MajorZoneSize+TotalSizeNeededPages(len(readData))), Immutable)
+	ram.MutateRange(MajorZoneSize, readData, NoWrap, false)
+	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)
 	// heap
-	ram.SetValueSlice(writeData, uint64(heapStart))
-	ram.SetSectionAccess(uint64(heapStart), uint64(heapStart)+uint64(TotalSizeNeededPages(len(writeData))+z*PageSize), Mutable)
+	ram.MutateRange(uint64(heapStart), writeData, NoWrap, false)
+	// Calculate total heap size including both data and extra space
+	heapLength := uint64(TotalSizeNeededPages(len(writeData)) + z*PageSize)
+	ram.MutateAccessRange(uint64(heapStart), heapLength, Mutable, NoWrap)
 	// stack
 	stackStart := RamIndex(RamSize - 2*MajorZoneSize - ArgumentsZoneSize - TotalSizeNeededPages(stackSize))
-	ram.SetSectionAccess(uint64(stackStart), uint64(stackStart)+uint64(TotalSizeNeededPages(stackSize)), Mutable)
+	ram.MutateAccessRange(uint64(stackStart), uint64(TotalSizeNeededPages(stackSize)), Mutable, NoWrap)
 	// arguments
 	argumentsStart := RamIndex(RamSize - MajorZoneSize - ArgumentsZoneSize)
-	ram.SetValueSlice(arguments, uint64(argumentsStart))
-	ram.SetSectionAccess(uint64(argumentsStart), uint64(argumentsStart)+uint64(TotalSizeNeededPages(len(arguments))), Immutable)
+	ram.MutateRange(uint64(argumentsStart), arguments, NoWrap, false)
+	ram.MutateAccessRange(uint64(argumentsStart), uint64(TotalSizeNeededPages(len(arguments))), Immutable, NoWrap)
 	return ram
 }
 
 //
-// Low-level RAM access methods
+// Memory access and mutation methods
 //
 
-// GetValue returns the byte at the given index without checking access permissions
-func (r *RAM) GetValue(index uint64) byte {
+// Inspect returns the byte at the given index, optionally tracking access violations
+func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions bool) byte {
+	// Handle wrapping for Wrap mode
+	if mode == Wrap {
+		index = index % RamSize
+	}
+
 	ramIndex := RamIndex(index)
+	if r.InspectAccess(index, mode) == Inaccessible {
+		if trackAccessExceptions {
+			r.memoryAccessExceptionIndices = append(r.memoryAccessExceptionIndices, ramIndex)
+		}
+	}
 	return r.value[ramIndex]
 }
 
-// GetValueSlice returns count bytes starting from the given index without checking access permissions
-func (r *RAM) GetValueSlice(start uint64, end uint64) []byte {
-	var count uint64
+// InspectRange returns bytes from start to end, optionally tracking access violations
+func (r *RAM) InspectRange(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
+	end := start + length
+	// Pre-allocate the result slice
+	result := make([]byte, 0, length)
 
-	// Handle wrap-around case
-	if end < start {
-		// Calculate actual byte count needed (crossing 4GB boundary)
-		count = min((RamSize-start)+end, RamSize)
-	} else {
-		count = end - start
-	}
+	// Use indexRangeIterator to iterate through each index in the range
+	r.indexRangeIterator(start, end, func(index uint64) {
+		result = append(result, r.Inspect(index, mode, trackAccessExceptions))
+	}, mode)
 
-	return r.readBytes(start, count)
-}
-
-// readBytes is a helper that reads count bytes starting at start
-func (r *RAM) readBytes(start uint64, count uint64) []byte {
-	result := make([]byte, count)
-	for i := uint64(0); i < count; i++ {
-		ramIndex := RamIndex(start + i)
-		result[i] = r.value[ramIndex]
-	}
 	return result
 }
 
-// SetValue sets the byte at the given index without checking access permissions
-func (r *RAM) SetValue(index uint64, value byte) {
-	ramIndex := RamIndex(index)
-	r.value[ramIndex] = value
-}
-
-// SetValueSlice sets bytes starting from the given index without checking access permissions
-func (r *RAM) SetValueSlice(values []byte, start uint64) {
-	for i, v := range values {
-		ramIdx := RamIndex(start + uint64(i))
-		r.value[ramIdx] = v
-	}
-}
-
-// pageRangeIterator applies the given function to each page in a range
-// If earlyReturn is true, iteration stops when fn returns true
-// Returns true if fn ever returned true, false otherwise
-func (r *RAM) pageRangeIterator(start, end uint64, fn func(int) bool, earlyReturn bool) bool {
-	// Convert to RamIndex to ensure proper 32-bit wrapping
-	startIdx := RamIndex(start)
-	endIdx := RamIndex(end)
-
-	// If empty range after wrapping, return default
-	if startIdx == endIdx {
-		return false
+// Mutate changes a byte at the given index, optionally tracking access violations and updating rollback state
+func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAccessExceptions bool) {
+	// Handle wrapping for Wrap mode
+	if mode == Wrap {
+		index = index % RamSize
 	}
 
-	// Calculate page boundaries
-	startPage := int(startIdx / PageSize)
-	endPage := int((endIdx-1)/PageSize) + 1
-
-	// Handle wrap-around case
-	if endIdx < startIdx {
-		// Check from start to end of memory
-		for i := startPage; i < int(RamSize/PageSize); i++ {
-			if fn(i) && earlyReturn {
-				return true
-			}
-		}
-		// Check from beginning of memory to end
-		for i := range endPage {
-			if fn(i) && earlyReturn {
-				return true
-			}
-		}
-		return false
-	}
-
-	// Normal case (no wrap)
-	for i := startPage; i < endPage; i++ {
-		if fn(i) && earlyReturn {
-			return true
-		}
-	}
-	return false
-}
-
-//
-// Memory access control methods
-//
-
-// AccessForIndex returns the access type for the given memory index
-func (r *RAM) AccessForIndex(index uint64) RamAccess {
-	return r.access[RamIndex(index)/PageSize]
-}
-
-// SetIndexAccess sets the access type for a page containing the given index
-func (r *RAM) SetIndexAccess(index uint64, access RamAccess) {
-	r.access[RamIndex(index)/PageSize] = access
-}
-
-// RangeHas checks if any page in the range has the specified access type
-func (r *RAM) RangeHas(access RamAccess, start, end uint64) bool {
-	return r.pageRangeIterator(start, end, func(i int) bool {
-		return r.access[i] == access
-	}, true) // Early return when condition is met
-}
-
-// RangeUniform checks if all pages in the range have the specified access type
-func (r *RAM) RangeUniform(access RamAccess, start, end uint64) bool {
-	return !r.pageRangeIterator(start, end, func(i int) bool {
-		return r.access[i] != access
-	}, true) // Early return when condition is met
-}
-
-// SetSectionAccess sets the access type for all pages in the range
-func (r *RAM) SetSectionAccess(start, end uint64, access RamAccess) {
-	r.pageRangeIterator(start, end, func(i int) bool {
-		r.access[i] = access
-		return false // Never triggers early return
-	}, false) // Don't do early return
-}
-
-//
-// Memory inspection and mutation with access control
-//
-
-// Inspect returns the byte at the given index, tracking access violations
-func (r *RAM) Inspect(index uint64, memoryAccessExceptionIndices *[]RamIndex) byte {
-	ramIndex := RamIndex(index)
-	if r.AccessForIndex(index) == Inaccessible {
-		*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
-	}
-	return r.value[ramIndex]
-}
-
-// InspectRange returns bytes from start to end, tracking access violations
-func (r *RAM) InspectRange(start uint64, end uint64, memoryAccessExceptionIndices *[]RamIndex) []byte {
-	var count uint64
-
-	// Handle wrap-around case
-	if end < start {
-		// Calculate actual byte count needed (crossing 4GB boundary)
-		count = min((RamSize-start)+end, RamSize)
-	} else {
-		count = end - start
-	}
-
-	// First check access for all indices
-	for i := uint64(0); i < count; i++ {
-		currentIndex := start + i
-		ramIndex := RamIndex(currentIndex)
-		if r.AccessForIndex(currentIndex) == Inaccessible {
-			*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
-		}
-	}
-
-	// Use readBytes to get the actual values
-	return r.readBytes(start, count)
-}
-
-// Mutate changes a byte at the given index, tracking access violations and rollback state
-func (r *RAM) Mutate(index uint64, newByte byte, memoryAccessExceptionIndices *[]RamIndex) {
 	// Convert to RamIndex for array access
 	ramIndex := RamIndex(index)
 
-	if r.AccessForIndex(index) != Mutable {
-		*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
-	}
-
-	// Initialize the changes map if needed.
-	if r.rollbackLog == nil {
-		r.rollbackLog = make(map[RamIndex]byte)
+	if r.InspectAccess(index, mode) != Mutable {
+		if trackAccessExceptions {
+			r.memoryAccessExceptionIndices = append(r.memoryAccessExceptionIndices, ramIndex)
+		}
 	}
 
 	// Store the original value only once (for rollback).
@@ -270,29 +153,83 @@ func (r *RAM) Mutate(index uint64, newByte byte, memoryAccessExceptionIndices *[
 	r.value[ramIndex] = newByte
 }
 
-// MutateRange changes multiple bytes, tracking access violations and rollback state
-func (r *RAM) MutateRange(start uint64, newBytes []byte, memoryAccessExceptionIndices *[]RamIndex) {
-	if r.rollbackLog == nil {
-		r.rollbackLog = make(map[RamIndex]byte)
+// MutateRange changes multiple bytes, optionally tracking access violations and updating rollback state
+func (r *RAM) MutateRange(start uint64, newBytes []byte, mode MemoryAccessMode, trackAccessExceptions bool) {
+	var offset uint64 = 0
+	r.indexRangeIterator(start, start+uint64(len(newBytes)), func(index uint64) {
+		r.Mutate(index, newBytes[offset], mode, trackAccessExceptions)
+		offset++
+	}, mode)
+}
+
+//
+// Memory access control methods
+//
+
+// InspectAccess returns the access type for the given memory index
+func (r *RAM) InspectAccess(index uint64, mode MemoryAccessMode) RamAccess {
+	if mode == Wrap {
+		index = index % RamSize
+	}
+	return r.access[index/PageSize]
+}
+
+// RangeHas checks if any page in the range has the specified access type
+// Takes start index and length of range to inspect
+func (r *RAM) RangeHas(access RamAccess, start, length uint64, mode MemoryAccessMode) bool {
+	// Check for potential overflow or out of bounds in NoWrap mode
+	if mode == NoWrap && (start >= RamSize || RamSize-start < length) {
+		return false
 	}
 
-	for i, newByte := range newBytes {
-		// Calculate the index with proper wrapping
-		currentIndex := start + uint64(i)
-		ramIndex := RamIndex(currentIndex)
+	// Calculate end safely, with wrapping handled by pageRangeIterator
+	end := start + length
 
-		if r.AccessForIndex(currentIndex) != Mutable {
-			*memoryAccessExceptionIndices = append(*memoryAccessExceptionIndices, ramIndex)
+	result := false
+	r.pageRangeIterator(start, end, func(page int) {
+		if r.access[page] == access {
+			result = true
 		}
+	}, mode)
+	return result
+}
 
-		// Track the original value only once.
-		if _, exists := r.rollbackLog[ramIndex]; !exists {
-			r.rollbackLog[ramIndex] = r.value[ramIndex]
-		}
-
-		// Write directly.
-		r.value[ramIndex] = newByte
+// RangeUniform checks if all pages in the range have the specified access type
+// Takes start index and length of range to inspect
+func (r *RAM) RangeUniform(access RamAccess, start, length uint64, mode MemoryAccessMode) bool {
+	// Check for potential overflow or out of bounds in NoWrap mode
+	if mode == NoWrap && (start >= RamSize || RamSize-start < length) {
+		return false
 	}
+
+	// Calculate end safely, with wrapping handled by pageRangeIterator
+	end := start + length
+
+	uniform := true
+	r.pageRangeIterator(start, end, func(page int) {
+		if r.access[page] != access {
+			uniform = false
+		}
+	}, mode)
+	return uniform
+}
+
+// MutateAccess sets the access type for a page containing the given index
+func (r *RAM) MutateAccess(index uint64, access RamAccess, mode MemoryAccessMode) {
+	if mode == Wrap {
+		index = index % RamSize
+	}
+	r.access[index/PageSize] = access
+}
+
+// MutateAccessRange sets the access type for all pages in the range
+// Takes start index and length of range to modify
+func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode MemoryAccessMode) {
+	end := start + length
+
+	r.pageRangeIterator(start, end, func(page int) {
+		r.access[page] = access
+	}, mode)
 }
 
 //
@@ -301,16 +238,60 @@ func (r *RAM) MutateRange(start uint64, newBytes []byte, memoryAccessExceptionIn
 
 // Rollback restores original values from the rollback log
 func (r *RAM) Rollback() {
-	if r.rollbackLog == nil {
-		return
+	for idx, val := range r.rollbackLog {
+		r.value[idx] = val
 	}
-	for addr, originalValue := range r.rollbackLog {
-		r.value[addr] = originalValue
-	}
-	r.rollbackLog = nil
 }
 
 // ClearRollbackLog discards the rollback information
 func (r *RAM) ClearRollbackLog() {
 	r.rollbackLog = nil
+}
+
+// ClearMemoryAccessExceptions clears the memory access exceptions
+func (r *RAM) ClearMemoryAccessExceptions() {
+	r.memoryAccessExceptionIndices = nil
+}
+
+// GetMemoryAccessExceptions returns the memory access exceptions
+func (r *RAM) GetMemoryAccessExceptions() []RamIndex {
+	return r.memoryAccessExceptionIndices
+}
+
+// rangeIterator is the core implementation for iterating over both indices and pages
+// It provides a unified mechanism for handling wrapping and range validity
+func (r *RAM) rangeIterator(start, end uint64, step uint64, fn func(uint64), mode MemoryAccessMode) {
+	// Normal case with wrapping handled by modulo if needed
+	for i := start; i < end; i += step {
+		index := i
+		if mode == Wrap {
+			index = i % RamSize // Apply wrapping with modulo
+		}
+
+		fn(index)
+	}
+}
+
+// indexRangeIterator applies the given function to each index in a range
+func (r *RAM) indexRangeIterator(start, end uint64, fn func(uint64), mode MemoryAccessMode) {
+	// Use rangeIterator with step size of 1 for byte-by-byte iteration
+	r.rangeIterator(start, end, 1, fn, mode)
+}
+
+// pageRangeIterator applies the given function to each page in a range
+func (r *RAM) pageRangeIterator(start, end uint64, fn func(int), mode MemoryAccessMode) {
+	// Calculate page boundaries
+	startPage := uint64(RamIndex(start) / PageSize)
+	endPage := uint64((RamIndex(end)-1)/PageSize) + 1
+
+	// Use rangeIterator with step size of PageSize to iterate pages
+	r.rangeIterator(
+		startPage*PageSize,
+		endPage*PageSize,
+		PageSize,
+		func(index uint64) {
+			fn(int(index / PageSize))
+		},
+		mode,
+	)
 }

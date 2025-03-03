@@ -40,16 +40,16 @@ func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) ExitReason {
 	// Use the opcode from the context (assuming it's been set)
 	switch ctx.Instruction {
 	case 30: // store_imm_u8
-		pvm.State.RAM.Mutate(uint64(vx), byte(vy), &ctx.MemAccessExceptions)
+		pvm.State.RAM.Mutate(uint64(vx), byte(vy), ram.Wrap, true)
 	case 31: // store_imm_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	case 32: // store_imm_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	case 33: // store_imm_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	default:
 		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", ctx.Instruction))
 	}
@@ -83,36 +83,36 @@ func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 51: // load_imm
 		pvm.State.Registers[ra] = vx
 	case 52: // load_u8
-		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(vx), &ctx.MemAccessExceptions))
+		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(vx), ram.Wrap, true))
 	case 53: // load_i8
-		val := pvm.State.RAM.Inspect(uint64(vx), &ctx.MemAccessExceptions)
+		val := pvm.State.RAM.Inspect(uint64(vx), ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(1, uint64(val))
 	case 54: // load_u16
-		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(vx+2), &ctx.MemAccessExceptions)
+		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(2), ram.Wrap, true)
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 55: // load_i16
-		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(vx+2), &ctx.MemAccessExceptions)
+		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(2), ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(2, serializer.DecodeLittleEndian(data))
 	case 56: // load_u32
-		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(vx+4), &ctx.MemAccessExceptions)
+		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(4), ram.Wrap, true)
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 57: // load_i32
-		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(vx+4), &ctx.MemAccessExceptions)
+		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(4), ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(4, serializer.DecodeLittleEndian(data))
 	case 58: // load_u64
-		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(vx+8), &ctx.MemAccessExceptions)
+		data := pvm.State.RAM.InspectRange(uint64(vx), uint64(8), ram.Wrap, true)
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
 	case 59: // store_u8
-		pvm.State.RAM.Mutate(uint64(vx), uint8(pvm.State.Registers[ra]), &ctx.MemAccessExceptions)
+		pvm.State.RAM.Mutate(uint64(vx), uint8(pvm.State.Registers[ra]), ram.Wrap, true)
 	case 60: // store_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(pvm.State.Registers[ra]))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	case 61: // store_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(pvm.State.Registers[ra]))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	case 62: // store_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra]))
-		pvm.State.RAM.MutateRange(uint64(vx), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(vx), serialized, ram.Wrap, true)
 	default:
 		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", ctx.Instruction))
 	}
@@ -138,16 +138,16 @@ func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	// Use the opcode from the context to choose the correct store operation.
 	switch ctx.Instruction {
 	case 70: // store_imm_ind_u8
-		pvm.State.RAM.Mutate(uint64(addr), uint8(vy), &ctx.MemAccessExceptions)
+		pvm.State.RAM.Mutate(uint64(addr), uint8(vy), ram.Wrap, true)
 	case 71: // store_imm_ind_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(addr), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(addr), serialized, ram.Wrap, true)
 	case 72: // store_imm_ind_u32
 		serialized := serializer.EncodeLittleEndian(4, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(addr), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(addr), serialized, ram.Wrap, true)
 	case 73: // store_imm_ind_u64
 		serialized := serializer.EncodeLittleEndian(8, uint64(vy))
-		pvm.State.RAM.MutateRange(uint64(addr), serialized, &ctx.MemAccessExceptions)
+		pvm.State.RAM.MutateRange(uint64(addr), serialized, ram.Wrap, true)
 	default:
 		panic(fmt.Sprintf("handleTwoImmValuesIndirect: unexpected opcode %d", ctx.Instruction))
 	}
@@ -223,19 +223,13 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		if pvm.State.RAM.BeginningOfHeap != nil {
 			h = Register(*pvm.State.RAM.BeginningOfHeap)
 		}
-	outer:
 		for ; h < MaxRegister; h++ {
 			// Check that the region of size registers[ra] starting at h is free.
-			for i := h; i < h+pvm.State.Registers[ra]; i++ {
-				if pvm.State.RAM.AccessForIndex(uint64(i)) != ram.Inaccessible {
-					// If any part is not free, skip to the next candidate.
-					continue outer
-				}
+			if !pvm.State.RAM.RangeUniform(ram.Inaccessible, uint64(h), uint64(pvm.State.Registers[ra]), ram.NoWrap) {
+				continue
 			}
 			// Mark the region as mutable.
-			for i := h; i < h+pvm.State.Registers[ra]; i++ {
-				pvm.State.RAM.SetIndexAccess(uint64(i), ram.Mutable)
-			}
+			pvm.State.RAM.MutateAccessRange(uint64(h), uint64(pvm.State.Registers[ra]), ram.Mutable, ram.NoWrap)
 			// Return the starting address of the allocated region.
 			pvm.State.Registers[rd] = h
 			break
@@ -309,38 +303,38 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	switch ctx.Instruction {
 	case 120: // store_ind_u8
 		pvm.State.RAM.Mutate(uint64(pvm.State.Registers[rb]+Register(vx)),
-			byte(pvm.State.Registers[ra]), &ctx.MemAccessExceptions)
+			byte(pvm.State.Registers[ra]), ram.Wrap, true)
 	case 121: // store_ind_u16
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
-			serializer.EncodeLittleEndian(2, uint64(pvm.State.Registers[ra])), &ctx.MemAccessExceptions)
+			serializer.EncodeLittleEndian(2, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
 	case 122: // store_ind_u32
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
-			serializer.EncodeLittleEndian(4, uint64(pvm.State.Registers[ra])), &ctx.MemAccessExceptions)
+			serializer.EncodeLittleEndian(4, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
 	case 123: // store_ind_u64
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
-			serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra])), &ctx.MemAccessExceptions)
+			serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
 	case 124: // load_ind_u8
-		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), &ctx.MemAccessExceptions))
+		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), ram.Wrap, true))
 	case 125: // load_ind_i8
 		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
-			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), &ctx.MemAccessExceptions)))))
+			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), ram.Wrap, true)))))
 	case 126: // load_ind_u16
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(pvm.State.Registers[rb]+Register(vx)+2), &ctx.MemAccessExceptions)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(2), ram.Wrap, true)))
 	case 127: // load_ind_i16
 		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(2, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(pvm.State.Registers[rb]+Register(vx)+2), &ctx.MemAccessExceptions)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(2), ram.Wrap, true)))))
 	case 128: // load_ind_u32
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(pvm.State.Registers[rb]+Register(vx)+4), &ctx.MemAccessExceptions)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(4), ram.Wrap, true)))
 	case 129: // load_ind_i32
 		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(pvm.State.Registers[rb]+Register(vx)+4), &ctx.MemAccessExceptions)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(4), ram.Wrap, true)))))
 	case 130: // load_ind_u64
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(pvm.State.Registers[rb]+Register(vx)+8), &ctx.MemAccessExceptions)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(8), ram.Wrap, true)))
 	case 131: // add_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(pvm.State.Registers[rb]+vx))
 	case 132: // and_imm

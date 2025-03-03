@@ -141,14 +141,14 @@ func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegm
 		// l = min(ω11, |v| - f)
 		l := min(ctx.State.Registers[9], Register(preimageLen)-f)
 
-		if !ctx.State.RAM.RangeUniform(ram.RamAccess(WriteID), uint64(o), uint64(o+l)) {
+		if !ctx.State.RAM.RangeUniform(ram.RamAccess(WriteID), uint64(o), uint64(l), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		} else if preimage == nil {
 			ctx.State.Registers[7] = Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = Register(preimageLen)
 			slicedData := (*preimage)[int(f):int(f+l)]
-			ctx.State.RAM.SetValueSlice(slicedData, uint64(o))
+			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
 		}
 		return NewSimpleExitReason(ExitGo)
 	})
@@ -158,14 +158,14 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 	hostResult := withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		preimage := ctx.State.Registers[7]
 		z := min(ctx.State.Registers[8], Register(SegmentSize))
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(preimage+z)) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(z), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 		if exportSegmentOffset+len(ctx.Argument.ExportSequence) >= WorkPackageManifestMaxEntries {
 			ctx.State.Registers[7] = Register(HostCallFull)
 			return NewSimpleExitReason(ExitGo)
 		}
-		x := util.OctetArrayZeroPadding(ctx.State.RAM.GetValueSlice(uint64(preimage), uint64(preimage+z)), SegmentSize)
+		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.Wrap, false), SegmentSize)
 		ctx.State.Registers[7] = Register(exportSegmentOffset + len(ctx.Argument.ExportSequence))
 		ctx.Argument.ExportSequence = append(ctx.Argument.ExportSequence, x)
 		return NewSimpleExitReason(ExitGo)
@@ -178,10 +178,10 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 		po := ctx.State.Registers[7]
 		pz := ctx.State.Registers[8]
 		i := ctx.State.Registers[9]
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(po), uint64(po+pz)) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(po), uint64(pz), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
-		p := ctx.State.RAM.GetValueSlice(uint64(po), uint64(po+pz))
+		p := ctx.State.RAM.InspectRange(uint64(po), uint64(pz), ram.NoWrap, false)
 		if _, _, _, ok := Deblob(p); !ok {
 			ctx.State.Registers[7] = Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
@@ -214,7 +214,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 		z := ctx.State.Registers[10]     // Length to copy
 
 		// Check if destination range is accessible
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(o+z)) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -225,13 +225,13 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		if sourcePVM.RAM.RangeHas(ram.Inaccessible, uint64(s), uint64(s+z)) {
+		if sourcePVM.RAM.RangeHas(ram.Inaccessible, uint64(s), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = Register(HostCallOOB)
 			return NewSimpleExitReason(ExitGo)
 		}
 
 		// Copy the memory
-		ctx.State.RAM.SetValueSlice(sourcePVM.RAM.GetValueSlice(uint64(s), uint64(s+z)), uint64(o))
+		ctx.State.RAM.MutateRange(uint64(o), sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.Wrap, false)
 
 		// Set result to OK
 		ctx.State.Registers[7] = Register(HostCallOK)
@@ -260,11 +260,13 @@ func Zero(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 			return NewSimpleExitReason(ExitGo)
 		}
 
+		pPageStart := p * ram.PageSize
+		cPagesSize := c * ram.PageSize
 		// Zero out the memory range
 		// First create a zero-filled slice of the right size
-		zeroBytes := make([]byte, c)
-		targetPVM.RAM.SetValueSlice(zeroBytes, uint64(p))
-		targetPVM.RAM.SetSectionAccess(uint64(p), uint64(p+c), ram.Mutable)
+		zeroBytes := make([]byte, cPagesSize)
+		targetPVM.RAM.MutateRange(uint64(pPageStart), zeroBytes, ram.NoWrap, false)
+		targetPVM.RAM.MutateAccessRange(uint64(pPageStart), uint64(cPagesSize), ram.Mutable, ram.NoWrap)
 
 		// Set result to OK
 		ctx.State.Registers[7] = Register(HostCallOK)
@@ -281,7 +283,7 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 		z := ctx.State.Registers[10]     // Length to copy
 
 		// Check if source range is accessible in current context
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(s), uint64(s+z)) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(s), uint64(z), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -293,12 +295,12 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 		}
 
 		// Check if destination range is writable in target PVM
-		if !targetPVM.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(o+z)) {
+		if !targetPVM.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = Register(HostCallOOB)
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		targetPVM.RAM.SetValueSlice(ctx.State.RAM.GetValueSlice(uint64(s), uint64(s+z)), uint64(o))
+		targetPVM.RAM.MutateRange(uint64(o), ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.Wrap, false), ram.NoWrap, false)
 
 		// Set result to OK
 		ctx.State.Registers[7] = Register(HostCallOK)
@@ -324,16 +326,16 @@ func Void(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 
 		// Check if memory range is valid and accessible
 		if pPageIndex < 16 || pPageIndex+cPages >= (1<<32)/ram.PageSize ||
-			targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(pPageStart), uint64(pPageStart+cPagesSize)) {
+			targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(pPageStart), uint64(cPagesSize), ram.NoWrap) {
 			ctx.State.Registers[7] = Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
 		}
 
 		// Zero out the memory by filling it with zeros
 		zeroBytes := make([]byte, cPagesSize)
-		targetPVM.RAM.SetValueSlice(zeroBytes, uint64(pPageStart))
+		targetPVM.RAM.MutateRange(uint64(pPageStart), zeroBytes, ram.NoWrap, false)
 		// Set the memory to inaccessible
-		targetPVM.RAM.SetSectionAccess(uint64(pPageStart), uint64(pPageStart+cPagesSize), ram.Inaccessible)
+		targetPVM.RAM.MutateAccessRange(uint64(pPageStart), uint64(cPagesSize), ram.Inaccessible, ram.NoWrap)
 
 		// Set result to OK
 		ctx.State.Registers[7] = Register(HostCallOK)
@@ -348,7 +350,7 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 		o := ctx.State.Registers[8]      // Memory offset for gas/weight data
 
 		// Check if memory range o to o+112 is accessible for reading
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(o+112)) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(112), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -359,8 +361,8 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		gasData := ctx.State.RAM.GetValueSlice(uint64(o), uint64(o+8))           // Assuming E8(g) is 64 bytes
-		registersData := ctx.State.RAM.GetValueSlice(uint64(o+8), uint64(o+112)) // Assuming E#8(w) is 48 bytes
+		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, ram.NoWrap, false)
+		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, ram.NoWrap, false)
 
 		gas := types.GasValue(serializer.DecodeLittleEndian(gasData))
 		registers := [13]Register{}
@@ -377,11 +379,11 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 
 		// Update memory with new gas and registers
 		gasBytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Gas))
-		ctx.State.RAM.SetValueSlice(gasBytes, uint64(o))
+		ctx.State.RAM.MutateRange(uint64(o), gasBytes, ram.NoWrap, false)
 
 		for i := range 13 {
 			regBytes := serializer.EncodeLittleEndian(8, uint64(ctx.State.Registers[i]))
-			ctx.State.RAM.SetValueSlice(regBytes, uint64(o+8)+uint64(i*8))
+			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), regBytes, ram.NoWrap, false)
 		}
 
 		targetPVM.InstructionCounter = pvm.InstructionCounter
@@ -444,7 +446,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount,
 		o := ctx.State.Registers[9] // Output address
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(h+32)) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -460,7 +462,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount,
 		var preImage *[]byte
 		if a != nil {
 			var keyArray [32]byte
-			copy(keyArray[:], ctx.State.RAM.GetValueSlice(uint64(h), uint64(h+32)))
+			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 			if v, ok := a.PreimageLookup[keyArray]; ok {
 				preImage = &v
 			}
@@ -479,7 +481,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount,
 		l := min(ctx.State.Registers[11], Register(preImageLen)-f)
 
 		// Check if output memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(o+l)) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -490,7 +492,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount,
 			ctx.State.Registers[7] = Register(preImageLen)
 			if l > 0 {
 				slicedData := (*preImage)[int(f):int(f+l)]
-				ctx.State.RAM.SetValueSlice(slicedData, uint64(o))
+				ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
 			}
 		}
 
@@ -505,7 +507,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		o := ctx.State.Registers[9] // Output address
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(h+32)) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -522,7 +524,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		var preImage *[]byte
 		if a != nil {
 			var keyArray [32]byte
-			copy(keyArray[:], ctx.State.RAM.GetValueSlice(uint64(h), uint64(h+32)))
+			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 
 			preImage = historicallookup.HistoricalLookup(*a, timeslot, keyArray)
 		}
@@ -540,7 +542,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		l := min(ctx.State.Registers[11], Register(preImageLen)-f)
 
 		// Check if output memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(o+l)) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -551,7 +553,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			ctx.State.Registers[7] = Register(preImageLen)
 			if l > 0 {
 				slicedData := (*preImage)[int(f):int(f+l)]
-				ctx.State.RAM.SetValueSlice(slicedData, uint64(o))
+				ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
 			}
 		}
 
