@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/ascrivener/jam/constants"
@@ -503,6 +504,117 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	})
 }
 
+func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Get parameters from registers [o, g, m] = ω7⋅⋅⋅+3
+		offset := ctx.State.Registers[7]              // o - memory offset for code hash
+		minGasForAccumulate := ctx.State.Registers[8] // g - minimum gas for accumulate
+		minGasForOnTransfer := ctx.State.Registers[9] // m - minimum gas for on transfer
+
+		// Check if memory range for code hash is accessible (c = ∇ check)
+		// if No⋅⋅⋅+32 ⊂ Vμ condition
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) {
+			// (ε′, ω′7, (x′s)c, (x′s)g, (x′s)m) ≡ (☇, ω7, (xs)c, (xs)g, (xs)m) if c = ∇
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read code hash from memory (μo⋅⋅⋅+32)
+		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap, false)
+		var codeHash [32]byte
+		copy(codeHash[:], codeHashBytes)
+
+		// Get the accumulating service account
+		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
+
+		// Update the service account with new values
+		// (ε′, ω′7, (x′s)c, (x′s)g, (x′s)m) ≡ (▸, OK, c, g, m) otherwise
+		accumulatingServiceAccount.CodeHash = codeHash
+		accumulatingServiceAccount.MinimumGasForAccumulate = types.GasValue(minGasForAccumulate)
+		accumulatingServiceAccount.MinimumGasForOnTransfer = types.GasValue(minGasForOnTransfer)
+
+		// Update service account in state
+		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+
+		// Set return status to OK
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract parameters from registers [d, a, l, o] = ω7⋅⋅⋅+4
+		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
+		amount := types.Balance(ctx.State.Registers[8])                // a - amount to transfer
+		gasLimit := types.GasValue(ctx.State.Registers[9])             // l - gas limit
+		memoOffset := ctx.State.Registers[10]                          // o - memo offset
+
+		// 1. FIRST check if memo memory range is accessible (No⋅⋅⋅+WT ⊂ Vμ)
+		// This determines if t = ∇, which is the first condition in the exit reason
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(memoOffset), uint64(TransferMemoSize), ram.NoWrap) {
+			// (ε′, ω′7, xt, (xs)b) ≡ (☇, ω7, xt, (xs)b) if t = ∇
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read memo from memory (μo⋅⋅⋅+WT)
+		memoBytes := ctx.State.RAM.InspectRange(uint64(memoOffset), uint64(TransferMemoSize), ram.NoWrap, false)
+		var memo [TransferMemoSize]byte
+		copy(memo[:], memoBytes)
+
+		// Get service accounts
+		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
+
+		// 2. Check if destination exists in service accounts (d ∈ K(d))
+		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
+		if !destinationExists {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// 3. Check if gas limit is sufficient (l < d[d]m)
+		if gasLimit < destinationAccount.MinimumGasForOnTransfer {
+			ctx.State.Registers[7] = Register(HostCallLow)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Get source account
+		sourceAccount := ctx.Argument.AccumulatingServiceAccount()
+
+		// Calculate new balance (b = (xs)b − a)
+		newBalance := sourceAccount.Balance - amount
+
+		// 4. Check if source has enough balance after transfer (b < (xs)t)
+		if newBalance < sourceAccount.ThresholdBalanceNeeded() {
+			ctx.State.Registers[7] = Register(HostCallCash)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Create transfer object
+		transfer := DefferredTransfer{
+			SenderServiceIndex:   ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex,
+			ReceiverServiceIndex: destServiceIndex,
+			BalanceTransfer:      amount,
+			Memo:                 memo,
+			GasLimit:             gasLimit,
+		}
+
+		// Update source account balance
+		sourceAccount.Balance = newBalance
+		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = sourceAccount
+
+		// Append transfer to deferred transfers list
+		ctx.Argument.AccumulationResultContext.DefferredTransfers = append(
+			ctx.Argument.AccumulationResultContext.DefferredTransfers,
+			transfer)
+
+		// Set return status to OK - (ε′, ω′7, xt, (xs)b) ≡ (▸, OK, xt t, b) otherwise
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
 func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegmentsIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		var preimage *[]byte
@@ -555,7 +667,7 @@ func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegm
 		// l = min(ω11, |v| - f)
 		l := min(ctx.State.Registers[9], Register(preimageLen)-f)
 
-		if !ctx.State.RAM.RangeUniform(ram.RamAccess(WriteID), uint64(o), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		} else if preimage == nil {
 			ctx.State.Registers[7] = Register(HostCallNone)
@@ -969,6 +1081,95 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			}
 		}
 
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract parameters from registers [d, o] = ω7,8
+		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
+		hashOffset := ctx.State.Registers[8]                           // o - hash offset
+
+		// 1. Check if memory for hash is accessible (Zo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(hashOffset), 32, ram.NoWrap) {
+			// (ε′, ω′7, (x′u)d) ≡ (☇, ω7, (xu)d) if h = ∇
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read hash from memory (μo⋅⋅⋅+32)
+		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap, false)
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+
+		// Get service accounts and the accumulating account
+		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
+		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
+
+		// 2. Check destination account exists and matches code hash
+		// (d ≠ xs ∧ d ∈ K((xu)d)) && (dc ≠ E32(xs))
+		if destServiceIndex == ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
+		if !destinationExists {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Compare code hashes (dc ≠ E32(xs))
+		if !bytes.Equal(destinationAccount.CodeHash[:], serializer.EncodeLittleEndian(32, uint64(ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex))) {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// 3. Check interface type and if hash/lock pair exists in list
+		// (di ≠ 2 ∨ (h, l) ~∈ dl)
+		if destinationAccount.TotalItemsUsedInStorage() != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		length := max(81, int(destinationAccount.TotalOctetsUsedInStorage())) - 81
+
+		// Create the key for lookup
+		lookupKey := state.PreimageLookupHistoricalStatusKey{
+			Preimage:   hash,
+			BlobLength: types.BlobLength(length),
+		}
+
+		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
+		if !exists {
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Get the most recent timeslot in the historical status
+		if len(historicalStatus) == 2 {
+			// Check the expiration of the most recent timeslot against the current time
+			// Using UnreferencePreimageExpungeTimeslots as D from the specification
+			lastTimeslot := historicalStatus[1]
+			if lastTimeslot < timeslot-types.Timeslot(UnreferencePreimageExpungeTimeslots) {
+				// Update accumulating account balance (s′b = ((xu)d)[xs]b + db)
+				// For simplicity, we're assuming the balance to transfer is associated with the destination account
+				accumulatingServiceAccount.Balance += destinationAccount.Balance
+
+				// Remove the entry from destination account
+				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
+				delete(serviceAccounts, destServiceIndex)
+
+				// Update accounts in state
+				serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+
+				// Set status to OK
+				ctx.State.Registers[7] = Register(HostCallOK)
+				return NewSimpleExitReason(ExitGo)
+			}
+		}
+		// Entry not expired
+		ctx.State.Registers[7] = Register(HostCallHuh)
 		return NewSimpleExitReason(ExitGo)
 	})
 }

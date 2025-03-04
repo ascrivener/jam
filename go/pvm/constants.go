@@ -15,3 +15,7 @@ const SegmentSize int = ErasureCodedPiecesInSegment * ErasureCodedPiecesSize
 const WorkPackageManifestMaxEntries int = (1 << 11)
 
 const TransferMemoSize int = 128
+
+const UnreferencePreimageExpungeTimeslots int = 4800
+
+const LookupAnchorMaxAgeTimeslots int = 1200

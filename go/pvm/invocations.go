@@ -151,6 +151,7 @@ type AccumulateInvocationContext struct {
 	ExceptionalAccumulationResultContext AccumulationResultContext // y
 }
 
+// s
 func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() state.ServiceAccount {
 	return ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex]
 }
@@ -159,6 +160,6 @@ type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
 // func Accumulate(accumulationStateComponents AccumulationStateComponents, timeslot types.Timeslot, gas types.GasValue, operandTuples []OperandTuple) (AccumulationStateComponents, []DefferredTransfer, *[32]byte, types.GasValue) {
 // 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
-
+//  	Remember to use g = 10 + w9 for transfer
 // 	}
 // }

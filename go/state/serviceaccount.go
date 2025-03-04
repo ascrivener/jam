@@ -22,7 +22,8 @@ type ServiceAccount struct {
 	MinimumGasForOnTransfer        types.GasValue                                         // m
 }
 
-func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 { // o
+// o
+func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
 	total := uint64(0)
 	for key := range s.PreimageLookupHistoricalStatus {
 		total += 81 + uint64(key.BlobLength)
