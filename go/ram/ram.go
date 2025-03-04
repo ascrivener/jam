@@ -58,24 +58,21 @@ type RAM struct {
 // NewEmptyRAM creates an empty RAM with rollback log initialized
 func NewEmptyRAM() *RAM {
 	return &RAM{
-		rollbackLog: make(map[RamIndex]byte),
+		rollbackLog:                  make(map[RamIndex]byte),
+		memoryAccessExceptionIndices: make([]RamIndex, 0),
 	}
 }
 
 // NewRAM creates a new RAM with the given data segments and access controls
 func NewRAM(readData, writeData []byte, arguments []byte, z, stackSize int) *RAM {
+	ram := NewEmptyRAM()
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
 	var beginningOfHeap *RamIndex
 	if len(writeData)+int(z) > 0 { // then we actually have a heap
 		beginningOfHeap = new(RamIndex)
 		*beginningOfHeap = heapStart
 	}
-	ram := &RAM{
-		value:           [RamSize]byte{},
-		access:          [NumRamPages]RamAccess{},
-		BeginningOfHeap: beginningOfHeap,
-		rollbackLog:     make(map[RamIndex]byte),
-	}
+	ram.BeginningOfHeap = beginningOfHeap
 	// read-only section
 	ram.MutateRange(MajorZoneSize, readData, NoWrap, false)
 	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)
@@ -250,7 +247,7 @@ func (r *RAM) ClearRollbackLog() {
 
 // ClearMemoryAccessExceptions clears the memory access exceptions
 func (r *RAM) ClearMemoryAccessExceptions() {
-	r.memoryAccessExceptionIndices = nil
+	r.memoryAccessExceptionIndices = r.memoryAccessExceptionIndices[:0]
 }
 
 // GetMemoryAccessExceptions returns the memory access exceptions

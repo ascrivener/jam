@@ -17,9 +17,8 @@ type State struct {
 }
 
 type InstructionContext struct {
-	MemAccessExceptions []ram.RamIndex
-	Instruction         byte
-	SkipLength          int // Computed skip length for the current instruction.
+	Instruction byte
+	SkipLength  int // Computed skip length for the current instruction.
 }
 
 type InstructionHandler func(pvm *PVM, ctx *InstructionContext) ExitReason
@@ -28,15 +27,14 @@ var dispatchTable [256]InstructionHandler
 
 var terminationOpcodes [256]bool
 
-func (pvm *PVM) SingleStep(MemAccessExceptions []ram.RamIndex) ExitReason {
+func (pvm *PVM) SingleStep() ExitReason {
 	// Reset the pre-allocated slice without allocating new memory.
-	MemAccessExceptions = MemAccessExceptions[:0]
+	pvm.State.RAM.ClearMemoryAccessExceptions()
 	priorIC := pvm.InstructionCounter
 
 	ctx := InstructionContext{
-		MemAccessExceptions: MemAccessExceptions,
-		Instruction:         getInstruction(pvm.Instructions, pvm.InstructionCounter),
-		SkipLength:          skip(pvm.InstructionCounter, pvm.Opcodes),
+		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
+		SkipLength:  skip(pvm.InstructionCounter, pvm.Opcodes),
 	}
 
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
@@ -50,7 +48,7 @@ func (pvm *PVM) SingleStep(MemAccessExceptions []ram.RamIndex) ExitReason {
 		pvm.InstructionCounter += 1 + Register(ctx.SkipLength)
 	}
 
-	minRamIndex := minRamIndex(ctx.MemAccessExceptions)
+	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())
 	if minRamIndex != nil {
 		if *minRamIndex < ram.MinValidRamIndex {
 			return NewSimpleExitReason(ExitPanic)

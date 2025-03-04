@@ -172,7 +172,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 
 func (pvm *PVM) Ψ() ExitReason {
 	for {
-		exitReason := pvm.SingleStep(make([]ram.RamIndex, 0, 16))
+		exitReason := pvm.SingleStep()
 		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
 			// Continue executing if the exit reason is still "go".
 			continue
