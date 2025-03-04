@@ -3,9 +3,11 @@ package pvm
 import (
 	"fmt"
 
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/state"
 	s "github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
@@ -293,6 +295,209 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 			// Target account not found
 			ctx.State.Registers[7] = Register(HostCallNone)
 		}
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract registers: [m, a, v, o, n] = ω7⋅⋅⋅+5
+		mainIndex := ctx.State.Registers[7]   // m - Main service index
+		authIndex := ctx.State.Registers[8]   // a - Authorization service index
+		validIndex := ctx.State.Registers[9]  // v - Validation service index
+		offset := ctx.State.Registers[10]     // o - Memory offset
+		numEntries := ctx.State.Registers[11] // n - Number of entries
+
+		// Check if memory range is accessible
+		entrySize := uint64(12) // Each entry is 12 bytes (4 for service index, 8 for gas value)
+		totalSize := entrySize * uint64(numEntries)
+
+		memoryValid := !ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap)
+		if !memoryValid {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Check if m, a, v are valid ServiceIndices
+		if mainIndex > Register(^uint32(0)) || authIndex > Register(^uint32(0)) || validIndex > Register(^uint32(0)) {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Create gas mapping g
+		serviceGasMap := make(map[types.ServiceIndex]types.GasValue)
+
+		// Read service-to-gas mappings from memory
+		for i := uint64(0); i < uint64(numEntries); i++ {
+			// Read service index (4 bytes) and gas value (8 bytes)
+			entryOffset := uint64(offset) + i*entrySize
+
+			// Get service index from memory
+			serviceBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap, false)
+			serviceIndex := types.ServiceIndex(serializer.DecodeLittleEndian(serviceBytes))
+
+			// Get gas value from memory
+			gasBytes := ctx.State.RAM.InspectRange(entryOffset+4, 8, ram.NoWrap, false)
+			gasValue := types.GasValue(serializer.DecodeLittleEndian(gasBytes))
+
+			// Add to mapping
+			serviceGasMap[serviceIndex] = gasValue
+		}
+
+		// Update the accumulation context
+		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = state.PrivilegedServices{
+			ManagerServiceIndex:             types.ServiceIndex(mainIndex),
+			AssignServiceIndex:              types.ServiceIndex(authIndex),
+			DesignateServiceIndex:           types.ServiceIndex(validIndex),
+			AlwaysAccumulateServicesWithGas: serviceGasMap,
+		}
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Get core index from ω7 and memory offset from ω8
+		coreIndex := ctx.State.Registers[7]
+		offset := ctx.State.Registers[8]
+
+		// Calculate the size of the authorizersQueue array
+		queueLength := constants.AuthorizerQueueLength
+		totalSize := 32 * queueLength // 32 bytes per hash * queue length
+
+		// Check if memory range is accessible (c = ∇)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), uint64(totalSize), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Check if core index is within valid range
+		if coreIndex >= Register(constants.NumCores) {
+			ctx.State.Registers[7] = Register(HostCallCore)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Read the queue of authorizer hashes from memory
+		authorizerQueue := [constants.AuthorizerQueueLength][32]byte{}
+		for i := range queueLength {
+			hashOffset := uint64(offset) + uint64(i)*32
+			hashBytes := ctx.State.RAM.InspectRange(hashOffset, 32, ram.NoWrap, false)
+
+			// Copy the hash bytes to the authorizer queue
+			copy(authorizerQueue[i][:], hashBytes)
+		}
+
+		// Update the authorizer queue in the accumulation context
+		ctx.Argument.AccumulationResultContext.StateComponents.AuthorizersQueue[coreIndex] = authorizerQueue
+
+		// Set successful result
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Get memory offset from ω7
+		offset := ctx.State.Registers[7]
+
+		// Calculate total size needed for validator keysets
+		// Each validator keyset is 336 bytes, and we need constants.NumValidators of them
+		totalSize := uint64(336 * constants.NumValidators)
+
+		// Check if memory range is accessible
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read the validator keysets from memory
+		validatorKeysets := [constants.NumValidators]types.ValidatorKeyset{}
+		for i := 0; i < constants.NumValidators; i++ {
+			keysetOffset := uint64(offset) + uint64(i)*336
+			keysetBytes := ctx.State.RAM.InspectRange(keysetOffset, 336, ram.NoWrap, false)
+
+			// Copy the keyset bytes
+			copy(validatorKeysets[i][:], keysetBytes)
+		}
+
+		// Update the validator keysets in the accumulation context
+		ctx.Argument.AccumulationResultContext.StateComponents.UpcomingValidatorKeysets = validatorKeysets
+
+		// Set successful result
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		ctx.Argument.ExceptionalAccumulationResultContext = ctx.Argument.AccumulationResultContext
+		ctx.State.Registers[7] = Register(ctx.State.Gas)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Get parameters from registers [o, l, g, m] = ω7⋅⋅⋅+4
+		offset := ctx.State.Registers[7]               // o - memory offset for code hash
+		labelLength := ctx.State.Registers[8]          // l - label length
+		minGasForAccumulate := ctx.State.Registers[9]  // g - minimum gas for accumulate
+		minGasForOnTransfer := ctx.State.Registers[10] // m - minimum gas for on transfer
+
+		// Check if memory range for code hash is accessible (c = ∇ check)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read code hash from memory
+		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap, false)
+		var codeHash [32]byte
+		copy(codeHash[:], codeHashBytes)
+
+		// Create preimage history map with the code hash and label length as key
+		preimageHistory := make(map[s.PreimageLookupHistoricalStatusKey][]types.Timeslot)
+		key := s.PreimageLookupHistoricalStatusKey{
+			Preimage:   codeHash,
+			BlobLength: types.BlobLength(labelLength),
+		}
+		preimageHistory[key] = []types.Timeslot{}
+
+		// Create new service account
+		newAccount := s.ServiceAccount{
+			CodeHash:                       codeHash,
+			StorageDictionary:              make(map[[32]byte][]byte),
+			PreimageLookupHistoricalStatus: preimageHistory,
+			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
+			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
+		}
+		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
+
+		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
+		accumulatingServiceAccount.Balance -= newAccount.ThresholdBalanceNeeded()
+		// Check if source has enough balance after the transfer (sb < (xs)t check)
+		// The source account needs enough balance to cover both:
+		// 1. Its own threshold balance needs
+		// 2. The transfer amount to the new account
+		if accumulatingServiceAccount.Balance < ctx.Argument.AccumulatingServiceAccount().ThresholdBalanceNeeded() {
+			ctx.State.Registers[7] = Register(HostCallCash)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
+		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + (currentDerivedServiceIndex-(1<<8)+42)%(1<<32-1<<9))
+
+		// Get current service accounts and update them
+		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
+		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+		serviceAccounts[currentDerivedServiceIndex] = newAccount
+
+		ctx.State.Registers[7] = Register(currentDerivedServiceIndex)
+		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents)
 
 		return NewSimpleExitReason(ExitGo)
 	})
@@ -779,4 +984,26 @@ func withGasCheck[T any](
 		return exitReason
 	}
 	return fn(ctx)
+}
+
+// check finds an unused service index, starting from the provided index
+// If the initial index is already in use, it iteratively tries next indices
+func check(i types.ServiceIndex, stateComponents AccumulationStateComponents) types.ServiceIndex {
+	// Get the service accounts map
+	serviceAccounts := stateComponents.ServiceAccounts
+
+	currentIndex := i
+
+	// Keep trying until we find an unused index
+	for {
+		// Check if the index is already in use
+		if _, exists := serviceAccounts[currentIndex]; !exists {
+			// If not in use, return it
+			return currentIndex
+		}
+
+		// Calculate the next index to try
+		// (i − 28 + 1) mod (232 − 29) + 28
+		currentIndex = types.ServiceIndex((1 << 8) + ((uint32(currentIndex) - (1 << 8) + 1) % (1<<32 - (1 << 9))) + (1 << 8))
+	}
 }
