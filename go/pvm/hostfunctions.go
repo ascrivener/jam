@@ -198,13 +198,10 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount,
 		h := blake2b.Sum256(combinedBytes)
 		copy(keyArray[:], h[:])
 
-		// Prepare modified account
-		modifiedAccount := serviceAccount // Create a copy
-
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			delete(modifiedAccount.StorageDictionary, keyArray)
+			delete(serviceAccount.StorageDictionary, keyArray)
 		} else {
 			// Check if value memory range is accessible
 			if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
@@ -213,7 +210,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount,
 
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			modifiedAccount.StorageDictionary[keyArray] = valueBytes
+			serviceAccount.StorageDictionary[keyArray] = valueBytes
 		}
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
@@ -224,12 +221,10 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount,
 			l = Register(HostCallNone)
 		}
 
-		if modifiedAccount.ThresholdBalanceNeeded() > modifiedAccount.Balance {
+		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			ctx.State.Registers[7] = Register(HostCallFull)
 		} else {
 			ctx.State.Registers[7] = l
-			// Update the service account
-			*serviceAccount = *modifiedAccount
 		}
 
 		return NewSimpleExitReason(ExitGo)
@@ -475,19 +470,21 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 			PreimageLookupHistoricalStatus: preimageHistory,
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
+			PreimageLookup:                 make(map[[32]byte][]byte),
 		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
 		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
-		accumulatingServiceAccount.Balance -= newAccount.ThresholdBalanceNeeded()
 		// Check if source has enough balance after the transfer (sb < (xs)t check)
 		// The source account needs enough balance to cover both:
 		// 1. Its own threshold balance needs
 		// 2. The transfer amount to the new account
-		if accumulatingServiceAccount.Balance < ctx.Argument.AccumulatingServiceAccount().ThresholdBalanceNeeded() {
+		b := accumulatingServiceAccount.Balance - newAccount.ThresholdBalanceNeeded()
+		if b < ctx.Argument.AccumulatingServiceAccount().ThresholdBalanceNeeded() {
 			ctx.State.Registers[7] = Register(HostCallCash)
 			return NewSimpleExitReason(ExitGo)
 		}
+		accumulatingServiceAccount.Balance = b
 
 		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
 		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + (currentDerivedServiceIndex-(1<<8)+42)%(1<<32-1<<9))
@@ -609,6 +606,289 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason 
 			transfer)
 
 		// Set return status to OK - (ε′, ω′7, xt, (xs)b) ≡ (▸, OK, xt t, b) otherwise
+		ctx.State.Registers[7] = Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract parameters from registers [d, o] = ω7,8
+		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
+		hashOffset := ctx.State.Registers[8]                           // o - hash offset
+
+		// 1. Check if memory for hash is accessible (Zo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(hashOffset), 32, ram.NoWrap) {
+			// (ε′, ω′7, (x′u)d) ≡ (☇, ω7, (xu)d) if h = ∇
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Read hash from memory (μo⋅⋅⋅+32)
+		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap, false)
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+
+		// Get service accounts and the accumulating account
+		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
+		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
+
+		// 2. Check destination account exists and matches code hash
+		// (d ≠ xs ∧ d ∈ K((xu)d)) && (dc ≠ E32(xs))
+		if destServiceIndex == ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
+		if !destinationExists {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Compare code hashes (dc ≠ E32(xs))
+		if !bytes.Equal(destinationAccount.CodeHash[:], serializer.EncodeLittleEndian(32, uint64(ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex))) {
+			ctx.State.Registers[7] = Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// 3. Check interface type and if hash/lock pair exists in list
+		// (di ≠ 2 ∨ (h, l) ~∈ dl)
+		if destinationAccount.TotalItemsUsedInStorage() != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		length := max(81, int(destinationAccount.TotalOctetsUsedInStorage())) - 81
+
+		// Create the key for lookup
+		lookupKey := state.PreimageLookupHistoricalStatusKey{
+			Preimage:   hash,
+			BlobLength: types.BlobLength(length),
+		}
+
+		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
+		if !exists {
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Get the most recent timeslot in the historical status
+		if len(historicalStatus) == 2 {
+			// Check the expiration of the most recent timeslot against the current time
+			// Using UnreferencePreimageExpungeTimeslots as D from the specification
+			lastTimeslot := historicalStatus[1]
+			if lastTimeslot < timeslot-types.Timeslot(UnreferencePreimageExpungeTimeslots) {
+				// Update accumulating account balance (s′b = ((xu)d)[xs]b + db)
+				// For simplicity, we're assuming the balance to transfer is associated with the destination account
+				accumulatingServiceAccount.Balance += destinationAccount.Balance
+
+				// Remove the entry from destination account
+				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
+				delete(serviceAccounts, destServiceIndex)
+
+				// Update accounts in state
+				serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+
+				// Set status to OK
+				ctx.State.Registers[7] = Register(HostCallOK)
+				return NewSimpleExitReason(ExitGo)
+			}
+		}
+		// Entry not expired
+		ctx.State.Registers[7] = Register(HostCallHuh)
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract [o, z] from registers ω7,8
+		o := ctx.State.Registers[7] // Offset
+		z := ctx.State.Registers[8] // Length/Value
+
+		// Check if memory at o is accessible for 32 bytes (μo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+			// If memory is inaccessible, set registers to (☇, ω7, ω8) and return panic
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Get the 32-byte key hash from memory
+		var keyHash [32]byte
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[state.PreimageLookupHistoricalStatusKey{
+			Preimage:   keyHash,
+			BlobLength: types.BlobLength(z),
+		}]
+
+		if !ok {
+			ctx.State.Registers[7] = Register(HostCallNone)
+			ctx.State.Registers[8] = 0
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Set result registers based on list content according to the spec
+		if len(historicalStatus) == 0 {
+			// a = []: Set (▸, 0, 0)
+			ctx.State.Registers[7] = 0
+			ctx.State.Registers[8] = 0
+		} else if len(historicalStatus) == 1 {
+			// a = [x]: Set (▸, 1 + 2^32*x, 0)
+			ctx.State.Registers[7] = 1 + (Register(historicalStatus[0]) << 32)
+			ctx.State.Registers[8] = 0
+		} else if len(historicalStatus) == 2 {
+			// a = [x, y]: Set (▸, 2 + 2^32*x, y)
+			ctx.State.Registers[7] = 2 + (Register(historicalStatus[0]) << 32)
+			ctx.State.Registers[8] = Register(historicalStatus[1])
+		} else if len(historicalStatus) == 3 {
+			// a = [x, y, z, ...]: Set (▸, 3 + 2^32*x, y + 2^32*z)
+			ctx.State.Registers[7] = 3 + (Register(historicalStatus[0]) << 32)
+			ctx.State.Registers[8] = Register(historicalStatus[1]) + (Register(historicalStatus[2]) << 32)
+		} else {
+			panic(fmt.Sprintf("unreachable: impossible historical status length %v", len(historicalStatus)))
+		}
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract [o, z] from registers ω7,8
+		o := ctx.State.Registers[7] // Offset
+		z := ctx.State.Registers[8] // BlobLength
+
+		// Check if memory at o is accessible for 32 bytes (μo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+			// If memory is inaccessible, return panic (h = ∇)
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Get the 32-byte key hash from memory
+		var keyHash [32]byte
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+
+		// Prepare the key for looking up historical status
+		histKey := state.PreimageLookupHistoricalStatusKey{
+			Preimage:   keyHash,
+			BlobLength: types.BlobLength(z),
+		}
+
+		// Get the accumulating service account (xs)
+		serviceAccount := ctx.Argument.AccumulatingServiceAccount()
+
+		// Check if the key exists in the historical status map
+		originalStatus, originalExists := serviceAccount.PreimageLookupHistoricalStatus[histKey]
+
+		// Make the changes directly to the service account
+		if !originalExists {
+			serviceAccount.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{}
+		} else if len(originalStatus) == 2 {
+			serviceAccount.PreimageLookupHistoricalStatus[histKey] = append(originalStatus, timeslot)
+		} else {
+			// Key exists but doesn't have exactly two elements
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Check if we've exceeded storage limits
+		if serviceAccount.Balance < serviceAccount.ThresholdBalanceNeeded() {
+			// Revert the changes
+			if !originalExists {
+				delete(serviceAccount.PreimageLookupHistoricalStatus, histKey)
+			} else {
+				serviceAccount.PreimageLookupHistoricalStatus[histKey] = originalStatus
+			}
+			ctx.State.Registers[7] = Register(HostCallFull)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		ctx.State.Registers[7] = Register(HostCallOK)
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract [o, z] from registers ω7,8
+		o := ctx.State.Registers[7] // Offset
+		z := ctx.State.Registers[8] // BlobLength
+
+		// Check if memory at o is accessible for 32 bytes (μo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+			// If memory is inaccessible, return panic (h = ∇)
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Get the 32-byte key hash from memory
+		var keyHash [32]byte
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+
+		// Prepare the key for looking up historical status
+		histKey := state.PreimageLookupHistoricalStatusKey{
+			Preimage:   keyHash,
+			BlobLength: types.BlobLength(z),
+		}
+
+		// Get the accumulating service account (xs)
+		xs := ctx.Argument.AccumulatingServiceAccount()
+
+		// Check if the key exists in the historical status map
+		historicalStatus, exists := xs.PreimageLookupHistoricalStatus[histKey]
+		if !exists {
+			// Key doesn't exist, return HUH
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Define cutoff time for "old enough" timeslots (t - D)
+		cutoffTime := timeslot - types.Timeslot(UnreferencePreimageExpungeTimeslots)
+
+		// Handle different cases based on historical status length and values
+		if len(historicalStatus) == 0 || (len(historicalStatus) == 2 && historicalStatus[1] < cutoffTime) {
+			// Remove the key if status is [] or [x, y] with y < t - D
+			delete(xs.PreimageLookupHistoricalStatus, histKey)
+
+			// Also remove the key from PreimageLookup if it exists
+			delete(xs.PreimageLookup, keyHash)
+		} else if len(historicalStatus) == 1 {
+			// Replace [x] with [x, t] if status is [x]
+			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[0], timeslot}
+		} else if len(historicalStatus) == 3 && historicalStatus[1] < cutoffTime {
+			// Replace [x, y, w] with [w, t] if status is [x, y, w] and y < t - D
+			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[2], timeslot}
+		} else {
+			// For any other case, return HUH
+			ctx.State.Registers[7] = Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		ctx.State.Registers[7] = Register(HostCallOK)
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract offset o from register ω7
+		o := ctx.State.Registers[7] // Offset
+
+		// Check if memory at o is accessible for 32 bytes (μo⋅⋅⋅+32 ⊂ Vμ)
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+			// If memory is inaccessible, return panic (h = ∇)
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		// Get the 32-byte key hash from memory
+		var keyHash [32]byte
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+
+		// Set the exceptional accumulation result's preimage to this hash
+		// x'y = h
+		ctx.Argument.AccumulationResultContext.PreimageResult = &keyHash
+
+		// Set OK status in register ω7
 		ctx.State.Registers[7] = Register(HostCallOK)
 
 		return NewSimpleExitReason(ExitGo)
@@ -1081,95 +1361,6 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			}
 		}
 
-		return NewSimpleExitReason(ExitGo)
-	})
-}
-
-func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
-	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
-		// Extract parameters from registers [d, o] = ω7,8
-		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
-		hashOffset := ctx.State.Registers[8]                           // o - hash offset
-
-		// 1. Check if memory for hash is accessible (Zo⋅⋅⋅+32 ⊂ Vμ)
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(hashOffset), 32, ram.NoWrap) {
-			// (ε′, ω′7, (x′u)d) ≡ (☇, ω7, (xu)d) if h = ∇
-			return NewSimpleExitReason(ExitPanic)
-		}
-
-		// Read hash from memory (μo⋅⋅⋅+32)
-		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap, false)
-		var hash [32]byte
-		copy(hash[:], hashBytes)
-
-		// Get service accounts and the accumulating account
-		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
-		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
-
-		// 2. Check destination account exists and matches code hash
-		// (d ≠ xs ∧ d ∈ K((xu)d)) && (dc ≠ E32(xs))
-		if destServiceIndex == ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex {
-			ctx.State.Registers[7] = Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
-		if !destinationExists {
-			ctx.State.Registers[7] = Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		// Compare code hashes (dc ≠ E32(xs))
-		if !bytes.Equal(destinationAccount.CodeHash[:], serializer.EncodeLittleEndian(32, uint64(ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex))) {
-			ctx.State.Registers[7] = Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		// 3. Check interface type and if hash/lock pair exists in list
-		// (di ≠ 2 ∨ (h, l) ~∈ dl)
-		if destinationAccount.TotalItemsUsedInStorage() != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
-			ctx.State.Registers[7] = Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		length := max(81, int(destinationAccount.TotalOctetsUsedInStorage())) - 81
-
-		// Create the key for lookup
-		lookupKey := state.PreimageLookupHistoricalStatusKey{
-			Preimage:   hash,
-			BlobLength: types.BlobLength(length),
-		}
-
-		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
-		if !exists {
-			ctx.State.Registers[7] = Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		// Get the most recent timeslot in the historical status
-		if len(historicalStatus) == 2 {
-			// Check the expiration of the most recent timeslot against the current time
-			// Using UnreferencePreimageExpungeTimeslots as D from the specification
-			lastTimeslot := historicalStatus[1]
-			if lastTimeslot < timeslot-types.Timeslot(UnreferencePreimageExpungeTimeslots) {
-				// Update accumulating account balance (s′b = ((xu)d)[xs]b + db)
-				// For simplicity, we're assuming the balance to transfer is associated with the destination account
-				accumulatingServiceAccount.Balance += destinationAccount.Balance
-
-				// Remove the entry from destination account
-				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
-				delete(serviceAccounts, destServiceIndex)
-
-				// Update accounts in state
-				serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
-
-				// Set status to OK
-				ctx.State.Registers[7] = Register(HostCallOK)
-				return NewSimpleExitReason(ExitGo)
-			}
-		}
-		// Entry not expired
-		ctx.State.Registers[7] = Register(HostCallHuh)
 		return NewSimpleExitReason(ExitGo)
 	})
 }
