@@ -158,8 +158,11 @@ func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() state.Servic
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
+// func G(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount) ExitReason {
+// }
+
 // func Accumulate(accumulationStateComponents AccumulationStateComponents, timeslot types.Timeslot, gas types.GasValue, operandTuples []OperandTuple) (AccumulationStateComponents, []DefferredTransfer, *[32]byte, types.GasValue) {
 // 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
-//  	Remember to use g = 10 + w9 for transfer
+//  		Remember to use g = 10 + w9 for transfer
 // 	}
 // }

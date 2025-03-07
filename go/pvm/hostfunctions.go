@@ -96,7 +96,7 @@ func Gas(state *State, args ...any) ExitReason {
 // VerifyAndReturnStateForAccessor implements the state lookup host function
 // as specified in the graypaper. It verifies access, computes a key hash,
 // and returns data from state if available.
-func Read(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+func Read(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 
 		// Determine s* based on ω7
@@ -111,7 +111,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount, s
 		var a *s.ServiceAccount
 		if sStar == Register(serviceIndex) {
 			// a = s
-			a = &serviceAccount
+			a = serviceAccount
 		} else if sStar <= Register(^uint32(0)) {
 			// Check if sStar can fit in uint32 range
 			if serviceAcc, ok := serviceAccounts[types.ServiceIndex(sStar)]; ok {
@@ -446,7 +446,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		minGasForOnTransfer := ctx.State.Registers[10] // m - minimum gas for on transfer
 
 		// Check if memory range for code hash is accessible (c = ∇ check)
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) || labelLength > Register(^uint32(0)) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -659,7 +659,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		length := max(81, int(destinationAccount.TotalOctetsUsedInStorage())) - 81
+		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
 
 		// Create the key for lookup
 		lookupKey := state.PreimageLookupHistoricalStatusKey{
@@ -668,7 +668,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 		}
 
 		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
-		if !exists {
+		if !exists || length > uint64(^uint32(0)) {
 			ctx.State.Registers[7] = Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
 		}
@@ -722,7 +722,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 			BlobLength: types.BlobLength(z),
 		}]
 
-		if !ok {
+		if !ok || z > Register(^uint32(0)) {
 			ctx.State.Registers[7] = Register(HostCallNone)
 			ctx.State.Registers[8] = 0
 			return NewSimpleExitReason(ExitGo)
@@ -782,7 +782,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		originalStatus, originalExists := serviceAccount.PreimageLookupHistoricalStatus[histKey]
 
 		// Make the changes directly to the service account
-		if !originalExists {
+		if !originalExists || z > Register(^uint32(0)) {
 			serviceAccount.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{}
 		} else if len(originalStatus) == 2 {
 			serviceAccount.PreimageLookupHistoricalStatus[histKey] = append(originalStatus, timeslot)
@@ -836,7 +836,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 
 		// Check if the key exists in the historical status map
 		historicalStatus, exists := xs.PreimageLookupHistoricalStatus[histKey]
-		if !exists {
+		if !exists || z > Register(^uint32(0)) {
 			// Key doesn't exist, return HUH
 			ctx.State.Registers[7] = Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
