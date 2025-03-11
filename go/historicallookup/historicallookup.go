@@ -7,7 +7,7 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func HistoricalLookup(serviceAccount state.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
+func HistoricalLookup(serviceAccount *state.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
 	p, ok := serviceAccount.PreimageLookup[hash]
 	if !ok {
 		return nil

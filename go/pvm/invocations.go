@@ -174,12 +174,12 @@ type AccumulateInvocationContext struct {
 // s
 func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() *state.ServiceAccount {
 	s := ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex]
-	return &s
+	return s
 }
 
 // G
 func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAccount *state.ServiceAccount) {
-	ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex] = *serviceAccount
+	ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex] = serviceAccount
 }
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
@@ -241,7 +241,9 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		}
 	}
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
-	if accumulatingServiceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]; ok {
+	if accumulatingServiceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]; !ok {
+		return normalContext.StateComponents, []DefferredTransfer{}, nil, 0
+	} else {
 		// Create two separate context objects
 		exceptionalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
 		ctx := AccumulateInvocationContext{
@@ -267,7 +269,58 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 			return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, &preimageResult, gas
 		}
 		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, ctx.AccumulationResultContext.PreimageResult, gas
-	} else {
-		return normalContext.StateComponents, []DefferredTransfer{}, nil, 0
+	}
+}
+
+func OnTransfer(serviceAccounts state.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, defferredTransfers []DefferredTransfer) {
+	var hf HostFunction[state.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[state.ServiceAccount]) ExitReason {
+		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
+		switch n {
+		case LookupID:
+			return Lookup(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			}, ctx.Argument, serviceIndex, serviceAccounts)
+		case ReadID:
+			return Read(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			}, ctx.Argument, serviceIndex, serviceAccounts)
+		case WriteID:
+			return Write(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			}, ctx.Argument, serviceIndex)
+		case GasID:
+			return Gas(ctx.State, struct{}{})
+		case InfoID:
+			return Info(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			}, serviceIndex, serviceAccounts)
+		default:
+			ctx.State.Registers[7] = Register(HostCallWhat)
+			return NewSimpleExitReason(ExitGo)
+		}
+	}
+
+	if serviceAccount, ok := serviceAccounts[serviceIndex]; ok {
+		if len(defferredTransfers) == 0 {
+			return
+		}
+		defferredTransferGasLimitTotal := types.GasValue(0)
+		for _, defferredTransfer := range defferredTransfers {
+			serviceAccount.Balance += defferredTransfer.BalanceTransfer
+			defferredTransferGasLimitTotal += defferredTransfer.GasLimit
+		}
+		ΨM(serviceAccount.CodeHash[:], 10, defferredTransferGasLimitTotal, serializer.Serialize(struct {
+			Timeslot           types.Timeslot
+			ServiceIndex       types.ServiceIndex
+			DefferredTransfers []DefferredTransfer
+		}{
+			Timeslot:           timeslot,
+			ServiceIndex:       serviceIndex,
+			DefferredTransfers: defferredTransfers,
+		}), hf, serviceAccount)
 	}
 }

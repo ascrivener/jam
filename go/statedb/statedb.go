@@ -80,9 +80,9 @@ func (db *StateDatabase) CleanupOldStates(oldestNeededTimeslot types.Timeslot) {
 
 // deepCopyAccount creates a deep copy of a ServiceAccount to ensure
 // historical states are not affected by future modifications
-func deepCopyAccount(account state.ServiceAccount) state.ServiceAccount {
+func deepCopyAccount(account *state.ServiceAccount) *state.ServiceAccount {
 	// Create a new account
-	newAccount := state.ServiceAccount{
+	newAccount := &state.ServiceAccount{
 		StorageDictionary:              make(map[[32]byte][]byte),
 		PreimageLookup:                 make(map[[32]byte][]byte),
 		PreimageLookupHistoricalStatus: make(map[state.PreimageLookupHistoricalStatusKey][]types.Timeslot),

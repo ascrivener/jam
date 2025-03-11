@@ -5,7 +5,7 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-type ServiceAccounts map[types.ServiceIndex]ServiceAccount
+type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 type PreimageLookupHistoricalStatusKey struct {
 	Preimage   [32]byte
