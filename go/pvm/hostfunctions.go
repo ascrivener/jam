@@ -8,7 +8,6 @@ import (
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
-	"github.com/ascrivener/jam/state"
 	s "github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
@@ -341,7 +340,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		}
 
 		// Update the accumulation context
-		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = state.PrivilegedServices{
+		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = s.PrivilegedServices{
 			ManagerServiceIndex:             types.ServiceIndex(mainIndex),
 			AssignServiceIndex:              types.ServiceIndex(authIndex),
 			DesignateServiceIndex:           types.ServiceIndex(validIndex),
@@ -491,11 +490,11 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 
 		// Get current service accounts and update them
 		serviceAccounts := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
-		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = *accumulatingServiceAccount
 		serviceAccounts[currentDerivedServiceIndex] = newAccount
 
 		ctx.State.Registers[7] = Register(currentDerivedServiceIndex)
-		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents)
+		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, &ctx.Argument.AccumulationResultContext.StateComponents)
 
 		return NewSimpleExitReason(ExitGo)
 	})
@@ -530,7 +529,7 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		accumulatingServiceAccount.MinimumGasForOnTransfer = types.GasValue(minGasForOnTransfer)
 
 		// Update service account in state
-		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = *accumulatingServiceAccount
 
 		// Set return status to OK
 		ctx.State.Registers[7] = Register(HostCallOK)
@@ -598,7 +597,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason 
 
 		// Update source account balance
 		sourceAccount.Balance = newBalance
-		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = sourceAccount
+		serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = *sourceAccount
 
 		// Append transfer to deferred transfers list
 		ctx.Argument.AccumulationResultContext.DefferredTransfers = append(
@@ -662,7 +661,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
 
 		// Create the key for lookup
-		lookupKey := state.PreimageLookupHistoricalStatusKey{
+		lookupKey := s.PreimageLookupHistoricalStatusKey{
 			Preimage:   hash,
 			BlobLength: types.BlobLength(length),
 		}
@@ -688,7 +687,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 				delete(serviceAccounts, destServiceIndex)
 
 				// Update accounts in state
-				serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = accumulatingServiceAccount
+				serviceAccounts[ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex] = *accumulatingServiceAccount
 
 				// Set status to OK
 				ctx.State.Registers[7] = Register(HostCallOK)
@@ -717,7 +716,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[state.PreimageLookupHistoricalStatusKey{
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[s.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}]
@@ -770,7 +769,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := state.PreimageLookupHistoricalStatusKey{
+		histKey := s.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}
@@ -826,7 +825,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := state.PreimageLookupHistoricalStatusKey{
+		histKey := s.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}
@@ -1244,7 +1243,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 	})
 }
 
-func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1258,7 +1257,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount s.ServiceAccount,
 
 		// Determine which service account to use
 		if ctx.State.Registers[7] == MaxRegister || ctx.State.Registers[7] == Register(serviceIndex) {
-			a = &serviceAccount
+			a = serviceAccount
 		} else if account, ok := serviceAccounts[types.ServiceIndex(ctx.State.Registers[7])]; ok {
 			a = &account
 		}
@@ -1380,7 +1379,7 @@ func withGasCheck[T any](
 
 // check finds an unused service index, starting from the provided index
 // If the initial index is already in use, it iteratively tries next indices
-func check(i types.ServiceIndex, stateComponents AccumulationStateComponents) types.ServiceIndex {
+func check(i types.ServiceIndex, stateComponents *AccumulationStateComponents) types.ServiceIndex {
 	// Get the service accounts map
 	serviceAccounts := stateComponents.ServiceAccounts
 

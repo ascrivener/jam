@@ -220,25 +220,25 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) ExecutionExitReason {
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) (ExecutionExitReason, types.SignedGasValue) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
-		return NewExecutionExitReasonError(ExecutionErrorPanic)
+		return NewExecutionExitReasonError(ExecutionErrorPanic), types.SignedGasValue(gas)
 	}
 	postHostCallExitReason := ΨH(pvm, f, x)
 	if postHostCallExitReason.IsSimple() {
 		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
-			return NewExecutionExitReasonError(ExecutionErrorOutOfGas)
+			return NewExecutionExitReasonError(ExecutionErrorOutOfGas), pvm.State.Gas
 		}
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap) {
 				blob := pvm.State.RAM.InspectRange(uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap, false)
-				return NewExecutionExitReasonBlob(blob)
+				return NewExecutionExitReasonBlob(blob), pvm.State.Gas
 			} else {
-				return NewExecutionExitReasonBlob([]byte{})
+				return NewExecutionExitReasonBlob([]byte{}), pvm.State.Gas
 			}
 		}
 	}
-	return NewExecutionExitReasonError(ExecutionErrorPanic)
+	return NewExecutionExitReasonError(ExecutionErrorPanic), pvm.State.Gas
 }
