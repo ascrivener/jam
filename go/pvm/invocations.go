@@ -241,35 +241,35 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		}
 	}
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
-	if accumulatingServiceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]; !ok {
+	_, code := accumulationStateComponents.ServiceAccounts[serviceIndex].MetadataAndCode()
+	if code == nil {
 		return normalContext.StateComponents, []DefferredTransfer{}, nil, 0
-	} else {
-		// Create two separate context objects
-		exceptionalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
-		ctx := AccumulateInvocationContext{
-			AccumulationResultContext:            *normalContext,
-			ExceptionalAccumulationResultContext: *exceptionalContext,
-		}
-		executionExitReason, gas := ΨM(accumulatingServiceAccount.CodeHash[:], 5, gas, serializer.Serialize(struct {
-			Timeslot      types.Timeslot
-			ServiceIndex  types.ServiceIndex
-			OperandTuples []OperandTuple
-		}{
-			Timeslot:      timeslot,
-			ServiceIndex:  serviceIndex,
-			OperandTuples: operandTuples,
-		}), hf, &ctx)
-		if executionExitReason.IsError() {
-			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DefferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gas
-		}
-		blob := *executionExitReason.Blob
-		if len(blob) == 32 {
-			var preimageResult [32]byte
-			copy(preimageResult[:], blob)
-			return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, &preimageResult, gas
-		}
-		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, ctx.AccumulationResultContext.PreimageResult, gas
 	}
+	// Create two separate context objects
+	exceptionalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
+	ctx := AccumulateInvocationContext{
+		AccumulationResultContext:            *normalContext,
+		ExceptionalAccumulationResultContext: *exceptionalContext,
+	}
+	executionExitReason, posteriorGas := ΨM(*code, 5, gas, serializer.Serialize(struct {
+		Timeslot      types.Timeslot
+		ServiceIndex  types.ServiceIndex
+		OperandTuples []OperandTuple
+	}{
+		Timeslot:      timeslot,
+		ServiceIndex:  serviceIndex,
+		OperandTuples: operandTuples,
+	}), hf, &ctx)
+	if executionExitReason.IsError() {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DefferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, posteriorGas
+	}
+	blob := *executionExitReason.Blob
+	if len(blob) == 32 {
+		var preimageResult [32]byte
+		copy(preimageResult[:], blob)
+		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, &preimageResult, posteriorGas
+	}
+	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DefferredTransfers, ctx.AccumulationResultContext.PreimageResult, posteriorGas
 }
 
 func OnTransfer(serviceAccounts state.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, defferredTransfers []DefferredTransfer) {
@@ -304,23 +304,26 @@ func OnTransfer(serviceAccounts state.ServiceAccounts, timeslot types.Timeslot, 
 		}
 	}
 
-	if serviceAccount, ok := serviceAccounts[serviceIndex]; ok {
-		if len(defferredTransfers) == 0 {
-			return
-		}
-		defferredTransferGasLimitTotal := types.GasValue(0)
-		for _, defferredTransfer := range defferredTransfers {
-			serviceAccount.Balance += defferredTransfer.BalanceTransfer
-			defferredTransferGasLimitTotal += defferredTransfer.GasLimit
-		}
-		ΨM(serviceAccount.CodeHash[:], 10, defferredTransferGasLimitTotal, serializer.Serialize(struct {
-			Timeslot           types.Timeslot
-			ServiceIndex       types.ServiceIndex
-			DefferredTransfers []DefferredTransfer
-		}{
-			Timeslot:           timeslot,
-			ServiceIndex:       serviceIndex,
-			DefferredTransfers: defferredTransfers,
-		}), hf, serviceAccount)
+	if len(defferredTransfers) == 0 {
+		return
 	}
+	serviceAccount := serviceAccounts[serviceIndex]
+	_, code := serviceAccount.MetadataAndCode()
+	if code == nil {
+		return
+	}
+	defferredTransferGasLimitTotal := types.GasValue(0)
+	for _, defferredTransfer := range defferredTransfers {
+		serviceAccount.Balance += defferredTransfer.BalanceTransfer
+		defferredTransferGasLimitTotal += defferredTransfer.GasLimit
+	}
+	ΨM(*code, 10, defferredTransferGasLimitTotal, serializer.Serialize(struct {
+		Timeslot           types.Timeslot
+		ServiceIndex       types.ServiceIndex
+		DefferredTransfers []DefferredTransfer
+	}{
+		Timeslot:           timeslot,
+		ServiceIndex:       serviceIndex,
+		DefferredTransfers: defferredTransfers,
+	}), hf, serviceAccount)
 }

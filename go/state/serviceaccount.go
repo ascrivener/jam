@@ -2,6 +2,7 @@ package state
 
 import (
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -42,4 +43,22 @@ func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*int(s.TotalItemsUsedInStorage()) + constants.ServiceMinimumBalancePerOctet*int(s.TotalOctetsUsedInStorage()))
+}
+
+// bold m, bold c
+
+func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte) {
+	if preimage, ok := s.PreimageLookup[s.CodeHash]; ok {
+		offset := 0
+		L_m, n, ok := serializer.DecodeLength(preimage[offset:])
+		if !ok {
+			panic("failed to decode metadata length")
+		}
+		offset += n
+		m := preimage[offset : offset+int(L_m)]
+		offset += int(L_m)
+		c := preimage[offset:]
+		return &m, &c
+	}
+	return nil, nil
 }
