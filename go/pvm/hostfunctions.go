@@ -582,7 +582,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason 
 		}
 
 		// Create transfer object
-		transfer := DefferredTransfer{
+		transfer := DeferredTransfer{
 			SenderServiceIndex:   ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex,
 			ReceiverServiceIndex: destServiceIndex,
 			BalanceTransfer:      amount,
@@ -594,8 +594,8 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason 
 		sourceAccount.Balance = newBalance
 
 		// Append transfer to deferred transfers list
-		ctx.Argument.AccumulationResultContext.DefferredTransfers = append(
-			ctx.Argument.AccumulationResultContext.DefferredTransfers,
+		ctx.Argument.AccumulationResultContext.DeferredTransfers = append(
+			ctx.Argument.AccumulationResultContext.DeferredTransfers,
 			transfer)
 
 		// Set return status to OK - (ε′, ω′7, xt, (xs)b) ≡ (▸, OK, xt t, b) otherwise

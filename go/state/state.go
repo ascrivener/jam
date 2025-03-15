@@ -26,10 +26,10 @@ type State struct {
 }
 
 type PrivilegedServices struct {
-	ManagerServiceIndex             types.ServiceIndex
-	AssignServiceIndex              types.ServiceIndex
-	DesignateServiceIndex           types.ServiceIndex
-	AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
+	ManagerServiceIndex             types.ServiceIndex                    // m
+	AssignServiceIndex              types.ServiceIndex                    // a
+	DesignateServiceIndex           types.ServiceIndex                    // v
+	AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue // z
 }
 
 type PendingReport struct {
