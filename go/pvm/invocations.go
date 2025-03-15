@@ -1,6 +1,8 @@
 package pvm
 
 import (
+	"maps"
+
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
@@ -12,7 +14,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) ExecutionExitReason {
+func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) types.ExecutionExitReason {
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		if n == GasID {
@@ -50,7 +52,7 @@ type HostFunctionContext[T any] struct {
 
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
-func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts state.ServiceAccounts) (ExecutionExitReason, [][]byte) {
+func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts state.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
@@ -85,14 +87,14 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	}
 	serviceAccount, ok := serviceAccounts[workItem.ServiceIdentifier]
 	if !ok {
-		return NewExecutionExitReasonError(ExecutionErrorBAD), [][]byte{}
+		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
 	preimage := historicallookup.HistoricalLookup(serviceAccount, workPackage.RefinementContext.Timeslot, workItem.CodeHash)
 	if preimage == nil {
-		return NewExecutionExitReasonError(ExecutionErrorBAD), [][]byte{}
+		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
 	if len(*preimage) > constants.ServiceCodeMaxSize {
-		return NewExecutionExitReasonError(ExecutionErrorBIG), [][]byte{}
+		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), [][]byte{}
 	}
 
 	a := serializer.Serialize(struct {
@@ -110,7 +112,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		ExportSequence: [][]byte{},
 	}
 	r, _ := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
-	if r.IsError() && *r.ExecutionError == ExecutionErrorOutOfGas || *r.ExecutionError == ExecutionErrorPanic {
+	if r.IsError() && *r.ExecutionError == types.ExecutionErrorOutOfGas || *r.ExecutionError == types.ExecutionErrorPanic {
 		return r, [][]byte{}
 	}
 	return r, integratedPVMsAndExportSequence.ExportSequence
@@ -123,6 +125,32 @@ type AccumulationStateComponents struct { // U
 	PrivilegedServices       state.PrivilegedServices                                      // x
 }
 
+func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
+	// Create a new struct to hold the copied data
+	copy := AccumulationStateComponents{
+		UpcomingValidatorKeysets: u.UpcomingValidatorKeysets,
+		AuthorizersQueue:         u.AuthorizersQueue,
+		PrivilegedServices:       u.PrivilegedServices, // Copy the struct
+	}
+
+	// Deep copy ServiceAccounts
+	copy.ServiceAccounts = make(state.ServiceAccounts, len(u.ServiceAccounts))
+	for idx, account := range u.ServiceAccounts {
+		if account != nil {
+			accountCopy := *account
+			copy.ServiceAccounts[idx] = &accountCopy
+		}
+	}
+
+	// Deep copy the map inside PrivilegedServices if it exists
+	if u.PrivilegedServices.AlwaysAccumulateServicesWithGas != nil {
+		copy.PrivilegedServices.AlwaysAccumulateServicesWithGas = make(map[types.ServiceIndex]types.GasValue)
+		maps.Copy(copy.PrivilegedServices.AlwaysAccumulateServicesWithGas, u.PrivilegedServices.AlwaysAccumulateServicesWithGas)
+	}
+
+	return copy
+}
+
 type DefferredTransfer struct { // T
 	SenderServiceIndex   types.ServiceIndex     // s
 	ReceiverServiceIndex types.ServiceIndex     // d
@@ -131,11 +159,25 @@ type DefferredTransfer struct { // T
 	GasLimit             types.GasValue         // g
 }
 
+// DeepCopy creates a deep copy of DefferredTransfer
+func (t DefferredTransfer) DeepCopy() DefferredTransfer {
+	// Create a new instance with all fields copied
+	return DefferredTransfer{
+		SenderServiceIndex:   t.SenderServiceIndex,
+		ReceiverServiceIndex: t.ReceiverServiceIndex,
+		BalanceTransfer:      t.BalanceTransfer,
+		Memo:                 t.Memo,
+		GasLimit:             t.GasLimit,
+	}
+}
+
 type OperandTuple struct { // O
-	ExecutionExitReason ExecutionExitReason // o
-	PayloadHash         [32]byte            // l
-	WorkPackageHash     [32]byte            // k
-	WorkReportOutput    []byte              // a
+	WorkPackageHash       [32]byte                  // h
+	SegmentRoot           [32]byte                  // e
+	AuthorizerHash        [32]byte                  // a
+	WorkReportOutput      []byte                    // o
+	WorkResultPayloadHash [32]byte                  // y
+	ExecutionExitReason   types.ExecutionExitReason // d
 }
 
 type AccumulationResultContext struct { // X
@@ -144,6 +186,33 @@ type AccumulationResultContext struct { // X
 	DerivedServiceIndex      types.ServiceIndex          // i
 	DefferredTransfers       []DefferredTransfer         // t
 	PreimageResult           *[32]byte                   // y
+}
+
+// DeepCopy creates a deep copy of AccumulationResultContext
+func (x AccumulationResultContext) DeepCopy() *AccumulationResultContext {
+	// Create a new instance with primitives copied
+	copy := &AccumulationResultContext{
+		AccumulatingServiceIndex: x.AccumulatingServiceIndex,
+		StateComponents:          x.StateComponents.DeepCopy(),
+		DerivedServiceIndex:      x.DerivedServiceIndex,
+	}
+
+	// Deep copy DefferredTransfers slice
+	if x.DefferredTransfers != nil {
+		copy.DefferredTransfers = make([]DefferredTransfer, len(x.DefferredTransfers))
+		for i, transfer := range x.DefferredTransfers {
+			copy.DefferredTransfers[i] = transfer.DeepCopy()
+		}
+	}
+
+	// Deep copy PreimageResult if not nil
+	if x.PreimageResult != nil {
+		preimageResult := new([32]byte)
+		*preimageResult = *x.PreimageResult
+		copy.PreimageResult = preimageResult
+	}
+
+	return copy
 }
 
 func AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
@@ -159,7 +228,7 @@ func AccumulationResultContextFromAccumulationStateComponents(accumulationStateC
 	derivedServiceIndex := check(types.ServiceIndex(serializer.DecodeLittleEndian(hash[:])%((1<<32)-1<<9)+(1<<8)), accumulationStateComponents)
 	return &AccumulationResultContext{
 		AccumulatingServiceIndex: serviceIndex,
-		StateComponents:          *accumulationStateComponents,
+		StateComponents:          accumulationStateComponents.DeepCopy(),
 		DerivedServiceIndex:      derivedServiceIndex,
 		DefferredTransfers:       []DefferredTransfer{},
 		PreimageResult:           nil,

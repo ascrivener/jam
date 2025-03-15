@@ -9,7 +9,7 @@ import (
 
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/sealingkeysequence"
-	"github.com/ascrivener/jam/workreport"
+	"github.com/ascrivener/jam/types"
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -34,15 +34,15 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 	case reflect.Struct:
 		// Special handling based on the concrete type of the struct.
 		switch v.Type() {
-		case reflect.TypeOf(workreport.WorkOutput{}):
-			wo := v.Interface().(workreport.WorkOutput)
-			if !wo.HasError() {
+		case reflect.TypeOf(types.ExecutionExitReason{}):
+			er := v.Interface().(types.ExecutionExitReason)
+			if !er.IsError() {
 				// Tag 0 indicates valid data; then, recursively encode the Data field.
 				buf.WriteByte(0)
-				serializeValue(reflect.ValueOf(wo.Data), buf)
+				serializeValue(reflect.ValueOf(er.Blob), buf)
 			} else {
 				// Write the error value as a single octet.
-				buf.WriteByte(byte(wo.Err))
+				buf.WriteByte(byte(*er.ExecutionError))
 			}
 			return
 		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):

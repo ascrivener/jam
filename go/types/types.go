@@ -115,3 +115,36 @@ func (d Disputes) PunishEd25519Key(key Ed25519PublicKey) bool {
 	}
 	return false
 }
+
+type ExecutionErrorType int
+
+const (
+	ExecutionErrorOutOfGas ExecutionErrorType = iota
+	ExecutionErrorPanic
+	ExecutionErrorInvalidNumExports
+	ExecutionErrorBAD
+	ExecutionErrorBIG
+)
+
+type ExecutionExitReason struct {
+	ExecutionError *ExecutionErrorType
+	Blob           *[]byte
+}
+
+func NewExecutionExitReasonError(reason ExecutionErrorType) ExecutionExitReason {
+	return ExecutionExitReason{
+		ExecutionError: &reason,
+		Blob:           nil,
+	}
+}
+
+func NewExecutionExitReasonBlob(blob []byte) ExecutionExitReason {
+	return ExecutionExitReason{
+		ExecutionError: nil,
+		Blob:           &blob,
+	}
+}
+
+func (er ExecutionExitReason) IsError() bool {
+	return er.ExecutionError != nil
+}
