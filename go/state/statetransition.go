@@ -445,16 +445,24 @@ func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteri
 
 	var posteriorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
 
+	// Initialize with empty slices
 	for i := range constants.NumTimeslotsPerEpoch {
-		val := make([]workreport.WorkReportWithWorkPackageHashes, 0)
-		accumulationQueueIndex := (posteriorMostRecentBlockTimeslot.SlotPhaseIndex() - i) % len(accumulationQueue)
+		posteriorAccumulationQueue[i] = make([]workreport.WorkReportWithWorkPackageHashes, 0)
+	}
+
+	m := posteriorMostRecentBlockTimeslot.SlotPhaseIndex()
+	timeslotDiff := int(posteriorMostRecentBlockTimeslot) - int(priorMostRecentBlockTimeslot)
+
+	for i := range constants.NumTimeslotsPerEpoch {
+		queueIndex := (m + constants.NumTimeslotsPerEpoch - i) % constants.NumTimeslotsPerEpoch
 		if i == 0 {
-			val = FilterWorkReportsByWorkPackageHashes(queuedExecutionWorkReports, AccumulationHistory[len(AccumulationHistory)-1])
+			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(
+				queuedExecutionWorkReports,
+				AccumulationHistory[len(AccumulationHistory)-1])
+		} else if i < timeslotDiff {
+		} else {
+			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(accumulationQueue[queueIndex], AccumulationHistory[len(AccumulationHistory)-1])
 		}
-		if i >= int(posteriorMostRecentBlockTimeslot)-int(priorMostRecentBlockTimeslot) {
-			val = FilterWorkReportsByWorkPackageHashes(accumulationQueue[accumulationQueueIndex], AccumulationHistory[len(AccumulationHistory)-1])
-		}
-		posteriorAccumulationQueue[accumulationQueueIndex] = val
 	}
 
 	return o, C, posteriorAccumulationQueue
