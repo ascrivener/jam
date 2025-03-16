@@ -1,5 +1,11 @@
 package ram
 
+import (
+	"fmt"
+
+	"github.com/ascrivener/jam/constants"
+)
+
 // Constants for RAM memory layout and access control
 const (
 	PageSize          = (1 << 12)
@@ -10,6 +16,15 @@ const (
 )
 
 var MinValidRamIndex RamIndex = MajorZoneSize
+
+type Arguments []byte
+
+func NewArguments(value []byte) (a Arguments, e error) {
+	if len(value) >= ArgumentsZoneSize {
+		return a, fmt.Errorf("invalid core index value: must be less than %d", constants.NumCores)
+	}
+	return Arguments(value), nil
+}
 
 // MemoryAccessMode defines how memory accesses beyond RamSize should be handled
 type MemoryAccessMode int

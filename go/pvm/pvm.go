@@ -44,7 +44,7 @@ func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructio
 	}
 }
 
-func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCounter Register, gas types.GasValue) *PVM {
+func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter Register, gas types.GasValue) *PVM {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
 		return nil
@@ -52,7 +52,7 @@ func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCou
 	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
 
-func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, regs [13]Register, r *ram.RAM, ok bool) {
+func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]Register, r *ram.RAM, ok bool) {
 	offset := 0
 
 	// 1. Decode E3(|o|): the encoded number of elements in o.
@@ -220,7 +220,7 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.SignedGasValue) {
+func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.SignedGasValue) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), types.SignedGasValue(gas)

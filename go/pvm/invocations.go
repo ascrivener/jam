@@ -7,7 +7,7 @@ import (
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	wp "github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
@@ -52,7 +52,7 @@ type HostFunctionContext[T any] struct {
 
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
-func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts state.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
+func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
@@ -120,10 +120,10 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 
 // U
 type AccumulationStateComponents struct {
-	ServiceAccounts          state.ServiceAccounts                                         // d
+	ServiceAccounts          serviceaccount.ServiceAccounts                                // d
 	UpcomingValidatorKeysets [constants.NumValidators]types.ValidatorKeyset                // i
 	AuthorizersQueue         [constants.NumCores][constants.AuthorizerQueueLength][32]byte // q
-	PrivilegedServices       state.PrivilegedServices                                      // x
+	PrivilegedServices       types.PrivilegedServices                                      // x
 }
 
 func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
@@ -135,7 +135,7 @@ func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
 	}
 
 	// Deep copy ServiceAccounts
-	copy.ServiceAccounts = make(state.ServiceAccounts, len(u.ServiceAccounts))
+	copy.ServiceAccounts = make(serviceaccount.ServiceAccounts, len(u.ServiceAccounts))
 	for idx, account := range u.ServiceAccounts {
 		if account != nil {
 			accountCopy := *account
@@ -170,6 +170,16 @@ func (t DeferredTransfer) DeepCopy() DeferredTransfer {
 		Memo:                 t.Memo,
 		GasLimit:             t.GasLimit,
 	}
+}
+
+func SelectDeferredTransfers(deferredTransfers []DeferredTransfer, serviceIndex types.ServiceIndex) []DeferredTransfer {
+	selectedDeferredTransfers := make([]DeferredTransfer, 0)
+	for _, deferredTransfer := range deferredTransfers {
+		if deferredTransfer.ReceiverServiceIndex == serviceIndex {
+			selectedDeferredTransfers = append(selectedDeferredTransfers, deferredTransfer)
+		}
+	}
+	return selectedDeferredTransfers
 }
 
 type OperandTuple struct { // O
@@ -242,13 +252,13 @@ type AccumulateInvocationContext struct {
 }
 
 // s
-func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() *state.ServiceAccount {
+func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() *serviceaccount.ServiceAccount {
 	s := ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex]
 	return s
 }
 
 // G
-func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAccount *state.ServiceAccount) {
+func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAccount *serviceaccount.ServiceAccount) {
 	ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex] = serviceAccount
 }
 
@@ -343,8 +353,8 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed
 }
 
-func OnTransfer(serviceAccounts state.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, DeferredTransfers []DeferredTransfer) {
-	var hf HostFunction[state.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[state.ServiceAccount]) ExitReason {
+func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, DeferredTransfers []DeferredTransfer) {
+	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case LookupID:

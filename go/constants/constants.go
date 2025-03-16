@@ -10,7 +10,7 @@ const OneThirdNumValidators int = NumValidators / 3
 
 const NumTicketEntries int = 2
 
-const NumTimeslotsPerEpoch int = 600
+const NumTimeslotsPerEpoch int = 600 // E
 
 const TicketSubmissionEndingSlotPhaseNumber int = 500
 
@@ -33,3 +33,7 @@ const ServiceMinimumBalance int = 100 // Bs
 const ServiceMinimumBalancePerItem int = 10 // Bi
 
 const ServiceMinimumBalancePerOctet int = 1 // Bl
+
+const SingleAccumulationAllocatedGas int = 10000000 // GA
+
+const TotalAccumulationAllocatedGas int = 3500000000 // GT

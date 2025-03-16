@@ -2,34 +2,28 @@ package state
 
 import (
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 )
 
 type State struct {
-	AuthorizersPool            [constants.NumCores][][32]byte                                               // 8.2
-	RecentBlocks               []RecentBlock                                                                // 7.1
-	SafroleBasicState          SafroleBasicState                                                            // 6.3
-	ServiceAccounts            ServiceAccounts                                                              // 9.2
-	EntropyAccumulator         [4][32]byte                                                                  // 6.21
-	ValidatorKeysetsStaging    types.ValidatorKeysets                                                       // 6.7
-	ValidatorKeysetsActive     types.ValidatorKeysets                                                       // 6.7
-	ValidatorKeysetsPriorEpoch types.ValidatorKeysets                                                       // 6.7
-	PendingReports             [constants.NumCores]*PendingReport                                           // 11.1
-	MostRecentBlockTimeslot    types.Timeslot                                                               // 6.1
-	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // 8.1
-	PrivilegedServices         PrivilegedServices                                                           // 9.9
-	Disputes                   types.Disputes                                                               // 10.1
-	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics                        // 13.1
-	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // 12.3
-	AccumulationHistory        AccumulationHistory                                                          // 12.1
-}
-
-type PrivilegedServices struct {
-	ManagerServiceIndex             types.ServiceIndex                    // m
-	AssignServiceIndex              types.ServiceIndex                    // a
-	DesignateServiceIndex           types.ServiceIndex                    // v
-	AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue // z
+	AuthorizersPool            [constants.NumCores][][32]byte                                               // α
+	RecentBlocks               []RecentBlock                                                                // β
+	SafroleBasicState          SafroleBasicState                                                            // γ
+	ServiceAccounts            serviceaccount.ServiceAccounts                                               // δ
+	EntropyAccumulator         [4][32]byte                                                                  // η
+	ValidatorKeysetsStaging    types.ValidatorKeysets                                                       // ι
+	ValidatorKeysetsActive     types.ValidatorKeysets                                                       // κ
+	ValidatorKeysetsPriorEpoch types.ValidatorKeysets                                                       // λ
+	PendingReports             [constants.NumCores]*PendingReport                                           // ρ
+	MostRecentBlockTimeslot    types.Timeslot                                                               // τ
+	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // φ
+	PrivilegedServices         types.PrivilegedServices                                                     // χ
+	Disputes                   types.Disputes                                                               // ψ
+	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics                        // π
+	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
+	AccumulationHistory        AccumulationHistory                                                          // ξ
 }
 
 type PendingReport struct {
@@ -56,4 +50,19 @@ func (a AccumulationHistory) ToUnionSet() map[[32]byte]struct{} {
 		}
 	}
 	return set
+}
+
+// ShiftLeft shifts all elements so that a[i] = a[i+1] and fills the last element with the provided map.
+// If newLast is nil, an empty map will be created.
+func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
+	for i := range (*a)[:len(*a)-1] {
+		(*a)[i] = (*a)[i+1]
+	}
+
+	// Set the last element to the provided map or create an empty one
+	if newLast == nil {
+		(*a)[len(*a)-1] = make(map[[32]byte]struct{})
+	} else {
+		(*a)[len(*a)-1] = newLast
+	}
 }

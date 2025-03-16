@@ -1,4 +1,4 @@
-package state
+package serviceaccount
 
 import (
 	"github.com/ascrivener/jam/constants"

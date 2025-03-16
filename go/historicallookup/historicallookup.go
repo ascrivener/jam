@@ -3,17 +3,17 @@
 package historicallookup
 
 import (
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 )
 
-func HistoricalLookup(serviceAccount *state.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
+func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
 	p, ok := serviceAccount.PreimageLookup[hash]
 	if !ok {
 		return nil
 	}
 
-	key := state.PreimageLookupHistoricalStatusKey{
+	key := serviceaccount.PreimageLookupHistoricalStatusKey{
 		Preimage:   hash,
 		BlobLength: types.BlobLength(len(p)),
 	}
@@ -41,6 +41,6 @@ func HistoricalLookup(serviceAccount *state.ServiceAccount, timeslot types.Times
 
 // gets posterior service accounts for a particular block with a header hash headerHash, timeslot timeslot
 // TODO: implement
-func GetPosteriorServiceAccounts(headerHash [32]byte, timeslot types.Timeslot) state.ServiceAccounts {
-	return make(state.ServiceAccounts)
+func GetPosteriorServiceAccounts(headerHash [32]byte, timeslot types.Timeslot) serviceaccount.ServiceAccounts {
+	return make(serviceaccount.ServiceAccounts)
 }

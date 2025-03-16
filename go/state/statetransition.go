@@ -12,13 +12,47 @@ import (
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
 )
+
+// Converts a slice of work reports to a set of work package hashes
+func WorkReportsToWorkPackageHashes(workReports []workreport.WorkReport) map[[32]byte]struct{} {
+	workPackageHashes := make(map[[32]byte]struct{})
+	for _, workReport := range workReports {
+		workPackageHashes[workReport.WorkPackageSpecification.WorkPackageHash] = struct{}{}
+	}
+	return workPackageHashes
+}
+
+// FilterWorkReportsByWorkPackageHashes filters work reports by excluding those that reference
+// work packages already in the accumulated work package hashes
+func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPackageHashes, accumulatedWorkPackageHashes map[[32]byte]struct{}) []workreport.WorkReportWithWorkPackageHashes {
+	updatedWorkReports := make([]workreport.WorkReportWithWorkPackageHashes, 0)
+	for _, w := range r {
+		workReport := w.WorkReport
+		if _, exists := accumulatedWorkPackageHashes[workReport.WorkPackageSpecification.WorkPackageHash]; exists {
+			continue
+		}
+		workPackageHashes := make(map[[32]byte]struct{})
+		for workPackageHash := range w.WorkPackageHashes {
+			if _, exists := accumulatedWorkPackageHashes[workPackageHash]; !exists {
+				workPackageHashes[workPackageHash] = struct{}{}
+			}
+		}
+		updatedWorkReports = append(updatedWorkReports, workreport.WorkReportWithWorkPackageHashes{
+			WorkReport:        workReport,
+			WorkPackageHashes: workPackageHashes,
+		})
+	}
+	return updatedWorkReports
+}
 
 // runComputation launches a computation concurrently and records the first error encountered.
 func runComputation(wg *sync.WaitGroup, setError func(error), fn func() error) {
@@ -327,35 +361,8 @@ func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtri
 	return postGuaranteesExtrinsicIntermediatePendingReports, nil
 }
 
-func computeAccumulatableWorkReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport {
+func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) ([]workreport.WorkReport, []workreport.WorkReportWithWorkPackageHashes) {
 	// 1. function utils
-	queueEdit := func(r []workreport.WorkReportWithWorkPackageHashes, accumulatedWorkPackageHashes map[[32]byte]struct{}) []workreport.WorkReportWithWorkPackageHashes {
-		updatedWorkReports := make([]workreport.WorkReportWithWorkPackageHashes, 0)
-		for _, w := range r {
-			workReport := w.WorkReport
-			if _, exists := accumulatedWorkPackageHashes[workReport.WorkPackageSpecification.WorkPackageHash]; exists {
-				continue
-			}
-			workPackageHashes := make(map[[32]byte]struct{})
-			for workPackageHash := range w.WorkPackageHashes {
-				if _, exists := accumulatedWorkPackageHashes[workPackageHash]; !exists {
-					workPackageHashes[workPackageHash] = struct{}{}
-				}
-			}
-			updatedWorkReports = append(updatedWorkReports, workreport.WorkReportWithWorkPackageHashes{
-				WorkReport:        workReport,
-				WorkPackageHashes: workPackageHashes,
-			})
-		}
-		return updatedWorkReports
-	}
-	workReportsToWorkPackageHashes := func(workReports []workreport.WorkReport) map[[32]byte]struct{} {
-		workPackageHashes := make(map[[32]byte]struct{})
-		for _, workReport := range workReports {
-			workPackageHashes[workReport.WorkPackageSpecification.WorkPackageHash] = struct{}{}
-		}
-		return workPackageHashes
-	}
 	var accumulationPriorityQueue func(r []workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport
 	accumulationPriorityQueue = func(r []workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport {
 		g := make([]workreport.WorkReport, 0)
@@ -367,7 +374,7 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 		if len(g) == 0 {
 			return g
 		}
-		return append(g, accumulationPriorityQueue(queueEdit(r, workReportsToWorkPackageHashes(g)))...)
+		return append(g, accumulationPriorityQueue(FilterWorkReportsByWorkPackageHashes(r, WorkReportsToWorkPackageHashes(g)))...)
 	}
 
 	// 2. create immediate and queued WRs
@@ -397,7 +404,7 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 			})
 		}
 	}
-	queuedExecutionWorkReports = queueEdit(queuedExecutionWorkReports, priorAccumulationHistory.ToUnionSet())
+	queuedExecutionWorkReports = FilterWorkReportsByWorkPackageHashes(queuedExecutionWorkReports, priorAccumulationHistory.ToUnionSet())
 
 	// 3. combine everything
 	m := int(header.TimeSlot) % constants.NumTimeslotsPerEpoch
@@ -409,9 +416,48 @@ func computeAccumulatableWorkReports(header header.Header, assurances extrinsics
 	for _, inner := range priorAccumulationQueue[:m] {
 		flattenedBeforeM = append(flattenedBeforeM, inner...)
 	}
-	q := queueEdit(append(flattenedAfterM, append(flattenedBeforeM, queuedExecutionWorkReports...)...), workReportsToWorkPackageHashes(immediatelyAccumulatableWorkReports))
-	return append(immediatelyAccumulatableWorkReports, accumulationPriorityQueue(q)...)
+	q := FilterWorkReportsByWorkPackageHashes(append(flattenedAfterM, append(flattenedBeforeM, queuedExecutionWorkReports...)...), WorkReportsToWorkPackageHashes(immediatelyAccumulatableWorkReports))
+	return append(immediatelyAccumulatableWorkReports, accumulationPriorityQueue(q)...), queuedExecutionWorkReports
 	// wtf did i just do^
+}
+
+func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, validatorKeysetsActive types.ValidatorKeysets, validatorKeysetsPriorEpoch types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, AccumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) {
+	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+privilegedServices.TotalAlwaysAccumulateGas())
+	n, o, deferredTransfers, C := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, workReports, &pvm.AccumulationStateComponents{
+		ServiceAccounts:          serviceAccounts,
+		UpcomingValidatorKeysets: validatorKeysetsStaging,
+		AuthorizersQueue:         authorizerQueue,
+		PrivilegedServices:       privilegedServices,
+	}, privilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
+
+	var wg sync.WaitGroup
+	for serviceIndex := range serviceAccounts {
+		wg.Add(1)
+		go func(sIndex types.ServiceIndex) {
+			defer wg.Done()
+			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
+			pvm.OnTransfer(serviceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
+		}(serviceIndex)
+	}
+	wg.Wait()
+
+	AccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(workReports[:n]))
+
+	var posteriorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
+
+	for i := range constants.NumTimeslotsPerEpoch {
+		val := make([]workreport.WorkReportWithWorkPackageHashes, 0)
+		accumulationQueueIndex := (posteriorMostRecentBlockTimeslot.SlotPhaseIndex() - i) % len(accumulationQueue)
+		if i == 0 {
+			val = FilterWorkReportsByWorkPackageHashes(queuedExecutionWorkReports, AccumulationHistory[len(AccumulationHistory)-1])
+		}
+		if i >= int(posteriorMostRecentBlockTimeslot)-int(priorMostRecentBlockTimeslot) {
+			val = FilterWorkReportsByWorkPackageHashes(accumulationQueue[accumulationQueueIndex], AccumulationHistory[len(AccumulationHistory)-1])
+		}
+		posteriorAccumulationQueue[accumulationQueueIndex] = val
+	}
+
+	return o, C, posteriorAccumulationQueue
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {

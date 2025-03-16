@@ -8,7 +8,7 @@ import (
 	"github.com/ascrivener/jam/historicallookup"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
-	s "github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
 	"github.com/ascrivener/jam/workpackage"
@@ -95,7 +95,7 @@ func Gas(state *State, args ...any) ExitReason {
 // VerifyAndReturnStateForAccessor implements the state lookup host function
 // as specified in the graypaper. It verifies access, computes a key hash,
 // and returns data from state if available.
-func Read(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 
 		// Determine s* based on ω7
@@ -107,7 +107,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, 
 		}
 
 		// Determine 'a' based on s*
-		var a *s.ServiceAccount
+		var a *serviceaccount.ServiceAccount
 		if sStar == Register(serviceIndex) {
 			// a = s
 			a = serviceAccount
@@ -174,7 +174,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, 
 	})
 }
 
-func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex) ExitReason {
+func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		// Extract [ko, kz, vo, vz] from registers ω7⋅⋅⋅+4
 		ko := ctx.State.Registers[7]  // Key offset
@@ -232,19 +232,19 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount,
 
 // AccountInfo represents the structured account information for serialization
 type AccountInfo struct {
-	CodeHash                       [32]byte                                                 // c
-	Balance                        types.Balance                                            // b
-	ThresholdBalanceNeeded         types.Balance                                            // t
-	MinimumGasForAccumulate        types.GasValue                                           // g
-	MinimumGasForOnTransfer        types.GasValue                                           // m
-	PreimageLookupHistoricalStatus map[s.PreimageLookupHistoricalStatusKey][]types.Timeslot // l
-	StorageItems                   uint32                                                   // i
+	CodeHash                       [32]byte                                                              // c
+	Balance                        types.Balance                                                         // b
+	ThresholdBalanceNeeded         types.Balance                                                         // t
+	MinimumGasForAccumulate        types.GasValue                                                        // g
+	MinimumGasForOnTransfer        types.GasValue                                                        // m
+	PreimageLookupHistoricalStatus map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot // l
+	StorageItems                   uint32                                                                // i
 }
 
-func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		// Determine the target service account (t)
-		var targetAccount *s.ServiceAccount
+		var targetAccount *serviceaccount.ServiceAccount
 
 		// If ω7 = 2^64 - 1, use service account parameter, otherwise lookup by index
 		if ctx.State.Registers[7] == Register(^uint64(0)) {
@@ -340,7 +340,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		}
 
 		// Update the accumulation context
-		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = s.PrivilegedServices{
+		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = types.PrivilegedServices{
 			ManagerServiceIndex:             types.ServiceIndex(mainIndex),
 			AssignServiceIndex:              types.ServiceIndex(authIndex),
 			DesignateServiceIndex:           types.ServiceIndex(validIndex),
@@ -455,15 +455,15 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		copy(codeHash[:], codeHashBytes)
 
 		// Create preimage history map with the code hash and label length as key
-		preimageHistory := make(map[s.PreimageLookupHistoricalStatusKey][]types.Timeslot)
-		key := s.PreimageLookupHistoricalStatusKey{
+		preimageHistory := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
+		key := serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   codeHash,
 			BlobLength: types.BlobLength(labelLength),
 		}
 		preimageHistory[key] = []types.Timeslot{}
 
 		// Create new service account
-		newAccount := &s.ServiceAccount{
+		newAccount := &serviceaccount.ServiceAccount{
 			CodeHash:                       codeHash,
 			StorageDictionary:              make(map[[32]byte][]byte),
 			PreimageLookupHistoricalStatus: preimageHistory,
@@ -655,7 +655,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
 
 		// Create the key for lookup
-		lookupKey := s.PreimageLookupHistoricalStatusKey{
+		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   hash,
 			BlobLength: types.BlobLength(length),
 		}
@@ -707,7 +707,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[s.PreimageLookupHistoricalStatusKey{
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}]
@@ -760,7 +760,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := s.PreimageLookupHistoricalStatusKey{
+		histKey := serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}
@@ -816,7 +816,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := s.PreimageLookupHistoricalStatusKey{
+		histKey := serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   keyHash,
 			BlobLength: types.BlobLength(z),
 		}
@@ -1234,7 +1234,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 	})
 }
 
-func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts) ExitReason {
+func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1244,7 +1244,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount
 			return NewSimpleExitReason(ExitPanic)
 		}
 
-		var a *s.ServiceAccount
+		var a *serviceaccount.ServiceAccount
 
 		// Determine which service account to use
 		if ctx.State.Registers[7] == MaxRegister || ctx.State.Registers[7] == Register(serviceIndex) {
@@ -1295,7 +1295,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *s.ServiceAccount
 }
 
 // HistoricalLookup retrieves a historical value for a key from a service account
-func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], serviceIndex types.ServiceIndex, serviceAccounts s.ServiceAccounts, timeslot types.Timeslot) ExitReason {
+func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1305,7 +1305,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			return NewSimpleExitReason(ExitPanic)
 		}
 
-		var a *s.ServiceAccount
+		var a *serviceaccount.ServiceAccount
 
 		serviceAccountForProvidedIndex, ok := serviceAccounts[serviceIndex]
 		// Determine which service account to use

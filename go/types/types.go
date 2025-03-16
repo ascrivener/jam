@@ -24,6 +24,7 @@ func (t Timeslot) EpochIndex() int {
 	return int(t) / constants.NumTimeslotsPerEpoch
 }
 
+// m
 func (t Timeslot) SlotPhaseIndex() int {
 	return int(t) % constants.NumTimeslotsPerEpoch
 }
@@ -147,4 +148,19 @@ func NewExecutionExitReasonBlob(blob []byte) ExecutionExitReason {
 
 func (er ExecutionExitReason) IsError() bool {
 	return er.ExecutionError != nil
+}
+
+type PrivilegedServices struct {
+	ManagerServiceIndex             ServiceIndex              // m
+	AssignServiceIndex              ServiceIndex              // a
+	DesignateServiceIndex           ServiceIndex              // v
+	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue // g
+}
+
+func (p PrivilegedServices) TotalAlwaysAccumulateGas() GasValue {
+	sum := GasValue(0)
+	for _, gasValue := range p.AlwaysAccumulateServicesWithGas {
+		sum += gasValue
+	}
+	return sum
 }

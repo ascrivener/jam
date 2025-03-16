@@ -1,12 +1,5 @@
 package pvm
 
-import (
-	"fmt"
-
-	"github.com/ascrivener/jam/constants"
-	"github.com/ascrivener/jam/ram"
-)
-
 type Register uint64
 
 type SimpleExitReasonType int
@@ -62,13 +55,4 @@ func (er ExitReason) IsSimple() bool {
 
 func (er ExitReason) IsComplex() bool {
 	return er.ComplexExitReason != nil
-}
-
-type Arguments []byte
-
-func NewArguments(value []byte) (a Arguments, e error) {
-	if len(value) >= ram.ArgumentsZoneSize {
-		return a, fmt.Errorf("invalid core index value: must be less than %d", constants.NumCores)
-	}
-	return Arguments(value), nil
 }

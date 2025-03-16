@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 )
@@ -33,12 +33,12 @@ func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateCom
 	return Accumulate(accumulationStateComponents, timeslot, serviceIndex, gas, operandTuples, posteriorEntropyAccumulator)
 }
 
-type AccumulationOutputPairing struct {
+type BEEFYCommitment struct {
 	ServiceIndex   types.ServiceIndex
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (types.GasValue, AccumulationStateComponents, []DeferredTransfer, map[AccumulationOutputPairing]struct{}) {
+func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (types.GasValue, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}) {
 	// Calculate total work results across all reports
 	totalWorkResults := 0
 	for _, report := range workReports {
@@ -74,8 +74,8 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var totalGasUsed types.GasValue
-	accumulationOutputPairings := make(map[AccumulationOutputPairing]struct{})
-	n := make(state.ServiceAccounts)
+	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
+	n := make(serviceaccount.ServiceAccounts)
 
 	// m will store the union of (original keys - result keys) for all service indices
 	// This represents all keys that were present in the original set but missing in at least one result
@@ -107,7 +107,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 			}
 
 			if preimageResult != nil {
-				accumulationOutputPairings[AccumulationOutputPairing{
+				accumulationOutputPairings[BEEFYCommitment{
 					ServiceIndex:   sIndex,
 					PreimageResult: *preimageResult,
 				}] = struct{}{}
@@ -147,7 +147,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	// 1. Start with original service accounts
 	// 2. Union with n (accounts from individual service processing)
 	// 3. Remove keys in m (keys that disappeared in at least one result)
-	finalServiceAccounts := make(state.ServiceAccounts)
+	finalServiceAccounts := make(serviceaccount.ServiceAccounts)
 
 	// First, add all original accounts
 	for serviceIndex, serviceAccount := range accumulationStateComponents.ServiceAccounts {
@@ -167,7 +167,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	// Get the components from privileged services
 	var upcomingValidatorKeysets types.ValidatorKeysets
 	var authorizersQueue [341][80][32]byte
-	var privilegedServices state.PrivilegedServices
+	var privilegedServices types.PrivilegedServices
 
 	if components, ok := privilegedStateComponents[designateServiceIndex]; ok {
 		upcomingValidatorKeysets = components.UpcomingValidatorKeysets
@@ -195,12 +195,12 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	}, deferredTransfers, accumulationOutputPairings
 }
 
-func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[AccumulationOutputPairing]struct{}) {
+func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}) {
 	// Initialize return values
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
 	allDeferredTransfers := make([]DeferredTransfer, 0)
-	allOutputPairings := make(map[AccumulationOutputPairing]struct{})
+	allOutputPairings := make(map[BEEFYCommitment]struct{})
 
 	// Remaining gas for processing
 	remainingGas := gas

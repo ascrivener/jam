@@ -3,31 +3,31 @@ package statedb
 import (
 	"sync"
 
-	"github.com/ascrivener/jam/state"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workpackage"
 )
 
 // StateDatabase manages historical service account states
 type StateDatabase struct {
-	states map[types.Timeslot]state.ServiceAccounts
+	states map[types.Timeslot]serviceaccount.ServiceAccounts
 	mu     sync.RWMutex
 }
 
 // NewStateDatabase creates a new StateDatabase
 func NewStateDatabase() *StateDatabase {
 	return &StateDatabase{
-		states: make(map[types.Timeslot]state.ServiceAccounts),
+		states: make(map[types.Timeslot]serviceaccount.ServiceAccounts),
 	}
 }
 
 // AddState adds a service account state for a specific timeslot
-func (db *StateDatabase) AddState(timeslot types.Timeslot, accounts state.ServiceAccounts) {
+func (db *StateDatabase) AddState(timeslot types.Timeslot, accounts serviceaccount.ServiceAccounts) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	// Deep copy the accounts to avoid later modifications affecting our history
-	accountsCopy := make(state.ServiceAccounts)
+	accountsCopy := make(serviceaccount.ServiceAccounts)
 	for idx, account := range accounts {
 		accountsCopy[idx] = deepCopyAccount(account)
 	}
@@ -37,7 +37,7 @@ func (db *StateDatabase) AddState(timeslot types.Timeslot, accounts state.Servic
 
 // GetStateForWorkPackage returns the appropriate state for a workpackage
 // based on its LookupAnchorHeaderHash and Timeslot
-func (db *StateDatabase) GetStateForWorkPackage(wp workpackage.WorkPackage) state.ServiceAccounts {
+func (db *StateDatabase) GetStateForWorkPackage(wp workpackage.WorkPackage) serviceaccount.ServiceAccounts {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -80,12 +80,12 @@ func (db *StateDatabase) CleanupOldStates(oldestNeededTimeslot types.Timeslot) {
 
 // deepCopyAccount creates a deep copy of a ServiceAccount to ensure
 // historical states are not affected by future modifications
-func deepCopyAccount(account *state.ServiceAccount) *state.ServiceAccount {
+func deepCopyAccount(account *serviceaccount.ServiceAccount) *serviceaccount.ServiceAccount {
 	// Create a new account
-	newAccount := &state.ServiceAccount{
+	newAccount := &serviceaccount.ServiceAccount{
 		StorageDictionary:              make(map[[32]byte][]byte),
 		PreimageLookup:                 make(map[[32]byte][]byte),
-		PreimageLookupHistoricalStatus: make(map[state.PreimageLookupHistoricalStatusKey][]types.Timeslot),
+		PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 		CodeHash:                       account.CodeHash,
 		Balance:                        account.Balance,
 		MinimumGasForAccumulate:        account.MinimumGasForAccumulate,
