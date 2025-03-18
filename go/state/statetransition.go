@@ -68,13 +68,43 @@ func runComputation(wg *sync.WaitGroup, setError func(error), fn func() error) {
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func StateTransitionFunction(priorState State, block block.Block) (State, error) {
-	var posteriorState State
+func StateTransitionFunction(priorState State, block block.Block) State {
 
 	var wg sync.WaitGroup
 	// var mu sync.Mutex
-	var transitionError error
 
+	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(block.Header)
+
+	intermediateRecentBlocks := computeIntermediateRecentBlocks(block.Header, priorState.RecentBlocks)
+
+	posteriorEntropyAccumulator := computeEntropyAccumulator(block.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
+
+	posteriorValidatorKeysetsActive := computeValidatorKeysetsActive(block.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState)
+
+	posteriorDisputes := computeDisputes(block.Extrinsics.Disputes, priorState.Disputes)
+
+	posteriorSafroleBasicState := computeSafroleBasicState(block.Header, priorState.MostRecentBlockTimeslot, block.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
+
+	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(block.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
+
+	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(block.Extrinsics.Disputes, priorState.PendingReports)
+
+	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
+
+	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, priorState.ValidatorKeysetsActive, posteriorMostRecentBlockTimeslot)
+
+	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
+
+	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(priorState.MostRecentBlockTimeslot, posteriorMostRecentBlockTimeslot, workReports, queuedExecutionWorkReports, priorState.PrivilegedServices, priorState.ServiceAccounts, priorState.ValidatorKeysetsStaging, priorState.ValidatorKeysetsActive, priorState.ValidatorKeysetsPriorEpoch, priorState.AuthorizerQueue, posteriorEntropyAccumulator, priorState.AccumulationHistory, priorState.AccumulationQueue)
+
+	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, intermediateRecentBlocks, BEEFYCommitments)
+
+	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
+	computeServiceAccounts(block.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
+
+	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
+
+	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header)
 	// setError safely records the first error encountered.
 	// setError := func(err error) {
 	// 	mu.Lock()
@@ -108,16 +138,29 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 
 	wg.Wait()
 
-	if transitionError != nil {
-		return State{}, transitionError
+	return State{
+		AuthorizersPool:            authorizersPool,
+		RecentBlocks:               posteriorRecentBlocks,
+		SafroleBasicState:          posteriorSafroleBasicState,
+		ServiceAccounts:            postAccumulationIntermediateServiceAccounts,
+		EntropyAccumulator:         posteriorEntropyAccumulator,
+		ValidatorKeysetsStaging:    accumulationStateComponents.UpcomingValidatorKeysets,
+		ValidatorKeysetsActive:     posteriorValidatorKeysetsActive,
+		ValidatorKeysetsPriorEpoch: posteriorValidatorKeysetsPriorEpoch,
+		PendingReports:             posteriorPendingReports,
+		MostRecentBlockTimeslot:    posteriorMostRecentBlockTimeslot,
+		AuthorizerQueue:            accumulationStateComponents.AuthorizersQueue,
+		PrivilegedServices:         accumulationStateComponents.PrivilegedServices,
+		Disputes:                   posteriorDisputes,
+		ValidatorStatistics:        validatorStatistics,
+		AccumulationQueue:          posteriorAccumulationQueue,
+		AccumulationHistory:        posteriorAccumulationHistory,
 	}
-
-	return posteriorState, nil
 }
 
 // Now, update each compute function to return (result, error).
 
-func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarantees, posteriorAuthorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, priorAuthorizersPool [constants.NumCores][][32]byte) ([constants.NumCores][][32]byte, error) {
+func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarantees, posteriorAuthorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, priorAuthorizersPool [constants.NumCores][][32]byte) [constants.NumCores][][32]byte {
 	posteriorAuthorizersPool := [constants.NumCores][][32]byte{}
 	for coreIndex, priorAuthorizersPoolForCore := range priorAuthorizersPool {
 		var workReport *workreport.WorkReport
@@ -143,22 +186,22 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore[len(priorAuthorizersPoolForCore)-constants.MaxItemsInAuthorizationsPool:]
 		}
 	}
-	return posteriorAuthorizersPool, nil
+	return posteriorAuthorizersPool
 }
 
-func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []RecentBlock) ([]RecentBlock, error) {
+func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []RecentBlock) []RecentBlock {
 	posteriorRecentBlocks := priorRecentBlocks
 	posteriorRecentBlocks[len(priorRecentBlocks)-1].StateRoot = header.PriorStateRoot
 	// TODO: implement
-	return posteriorRecentBlocks, nil
+	return posteriorRecentBlocks
 }
 
-func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []RecentBlock, C struct{}) {
-
+// TODO: compute recent blocks
+func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []RecentBlock, C map[pvm.BEEFYCommitment]struct{}) []RecentBlock {
+	return nil
 }
 
-func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) (SafroleBasicState, error) {
-	var err error
+func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) SafroleBasicState {
 	var posteriorValidatorKeysetsPending types.ValidatorKeysets
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
 	var posteriorSealingKeySequence sealingkeysequence.SealingKeySequence
@@ -167,7 +210,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 	for _, extrinsicTicket := range tickets {
 		vrfOutput, err := bandersnatch.BandersnatchRingVRFProofOutput(extrinsicTicket.ValidityProof)
 		if err != nil {
-			return SafroleBasicState{}, err
+			return SafroleBasicState{}
 		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
@@ -183,9 +226,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		for index, keyset := range posteriorValidatorKeysetsPending {
 			posteriorBandersnatchPublicKeysPending[index] = keyset.ToBandersnatchPublicKey()
 		}
-		if posteriorEpochTicketSubmissionsRoot, err = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:]); err != nil {
-			return SafroleBasicState{}, nil
-		}
+		posteriorEpochTicketSubmissionsRoot = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:])
 
 		// posteriorSealingKeySequence
 		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= constants.TicketSubmissionEndingSlotPhaseNumber && len(priorSafroleBasicState.TicketAccumulator) == constants.NumTimeslotsPerEpoch {
@@ -246,18 +287,18 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		EpochTicketSubmissionsRoot: posteriorEpochTicketSubmissionsRoot,
 		SealingKeySequence:         posteriorSealingKeySequence,
 		TicketAccumulator:          posteriorTicketAccumulator[:int(math.Min(float64(len(posteriorTicketAccumulator)), float64(constants.NumTimeslotsPerEpoch)))],
-	}, nil
+	}
 }
 
-// destroys postAccumulationIntermediateServiceAccounts
-func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *ServiceAccounts) {
+// NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
+func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
 	for _, preimage := range preimages {
 		hashedPreimage := blake2b.Sum256(preimage.Data)
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex]
 		if _, exists := serviceAccount.PreimageLookup[hashedPreimage]; exists {
 			continue
 		}
-		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
+		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   hashedPreimage,
 			BlobLength: types.BlobLength(len(preimage.Data)),
 		}]; !exists {
@@ -266,18 +307,18 @@ func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentB
 			continue
 		}
 		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookup[hashedPreimage] = preimage.Data
-		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[PreimageLookupHistoricalStatusKey{
+		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
 			Preimage:   hashedPreimage,
 			BlobLength: types.BlobLength(len(preimage.Data)),
 		}] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
 	}
 }
 
-func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
+func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) [4][32]byte {
 	posteriorEntropyAccumulator := [4][32]byte{}
 	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput((header.VRFSignature))
 	if err != nil {
-		return [4][32]byte{}, err
+		panic(err)
 	}
 	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(priorEntropyAccumulator[0][:], randomVRFOutput[:]...))
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
@@ -289,32 +330,31 @@ func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot typ
 		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[2]
 		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[3]
 	}
-	return posteriorEntropyAccumulator, nil
+	return posteriorEntropyAccumulator
 }
 
-func computeValidatorKeysetsStaging() (types.ValidatorKeysets, error) {
-	// TODO: Implement your logic.
-	return types.ValidatorKeysets{}, nil
-}
-
-func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive types.ValidatorKeysets, priorSafroleBasicState SafroleBasicState) (types.ValidatorKeysets, error) {
+func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive types.ValidatorKeysets, priorSafroleBasicState SafroleBasicState) types.ValidatorKeysets {
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
-		return priorSafroleBasicState.ValidatorKeysetsPending, nil
+		return priorSafroleBasicState.ValidatorKeysetsPending
 	}
-	return priorValidatorKeysetsActive, nil
+	return priorValidatorKeysetsActive
 }
 
-func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorKeysetsActive types.ValidatorKeysets) (types.ValidatorKeysets, error) {
+func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorKeysetsActive types.ValidatorKeysets) types.ValidatorKeysets {
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
-		return priorValidatorKeysetsActive, nil
+		return priorValidatorKeysetsActive
 	}
-	return priorValidatorKeysetsPriorEpoch, nil
+	return priorValidatorKeysetsPriorEpoch
 }
 
 // destroys priorPendingReports
-func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports *[constants.NumCores]*PendingReport) {
+func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
+	var posteriorPendingReports [constants.NumCores]*PendingReport
+	for i, report := range priorPendingReports {
+		posteriorPendingReports[i] = report // This copies the pointer
+	}
 	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
-	for c, value := range priorPendingReports {
+	for c, value := range posteriorPendingReports {
 		if value == nil {
 			continue
 		}
@@ -322,28 +362,35 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 		workReportHash := blake2b.Sum256(serializedWorkReport)
 		if validJudgementsSum, exists := validJudgementsMap[workReportHash]; exists {
 			if validJudgementsSum < constants.TwoThirdsNumValidators {
-				priorPendingReports[c] = nil
+				posteriorPendingReports[c] = nil
 			}
 		}
 	}
+	return posteriorPendingReports
 }
 
-// destroys postJudgementIntermediatePendingReports
-func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports *[constants.NumCores]*PendingReport) {
-	// reusing this elsewhere?
-	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
+func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
+	// Create a copy of the input array
+	var posteriorPendingReports [constants.NumCores]*PendingReport
+	for i, report := range postJudgementIntermediatePendingReports {
+		posteriorPendingReports[i] = report // This copies the pointer
+	}
+
+	// Apply the modifications to the copy
+	for coreIndex, pendingReport := range posteriorPendingReports {
 		if pendingReport == nil {
 			continue
 		}
 		nowAvailable := assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex))
 		timedOut := int(header.TimeSlot) >= int(pendingReport.Timeslot)+constants.UnavailableWorkTimeoutTimeslots
 		if nowAvailable || timedOut {
-			postJudgementIntermediatePendingReports[coreIndex] = nil
+			posteriorPendingReports[coreIndex] = nil
 		}
 	}
+	return posteriorPendingReports
 }
 
-func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) ([constants.NumCores]*PendingReport, error) {
+func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) [constants.NumCores]*PendingReport {
 	for coreIndex, value := range postGuaranteesExtrinsicIntermediatePendingReports {
 		if value == nil {
 			continue
@@ -358,7 +405,7 @@ func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtri
 			}
 		}
 	}
-	return postGuaranteesExtrinsicIntermediatePendingReports, nil
+	return postGuaranteesExtrinsicIntermediatePendingReports
 }
 
 func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) ([]workreport.WorkReport, []workreport.WorkReportWithWorkPackageHashes) {
@@ -421,7 +468,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 	// wtf did i just do^
 }
 
-func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, validatorKeysetsActive types.ValidatorKeysets, validatorKeysetsPriorEpoch types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, AccumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) {
+func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, validatorKeysetsActive types.ValidatorKeysets, validatorKeysetsPriorEpoch types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, accumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
 	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+privilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, workReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          serviceAccounts,
@@ -441,7 +488,9 @@ func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteri
 	}
 	wg.Wait()
 
-	AccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(workReports[:n]))
+	// Create a copy of the accumulation history before modifying it
+	posteriorAccumulationHistory := accumulationHistory
+	posteriorAccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(workReports[:n]))
 
 	var posteriorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
 
@@ -458,42 +507,22 @@ func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteri
 		if i == 0 {
 			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(
 				queuedExecutionWorkReports,
-				AccumulationHistory[len(AccumulationHistory)-1])
+				posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
 		} else if i < timeslotDiff {
 		} else {
-			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(accumulationQueue[queueIndex], AccumulationHistory[len(AccumulationHistory)-1])
+			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(accumulationQueue[queueIndex], posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
 		}
 	}
 
-	return o, C, posteriorAccumulationQueue
+	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory
 }
 
-func computeMostRecentBlockTimeslot(blockHeader header.Header) (types.Timeslot, error) {
-	return blockHeader.TimeSlot, nil
-}
-
-func computeAuthorizerQueue() ([constants.NumCores][constants.AuthorizerQueueLength][32]byte, error) {
-	// TODO: Implement your logic.
-	return [constants.NumCores][constants.AuthorizerQueueLength][32]byte{}, nil
-}
-
-func computePrivilegedServices() (struct {
-	ManagerServiceIndex             types.ServiceIndex
-	AssignServiceIndex              types.ServiceIndex
-	DesignateServiceIndex           types.ServiceIndex
-	AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
-}, error) {
-	// TODO: Implement your logic.
-	return struct {
-		ManagerServiceIndex             types.ServiceIndex
-		AssignServiceIndex              types.ServiceIndex
-		DesignateServiceIndex           types.ServiceIndex
-		AlwaysAccumulateServicesWithGas map[types.ServiceIndex]types.GasValue
-	}{}, nil
+func computeMostRecentBlockTimeslot(blockHeader header.Header) types.Timeslot {
+	return blockHeader.TimeSlot
 }
 
 // destroys priorDisputes
-func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.Disputes) (types.Disputes, error) {
+func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.Disputes) types.Disputes {
 	sumOfValidJudgementsMap := disputesExtrinsic.ToSumOfValidJudgementsMap()
 	for r, validCount := range sumOfValidJudgementsMap {
 		if validCount == constants.NumValidatorSafetyThreshold {
@@ -510,10 +539,10 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	for _, f := range disputesExtrinsic.Faults {
 		priorDisputes.ValidatorPunishes[f.ValidatorKey] = struct{}{}
 	}
-	return priorDisputes, nil
+	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) ([2][constants.NumValidators]SingleValidatorStatistics, error) {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) [2][constants.NumValidators]SingleValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
@@ -544,21 +573,5 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 			posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances++
 		}
 	}
-	return posteriorValidatorStatistics, nil
-}
-
-func computeAccumulationQueue() ([constants.NumTimeslotsPerEpoch][]struct {
-	WorkReport        workreport.WorkReport
-	WorkPackageHashes map[[32]byte]struct{}
-}, error) {
-	// TODO: Implement your logic.
-	return [constants.NumTimeslotsPerEpoch][]struct {
-		WorkReport        workreport.WorkReport
-		WorkPackageHashes map[[32]byte]struct{}
-	}{}, nil
-}
-
-func computeAccumulationHistory() ([constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}, error) {
-	// TODO: Implement your logic.
-	return [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}{}, nil
+	return posteriorValidatorStatistics
 }

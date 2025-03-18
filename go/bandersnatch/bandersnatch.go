@@ -36,12 +36,12 @@ func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]b
 	return out, nil
 }
 
-func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.BandersnatchRingRoot, error) {
+func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchRingRoot {
 	var out [144]byte
 
 	// There must be at least one public key.
 	if len(pks) == 0 {
-		return out, errors.New("no public keys provided")
+		panic(errors.New("no public keys provided"))
 	}
 
 	// Since pks is a slice of [32]byte, its elements are stored contiguously.
@@ -52,8 +52,8 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.Bandersnatch
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
 	if ret != 0 {
-		return out, errors.New("compute_O failed")
+		panic(errors.New("compute_O failed"))
 	}
 
-	return out, nil
+	return out
 }
