@@ -5,20 +5,9 @@ import (
 
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/serializer"
-	"github.com/ascrivener/jam/state"
 )
 
-func MerklizeState(s state.State) [32]byte {
-	serializedState := state.StateSerializer(s)
-	bitSeqKeyMap := make(map[bitsequence.BitSeqKey][]byte)
-	for k, v := range serializedState {
-		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = v
-	}
-
-	return merklizeStateRecurser(bitSeqKeyMap)
-}
-
-func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) [32]byte {
+func MerklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) [32]byte {
 	if len(bitSeqKeyMap) == 0 {
 		return [32]byte{}
 	}
@@ -67,8 +56,8 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey][]byte) [32]by
 		}
 	}
 
-	leftSubtrieHash := merklizeStateRecurser(leftMap)
-	rightSubtrieHash := merklizeStateRecurser(rightMap)
+	leftSubtrieHash := MerklizeStateRecurser(leftMap)
+	rightSubtrieHash := MerklizeStateRecurser(rightMap)
 	bs := bitsequence.New()
 	bs.AppendBit(false)
 	bs.Concat(bitsequence.FromBytes(leftSubtrieHash[:]).SubsequenceFrom(1))

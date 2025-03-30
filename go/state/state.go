@@ -1,7 +1,9 @@
 package state
 
 import (
+	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
@@ -65,4 +67,14 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	} else {
 		(*a)[len(*a)-1] = newLast
 	}
+}
+
+func MerklizeState(s State) [32]byte {
+	serializedState := StateSerializer(s)
+	bitSeqKeyMap := make(map[bitsequence.BitSeqKey][]byte)
+	for k, v := range serializedState {
+		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = v
+	}
+
+	return merklizer.MerklizeStateRecurser(bitSeqKeyMap)
 }

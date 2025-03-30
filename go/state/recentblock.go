@@ -1,8 +1,10 @@
 package state
 
+import "github.com/ascrivener/jam/merklizer"
+
 type RecentBlock struct {
-	HeaderHash            [32]byte
-	AccumulationResultMMR []*[32]byte
-	StateRoot             [32]byte
-	WorkPackageHashes     map[[32]byte][32]byte
+	HeaderHash            [32]byte              // h
+	AccumulationResultMMR merklizer.MMRRange    // b
+	StateRoot             [32]byte              // s
+	WorkPackageHashes     map[[32]byte][32]byte // p
 }

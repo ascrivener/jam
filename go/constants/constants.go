@@ -37,3 +37,5 @@ const ServiceMinimumBalancePerOctet int = 1 // Bl
 const SingleAccumulationAllocatedGas int = 10000000 // GA
 
 const TotalAccumulationAllocatedGas int = 3500000000 // GT
+
+const RecentHistorySizeBlocks int = 8 // H

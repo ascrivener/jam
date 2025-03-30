@@ -7,11 +7,14 @@ import (
 	"sort"
 	"sync"
 
+	"golang.org/x/crypto/sha3"
+
 	"github.com/ascrivener/jam/bandersnatch"
 	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/serializer"
@@ -54,24 +57,10 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
-// runComputation launches a computation concurrently and records the first error encountered.
-func runComputation(wg *sync.WaitGroup, setError func(error), fn func() error) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := fn(); err != nil {
-			setError(err)
-		}
-	}()
-}
-
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
 func StateTransitionFunction(priorState State, block block.Block) State {
-
-	var wg sync.WaitGroup
-	// var mu sync.Mutex
 
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(block.Header)
 
@@ -105,38 +94,6 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
 	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header)
-	// setError safely records the first error encountered.
-	// setError := func(err error) {
-	// 	mu.Lock()
-	// 	if transitionError == nil {
-	// 		transitionError = err
-	// 	}
-	// 	mu.Unlock()
-	// }
-
-	// runComputation(&wg, setError, func() error {
-	// 	var err error
-	// 	posteriorState.ValidatorKeysetsPriorEpoch, err = computeValidatorKeysetsPriorEpoch(block.Header, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
-	// 	return err
-	// })
-
-	// if posteriorState.MostRecentBlockTimeslot, transitionError = computeMostRecentBlockTimeslot(block.Header); transitionError != nil {
-	// 	return State{}, transitionError
-	// }
-
-	// if posteriorState.ValidatorKeysetsActive, transitionError = computeValidatorKeysetsActive(block.Header, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState); transitionError != nil {
-	// 	return State{}, transitionError
-	// }
-
-	// runComputation(&wg, setError, func() error {
-	// 	var err error
-	// 	if posteriorState.EntropyAccumulator, err = computeEntropyAccumulator(block.Header,  priorState.EntropyAccumulator); err != nil {
-	// 		return err
-	// 	}
-	// 	return nil
-	// })
-
-	wg.Wait()
 
 	return State{
 		AuthorizersPool:            authorizersPool,
@@ -190,15 +147,78 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 }
 
 func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []RecentBlock) []RecentBlock {
-	posteriorRecentBlocks := priorRecentBlocks
-	posteriorRecentBlocks[len(priorRecentBlocks)-1].StateRoot = header.PriorStateRoot
-	// TODO: implement
+	// Create a deep copy of the slice
+	posteriorRecentBlocks := make([]RecentBlock, len(priorRecentBlocks))
+	copy(posteriorRecentBlocks, priorRecentBlocks)
+
+	// Now modify the copy, not the original
+	posteriorRecentBlocks[len(posteriorRecentBlocks)-1].StateRoot = header.PriorStateRoot
 	return posteriorRecentBlocks
 }
 
-// TODO: compute recent blocks
+func keccak256Hash(data []byte) [32]byte {
+	var result [32]byte
+	sum := sha3.NewLegacyKeccak256().Sum(data) // For Keccak-256
+	copy(result[:], sum[:])
+	return result
+}
+
 func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []RecentBlock, C map[pvm.BEEFYCommitment]struct{}) []RecentBlock {
-	return nil
+	// First, collect all commitments into a slice so we can sort them
+	commitments := make([]pvm.BEEFYCommitment, 0, len(C))
+	for commitment := range C {
+		commitments = append(commitments, commitment)
+	}
+
+	// Sort commitments by ServiceIndex
+	sort.Slice(commitments, func(i, j int) bool {
+		return commitments[i].ServiceIndex < commitments[j].ServiceIndex
+	})
+
+	// Create blobs in order
+	blobs := make([][]byte, 0, len(commitments))
+	for _, commitment := range commitments {
+		var buffer bytes.Buffer
+		buffer.Write(serializer.EncodeLittleEndian(4, uint64(commitment.ServiceIndex)))
+		buffer.Write(serializer.Serialize(commitment.PreimageResult))
+		blobs = append(blobs, buffer.Bytes())
+	}
+	r := merklizer.WellBalancedBinaryMerkle(blobs, keccak256Hash)
+	// Get the last MMR from the intermediate blocks (or create empty if none)
+	var lastMMR merklizer.MMRRange
+	if len(intermediateRecentBlocks) > 0 {
+		lastMMR = intermediateRecentBlocks[len(intermediateRecentBlocks)-1].AccumulationResultMMR
+	}
+
+	// Append the new root to the MMR
+	b := merklizer.Append(lastMMR, &r, keccak256Hash)
+
+	// Create work package hashes map: p = {((gw)s)h ↦ ((gw)s)e | g ∈ EG}
+	workPackageHashes := make(map[[32]byte][32]byte)
+	for _, guarantee := range guarantees {
+		// Calculate the work package hash ((gw)s)h
+		workPackageSpecification := guarantee.WorkReport.WorkPackageSpecification
+		workPackageHashes[workPackageSpecification.WorkPackageHash] = workPackageSpecification.ErasureRoot
+	}
+
+	// Create the new recent block
+	newRecentBlock := RecentBlock{
+		HeaderHash:            blake2b.Sum256(serializer.Serialize(header)),
+		AccumulationResultMMR: b,
+		StateRoot:             [32]byte{},
+		WorkPackageHashes:     workPackageHashes,
+	}
+	// Append the new block to the recent blocks list
+	updatedRecentBlocks := append(intermediateRecentBlocks, newRecentBlock)
+
+	// Keep only the most recent H blocks
+	// β′ ≡ β† n where H is RecentHistorySizeBlocks
+	if len(updatedRecentBlocks) > constants.RecentHistorySizeBlocks {
+		// Trim the list to keep only the most recent H blocks
+		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-constants.RecentHistorySizeBlocks:]
+	}
+
+	return updatedRecentBlocks
 }
 
 func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) SafroleBasicState {
