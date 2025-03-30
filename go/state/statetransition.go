@@ -80,11 +80,11 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
 
-	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, priorState.ValidatorKeysetsActive, posteriorMostRecentBlockTimeslot)
+	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 
 	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(priorState.MostRecentBlockTimeslot, posteriorMostRecentBlockTimeslot, workReports, queuedExecutionWorkReports, priorState.PrivilegedServices, priorState.ServiceAccounts, priorState.ValidatorKeysetsStaging, priorState.ValidatorKeysetsActive, priorState.ValidatorKeysetsPriorEpoch, priorState.AuthorizerQueue, posteriorEntropyAccumulator, priorState.AccumulationHistory, priorState.AccumulationQueue)
+	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(priorState.MostRecentBlockTimeslot, posteriorMostRecentBlockTimeslot, workReports, queuedExecutionWorkReports, priorState.PrivilegedServices, priorState.ServiceAccounts, priorState.ValidatorKeysetsStaging, priorState.AuthorizerQueue, posteriorEntropyAccumulator, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, intermediateRecentBlocks, BEEFYCommitments)
 
@@ -369,10 +369,7 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 
 // destroys priorPendingReports
 func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
-	var posteriorPendingReports [constants.NumCores]*PendingReport
-	for i, report := range priorPendingReports {
-		posteriorPendingReports[i] = report // This copies the pointer
-	}
+	posteriorPendingReports := priorPendingReports // Direct array assignment
 	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
 	for c, value := range posteriorPendingReports {
 		if value == nil {
@@ -391,10 +388,7 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 
 func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
 	// Create a copy of the input array
-	var posteriorPendingReports [constants.NumCores]*PendingReport
-	for i, report := range postJudgementIntermediatePendingReports {
-		posteriorPendingReports[i] = report // This copies the pointer
-	}
+	posteriorPendingReports := postJudgementIntermediatePendingReports
 
 	// Apply the modifications to the copy
 	for coreIndex, pendingReport := range posteriorPendingReports {
@@ -410,7 +404,7 @@ func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Head
 	return posteriorPendingReports
 }
 
-func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, priorValidatorKeysetsActive types.ValidatorKeysets, posteriorMostRecentBlockTimeslot types.Timeslot) [constants.NumCores]*PendingReport {
+func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, posteriorMostRecentBlockTimeslot types.Timeslot) [constants.NumCores]*PendingReport {
 	for coreIndex, value := range postGuaranteesExtrinsicIntermediatePendingReports {
 		if value == nil {
 			continue
@@ -488,7 +482,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 	// wtf did i just do^
 }
 
-func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, validatorKeysetsActive types.ValidatorKeysets, validatorKeysetsPriorEpoch types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, accumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
+func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, accumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
 	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+privilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, workReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          serviceAccounts,
