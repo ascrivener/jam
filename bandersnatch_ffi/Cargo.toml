@@ -7,4 +7,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-ark-ec-vrfs = { git = "https://github.com/davxy/ark-ec-vrfs.git", branch = "main", features = ["ring", "bandersnatch"] }
+ark-vrf = { version = "0.1.0", features = ["ring", "bandersnatch"] }

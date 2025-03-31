@@ -1,10 +1,10 @@
-use ark_ec_vrfs::prelude::ark_ec::AffineRepr;
-use ark_ec_vrfs::prelude::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_ec_vrfs::suites::bandersnatch::edwards::{
-    AffinePoint, BandersnatchSha512Ell2, PcsParams, RingCommitment, RingContext,
+use ark_vrf::suites::bandersnatch::{
+    AffinePoint, BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
 };
-use ark_ec_vrfs::Suite;
-use ark_ec_vrfs::{codec, Error, Output};
+use ark_vrf::reexports::ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+use ark_vrf::reexports::ark_ec::AffineRepr;
+use ark_vrf::Suite;
+use ark_vrf::{codec, Error, Output};
 use std::fs::File;
 use std::io::Read;
 use std::slice;
@@ -61,17 +61,16 @@ pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> 
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).map_err(|_| Error::InvalidData)?;
 
-    let pcs_params =
-        <PcsParams as CanonicalDeserialize>::deserialize_uncompressed(&mut &buf[..]).unwrap();
+    let pcs_params = PcsParams::deserialize_uncompressed(&mut &buf[..]).map_err(|_| Error::InvalidData)?;
     const RING_SIZE: usize = 2048;
-    let ring_ctx = RingContext::from_srs(RING_SIZE, pcs_params).map_err(|_| Error::InvalidData)?;
+    let ring_proof_params = RingProofParams::from_pcs_params(RING_SIZE, pcs_params).map_err(|_| Error::InvalidData)?;
 
     let ring_pks: Vec<AffinePoint> = hashes
         .iter()
         .map(|bytes| BandersnatchSha512Ell2::data_to_point(bytes).ok_or(Error::InvalidData))
         .collect::<Result<_, _>>()?;
 
-    let verifier_key = ring_ctx.verifier_key(&ring_pks);
+    let verifier_key = ring_proof_params.verifier_key(&ring_pks);
 
     Ok(verifier_key.commitment())
 }
