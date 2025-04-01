@@ -84,7 +84,13 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(priorState.MostRecentBlockTimeslot, posteriorMostRecentBlockTimeslot, workReports, queuedExecutionWorkReports, priorState.PrivilegedServices, priorState.ServiceAccounts, priorState.ValidatorKeysetsStaging, priorState.AuthorizerQueue, posteriorEntropyAccumulator, priorState.AccumulationHistory, priorState.AccumulationQueue)
+	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
+		&priorState,
+		posteriorMostRecentBlockTimeslot,
+		workReports,
+		queuedExecutionWorkReports,
+		posteriorEntropyAccumulator,
+	)
 
 	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, intermediateRecentBlocks, BEEFYCommitments)
 
@@ -482,28 +488,34 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 	// wtf did i just do^
 }
 
-func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteriorMostRecentBlockTimeslot types.Timeslot, workReports []workreport.WorkReport, queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes, privilegedServices types.PrivilegedServices, serviceAccounts serviceaccount.ServiceAccounts, validatorKeysetsStaging types.ValidatorKeysets, authorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, posteriorEntropyAccumulator [4][32]byte, accumulationHistory AccumulationHistory, accumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
-	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+privilegedServices.TotalAlwaysAccumulateGas())
+func accumulateAndIntegrate(
+	priorState *State,
+	posteriorMostRecentBlockTimeslot types.Timeslot,
+	workReports []workreport.WorkReport,
+	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
+	posteriorEntropyAccumulator [4][32]byte,
+) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
+	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, workReports, &pvm.AccumulationStateComponents{
-		ServiceAccounts:          serviceAccounts,
-		UpcomingValidatorKeysets: validatorKeysetsStaging,
-		AuthorizersQueue:         authorizerQueue,
-		PrivilegedServices:       privilegedServices,
-	}, privilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
+		ServiceAccounts:          priorState.ServiceAccounts,
+		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
+		AuthorizersQueue:         priorState.AuthorizerQueue,
+		PrivilegedServices:       priorState.PrivilegedServices,
+	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
 
 	var wg sync.WaitGroup
-	for serviceIndex := range serviceAccounts {
+	for serviceIndex := range priorState.ServiceAccounts {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			pvm.OnTransfer(serviceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
+			pvm.OnTransfer(priorState.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
 		}(serviceIndex)
 	}
 	wg.Wait()
 
 	// Create a copy of the accumulation history before modifying it
-	posteriorAccumulationHistory := accumulationHistory
+	posteriorAccumulationHistory := priorState.AccumulationHistory
 	posteriorAccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(workReports[:n]))
 
 	var posteriorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
@@ -514,7 +526,7 @@ func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteri
 	}
 
 	m := posteriorMostRecentBlockTimeslot.SlotPhaseIndex()
-	timeslotDiff := int(posteriorMostRecentBlockTimeslot) - int(priorMostRecentBlockTimeslot)
+	timeslotDiff := int(posteriorMostRecentBlockTimeslot) - int(priorState.MostRecentBlockTimeslot)
 
 	for i := range constants.NumTimeslotsPerEpoch {
 		queueIndex := (m + constants.NumTimeslotsPerEpoch - i) % constants.NumTimeslotsPerEpoch
@@ -524,7 +536,7 @@ func accumulateAndIntegrate(priorMostRecentBlockTimeslot types.Timeslot, posteri
 				posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
 		} else if i < timeslotDiff {
 		} else {
-			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(accumulationQueue[queueIndex], posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
+			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(priorState.AccumulationQueue[queueIndex], posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
 		}
 	}
 

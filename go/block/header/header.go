@@ -12,7 +12,7 @@ type Header struct {
 	TimeSlot                     types.Timeslot
 	EpochMarker                  *EpochMarker
 	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
-	OffendersMarker              [](types.Ed25519PublicKey)
+	OffendersMarker              []types.Ed25519PublicKey
 	BandersnatchBlockAuthorIndex types.ValidatorIndex
 	VRFSignature                 types.BandersnatchVRFSignature
 	BlockSeal                    types.BandersnatchVRFSignature
