@@ -353,7 +353,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed
 }
 
-func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, DeferredTransfers []DeferredTransfer) {
+func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, deferredTransfers []DeferredTransfer) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
@@ -385,7 +385,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		}
 	}
 
-	if len(DeferredTransfers) == 0 {
+	if len(deferredTransfers) == 0 {
 		return
 	}
 	serviceAccount := serviceAccounts[serviceIndex]
@@ -394,9 +394,9 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		return
 	}
 	DeferredTransferGasLimitTotal := types.GasValue(0)
-	for _, DeferredTransfer := range DeferredTransfers {
-		serviceAccount.Balance += DeferredTransfer.BalanceTransfer
-		DeferredTransferGasLimitTotal += DeferredTransfer.GasLimit
+	for _, deferredTransfer := range deferredTransfers {
+		serviceAccount.Balance += deferredTransfer.BalanceTransfer
+		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
 	ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
 		Timeslot          types.Timeslot
@@ -405,6 +405,6 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 	}{
 		Timeslot:          timeslot,
 		ServiceIndex:      serviceIndex,
-		DeferredTransfers: DeferredTransfers,
+		DeferredTransfers: deferredTransfers,
 	}), hf, serviceAccount)
 }
