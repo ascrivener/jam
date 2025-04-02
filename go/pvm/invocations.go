@@ -321,7 +321,11 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		}
 	}
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
-	_, code := accumulationStateComponents.ServiceAccounts[serviceIndex].MetadataAndCode()
+	serviceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
+	if !ok {
+		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
+	}
+	_, code := serviceAccount.MetadataAndCode()
 	if code == nil {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
 	}

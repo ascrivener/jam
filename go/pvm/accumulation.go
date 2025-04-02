@@ -4,6 +4,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
@@ -166,7 +167,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 
 	// Get the components from privileged services
 	var upcomingValidatorKeysets types.ValidatorKeysets
-	var authorizersQueue [341][80][32]byte
+	var authorizersQueue [constants.NumCores][80][32]byte
 	var privilegedServices types.PrivilegedServices
 
 	if components, ok := privilegedStateComponents[designateServiceIndex]; ok {

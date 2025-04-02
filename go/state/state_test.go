@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 
-	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
+	"github.com/google/go-cmp/cmp"
 	// Import other necessary packages from your jam implementation
 )
 
@@ -41,10 +41,13 @@ func LoadTestVector(filePath string) (*TestVector, error) {
 
 // StateJSON represents the structure of the state field in test vectors
 type StateJSON struct {
-	Slot        types.Timeslot  `json:"slot"`
-	Entropy     string          `json:"entropy"`
-	ReadyQueue  [][]interface{} `json:"ready_queue"`
-	Accumulated [][]interface{} `json:"accumulated"`
+	Slot       types.Timeslot `json:"slot"`
+	Entropy    string         `json:"entropy"`
+	ReadyQueue [][]struct {
+		Report       WorkReportJSON `json:"report"`
+		Dependencies []string       `json:"dependencies"`
+	} `json:"ready_queue"`
+	Accumulated [][]string `json:"accumulated"`
 	Privileges  struct {
 		Bless     int           `json:"bless"`
 		Assign    int           `json:"assign"`
@@ -66,6 +69,52 @@ type StateJSON struct {
 			} `json:"preimages"`
 		} `json:"data"`
 	} `json:"accounts"`
+}
+
+type WorkReportJSON struct {
+	PackageSpec struct {
+		Hash         string `json:"hash"`
+		Length       int    `json:"length"`
+		ErasureRoot  string `json:"erasure_root"`
+		ExportsRoot  string `json:"exports_root"`
+		ExportsCount int    `json:"exports_count"`
+	} `json:"package_spec"`
+	Context struct {
+		Anchor           string   `json:"anchor"`
+		StateRoot        string   `json:"state_root"`
+		BeefyRoot        string   `json:"beefy_root"`
+		LookupAnchor     string   `json:"lookup_anchor"`
+		LookupAnchorSlot int      `json:"lookup_anchor_slot"`
+		Prerequisites    []string `json:"prerequisites"`
+	} `json:"context"`
+	CoreIndex         int        `json:"core_index"`
+	AuthorizerHash    string     `json:"authorizer_hash"`
+	AuthOutput        string     `json:"auth_output"`
+	SegmentRootLookup []struct{} `json:"segment_root_lookup"`
+	Results           []struct {
+		ServiceID     int    `json:"service_id"`
+		CodeHash      string `json:"code_hash"`
+		PayloadHash   string `json:"payload_hash"`
+		AccumulateGas int    `json:"accumulate_gas"`
+		Result        struct {
+			OK string `json:"ok"`
+		} `json:"result"`
+		RefineLoad struct {
+			GasUsed        int `json:"gas_used"`
+			Imports        int `json:"imports"`
+			ExtrinsicCount int `json:"extrinsic_count"`
+			ExtrinsicSize  int `json:"extrinsic_size"`
+			Exports        int `json:"exports"`
+		} `json:"refine_load"`
+	} `json:"results"`
+	AuthGasUsed int `json:"auth_gas_used"`
+}
+
+func hexToHash(hexStr string) [32]byte {
+	var hashArray [32]byte
+	hashBytes := hexToBytes(hexStr)
+	copy(hashArray[:], hashBytes[:32])
+	return hashArray
 }
 
 // hexToBytes converts a hex string to byte array
@@ -91,9 +140,34 @@ func ConvertJSONToState(stateJSON StateJSON) (State, error) {
 	// Initialize empty service accounts map
 	state.ServiceAccounts = make(serviceaccount.ServiceAccounts)
 
-	// Initialize empty accumulation history and queue
-	state.AccumulationHistory = AccumulationHistory{}
+	// Initialize empty accumulation queue with empty slices (not nil)
 	state.AccumulationQueue = [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}
+
+	for idx, r := range stateJSON.ReadyQueue {
+		w := make([]workreport.WorkReportWithWorkPackageHashes, 0)
+		for _, workReportWithWorkPackageHashesJSON := range r {
+			workPackageHashes := make(map[[32]byte]struct{})
+			for _, dep := range workReportWithWorkPackageHashesJSON.Dependencies {
+				workPackageHashes[hexToHash(dep)] = struct{}{}
+			}
+			w = append(w, workreport.WorkReportWithWorkPackageHashes{
+				WorkReport:        ConvertJSONToReport(workReportWithWorkPackageHashesJSON.Report),
+				WorkPackageHashes: workPackageHashes,
+			})
+		}
+		state.AccumulationQueue[idx] = w
+	}
+
+	// Initialize empty accumulation history with empty maps (not nil)
+	state.AccumulationHistory = [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}{}
+
+	for idx, accumulatedWorkPackagesHashesForTimeslot := range stateJSON.Accumulated {
+		workPackageHashes := make(map[[32]byte]struct{})
+		for _, accumulatedWorkPackageHash := range accumulatedWorkPackagesHashesForTimeslot {
+			workPackageHashes[hexToHash(accumulatedWorkPackageHash)] = struct{}{}
+		}
+		state.AccumulationHistory[idx] = workPackageHashes
+	}
 
 	// Process each account in the JSON
 	for _, account := range stateJSON.Accounts {
@@ -164,217 +238,211 @@ func ConvertJSONToState(stateJSON StateJSON) (State, error) {
 	return state, nil
 }
 
-// TestAccumulateWithTestVectors tests the accumulate functionality using test vectors
-func TestAccumulateWithTestVectors(t *testing.T) {
-	// Path to the test vector
-	testVectorPath := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/accumulate/tiny/no_available_reports-1.json"
+func ConvertJSONToReport(reportJSON WorkReportJSON) workreport.WorkReport {
+	var workReport workreport.WorkReport
 
-	// Load the test vector
-	testVector, err := LoadTestVector(testVectorPath)
-	if err != nil {
-		t.Fatalf("Failed to load test vector: %v", err)
+	workReport.WorkPackageSpecification = workreport.AvailabilitySpecification{
+		WorkPackageHash:  hexToHash(reportJSON.PackageSpec.Hash),
+		WorkBundleLength: types.BlobLength(reportJSON.PackageSpec.Length),
+		ErasureRoot:      hexToHash(reportJSON.PackageSpec.ErasureRoot),
+		SegmentRoot:      hexToHash(reportJSON.PackageSpec.ExportsRoot),
+		SegmentCount:     uint64(reportJSON.PackageSpec.ExportsCount),
 	}
 
-	// Convert the generic testVector.PreState into your implementation's State type
-	var preStateJSON StateJSON
-	jsonData, _ := json.Marshal(testVector.PreState)
-	err = json.Unmarshal(jsonData, &preStateJSON)
-	if err != nil {
-		t.Fatalf("Failed to unmarshal pre-state JSON: %v", err)
+	prerequisiteWorkPackageHashes := make(map[[32]byte]struct{})
+
+	for _, prerequisite := range reportJSON.Context.Prerequisites {
+		prerequisiteWorkPackageHashes[hexToHash(prerequisite)] = struct{}{}
 	}
 
-	preState, err := ConvertJSONToState(preStateJSON)
-	if err != nil {
-		t.Fatalf("Failed to convert pre-state JSON to State: %v", err)
+	workReport.RefinementContext = workreport.RefinementContext{
+		AnchorHeaderHash:              hexToHash(reportJSON.Context.Anchor),
+		PosteriorStateRoot:            hexToHash(reportJSON.Context.StateRoot),
+		PosteriorBEEFYRoot:            hexToHash(reportJSON.Context.BeefyRoot),
+		LookupAnchorHeaderHash:        hexToHash(reportJSON.Context.LookupAnchor),
+		Timeslot:                      types.Timeslot(reportJSON.Context.LookupAnchorSlot),
+		PrerequisiteWorkPackageHashes: make(map[[32]byte]struct{}),
 	}
 
-	// Parse work reports from the test vector input
-	var workReports []workreport.WorkReport
-	if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
-		if reports, ok := inputMap["reports"].([]interface{}); ok {
-			for _, r := range reports {
-				reportMap, ok := r.(map[string]interface{})
-				if !ok {
-					continue
-				}
+	workReport.CoreIndex = types.CoreIndex(reportJSON.CoreIndex)
 
-				// Create a work report - you'll need to adapt this to your specific structure
-				report := workreport.WorkReport{}
+	workReport.AuthorizerHash = hexToHash(reportJSON.AuthorizerHash)
 
-				// Example of parsing core_index
-				if coreIdx, ok := reportMap["core_index"].(float64); ok {
-					report.CoreIndex = types.CoreIndex(coreIdx)
-				}
+	workReport.Output = hexToBytes(reportJSON.AuthOutput)
 
-				// Example of parsing authorizer_hash
-				if authHash, ok := reportMap["authorizer_hash"].(string); ok && strings.HasPrefix(authHash, "0x") {
-					authBytes, _ := hex.DecodeString(authHash[2:])
-					copy(report.AuthorizerHash[:], authBytes)
-				}
+	workReport.SegmentRootLookup = make(map[[32]byte][32]byte)
 
-				// Parse work package specification and other fields as needed
-				// This is simplified - you'll need to adapt to your actual JSON structure
+	workReport.WorkResults = make([]workreport.WorkResult, 0)
 
-				workReports = append(workReports, report)
-			}
-		}
-	}
-
-	// Parse posterior timeslot from input
-	posteriorTimeslot := types.Timeslot(0)
-	if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
-		if slot, ok := inputMap["slot"].(float64); ok {
-			posteriorTimeslot = types.Timeslot(slot)
-		}
-	}
-
-	// Create a dummy header with the posterior timeslot for entropy calculation
-	dummyHeader := header.Header{
-		TimeSlot: posteriorTimeslot,
-		// We need a VRF signature, but test vectors may not provide one.
-		// For now, use an empty signature - in a real test you might need to extract this from the test vector
-		VRFSignature: types.BandersnatchVRFSignature{},
-	}
-
-	// Compute posterior entropy accumulator
-	posteriorEntropyAccumulator := computeEntropyAccumulator(
-		dummyHeader,
-		preState.MostRecentBlockTimeslot,
-		preState.EntropyAccumulator,
-	)
-
-	// Call accumulateAndIntegrate with the parsed inputs
-	accumulationStateComponents, _, _, _ := accumulateAndIntegrate(
-		&preState,
-		posteriorTimeslot,
-		workReports,
-		[]workreport.WorkReportWithWorkPackageHashes{}, // Empty for test vectors as discussed
-		posteriorEntropyAccumulator,                    // Pass the computed posterior entropy accumulator
-	)
-
-	// Create the actual state object from scratch using only the computation results
-	actualState := State{
-		// Only include fields that should be compared and affected by accumulation
-		ServiceAccounts:         accumulationStateComponents.ServiceAccounts,
-		ValidatorKeysetsStaging: accumulationStateComponents.UpcomingValidatorKeysets,
-		AuthorizerQueue:         accumulationStateComponents.AuthorizersQueue,
-		PrivilegedServices:      accumulationStateComponents.PrivilegedServices,
-		MostRecentBlockTimeslot: posteriorTimeslot,
-	}
-
-	// Convert post-state JSON to a Go state object for comparison (expected state)
-	var postStateJSON StateJSON
-	if postStateMap, ok := testVector.PostState.(map[string]interface{}); ok {
-		postStateBytes, err := json.Marshal(postStateMap)
-		if err != nil {
-			t.Fatalf("Failed to marshal post-state: %v", err)
+	for _, result := range reportJSON.Results {
+		workResult := workreport.WorkResult{
+			ServiceIndex:           types.ServiceIndex(result.ServiceID),
+			ServiceCodeHash:        hexToHash(result.CodeHash),
+			PayloadHash:            hexToHash(result.PayloadHash),
+			GasPrioritizationRatio: types.GasValue(result.AccumulateGas),
+			WorkOutput:             types.NewExecutionExitReasonBlob(hexToBytes(result.Result.OK)),
 		}
 
-		if err := json.Unmarshal(postStateBytes, &postStateJSON); err != nil {
-			t.Fatalf("Failed to unmarshal post-state JSON: %v", err)
-		}
-	} else {
-		t.Fatalf("Post-state is not a map")
+		workReport.WorkResults = append(workReport.WorkResults, workResult)
 	}
 
-	expectedState, err := ConvertJSONToState(postStateJSON)
-	if err != nil {
-		t.Fatalf("Failed to convert post-state JSON to State: %v", err)
-	}
-
-	// Compare the expected and actual states
-	compareStates(t, expectedState, actualState)
+	return workReport
 }
 
-// compareStates compares relevant fields between two State objects and reports differences
-func compareStates(t *testing.T, expected, actual State) {
-	// 1. Compare service accounts
-	for serviceIndex, expectedAccount := range expected.ServiceAccounts {
-		actualAccount, exists := actual.ServiceAccounts[serviceIndex]
-		if !exists {
-			t.Errorf("Service account %d exists in expected state but not in actual state", serviceIndex)
-			continue
-		}
+// TestAccumulateWithTestVectors tests the accumulate functionality using test vectors
+func TestAccumulateWithTestVectors(t *testing.T) {
+	// Base directory containing the test vectors
+	testVectorDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/accumulate"
 
-		// Compare account balance
-		if actualAccount.Balance != expectedAccount.Balance {
-			t.Errorf("Service %d balance mismatch: expected %d, got %d",
-				serviceIndex, expectedAccount.Balance, actualAccount.Balance)
-		}
-
-		// Compare gas thresholds
-		if actualAccount.MinimumGasForAccumulate != expectedAccount.MinimumGasForAccumulate {
-			t.Errorf("Service %d MinimumGasForAccumulate mismatch: expected %d, got %d",
-				serviceIndex, expectedAccount.MinimumGasForAccumulate, actualAccount.MinimumGasForAccumulate)
-		}
-
-		if actualAccount.MinimumGasForOnTransfer != expectedAccount.MinimumGasForOnTransfer {
-			t.Errorf("Service %d MinimumGasForOnTransfer mismatch: expected %d, got %d",
-				serviceIndex, expectedAccount.MinimumGasForOnTransfer, actualAccount.MinimumGasForOnTransfer)
-		}
-
-		// Compare code hash
-		if actualAccount.CodeHash != expectedAccount.CodeHash {
-			t.Errorf("Service %d code hash mismatch: expected %x, got %x",
-				serviceIndex, expectedAccount.CodeHash, actualAccount.CodeHash)
-		}
-
-		// Compare preimage lookup sizes
-		if len(actualAccount.PreimageLookup) != len(expectedAccount.PreimageLookup) {
-			t.Errorf("Service %d preimage lookup size mismatch: expected %d, got %d",
-				serviceIndex, len(expectedAccount.PreimageLookup), len(actualAccount.PreimageLookup))
-		}
+	// Define a list of subdirectories and their test files to run
+	testCases := []struct {
+		subdir   string
+		filename string
+	}{
+		{"tiny", "no_available_reports-1.json"},
+		// {"tiny", "process_one_immediate_report-1.json"},
+		// {"tiny", "accumulate_ready_queued_reports-1.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-2.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-3.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-4.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-5.json"},
+		// {"tiny", "one_available_report-1.json"},
+		// Add more test cases as needed
 	}
 
-	// Check for accounts in actual that aren't in expected
-	for serviceIndex := range actual.ServiceAccounts {
-		if _, exists := expected.ServiceAccounts[serviceIndex]; !exists {
-			t.Errorf("Service account %d exists in actual state but not in expected state", serviceIndex)
-		}
-	}
+	for _, tc := range testCases {
+		testName := tc.subdir + "/" + tc.filename
+		t.Run(testName, func(t *testing.T) {
+			// Full path to the test vector
+			testVectorPath := filepath.Join(testVectorDir, tc.subdir, tc.filename)
 
-	// 2. Compare MostRecentBlockTimeslot
-	if expected.MostRecentBlockTimeslot != actual.MostRecentBlockTimeslot {
-		t.Errorf("MostRecentBlockTimeslot mismatch: expected %d, got %d",
-			expected.MostRecentBlockTimeslot, actual.MostRecentBlockTimeslot)
-	}
-
-	// 3. Compare ValidatorKeysetsStaging
-	// For a simple comparison, just check if they have the same number of elements
-	if len(expected.ValidatorKeysetsStaging) != len(actual.ValidatorKeysetsStaging) {
-		t.Errorf("ValidatorKeysetsStaging length mismatch: expected %d, got %d",
-			len(expected.ValidatorKeysetsStaging), len(actual.ValidatorKeysetsStaging))
-	}
-	// For a more detailed comparison, you'd need to compare individual validators
-
-	// 4. Compare AuthorizerQueue
-	// For simplicity, just compare the first element of each core's queue
-	for coreIdx := range expected.AuthorizerQueue {
-		if len(actual.AuthorizerQueue) <= coreIdx {
-			continue
-		}
-
-		// Compare first element if it exists
-		if len(expected.AuthorizerQueue[coreIdx]) > 0 && len(actual.AuthorizerQueue[coreIdx]) > 0 {
-			if expected.AuthorizerQueue[coreIdx][0] != actual.AuthorizerQueue[coreIdx][0] {
-				t.Errorf("AuthorizerQueue mismatch for core %d", coreIdx)
+			// Load the test vector
+			testVector, err := LoadTestVector(testVectorPath)
+			if err != nil {
+				t.Fatalf("Failed to load test vector: %v", err)
 			}
-		}
-	}
 
-	// 5. Compare privileges
-	if expected.PrivilegedServices.ManagerServiceIndex != actual.PrivilegedServices.ManagerServiceIndex {
-		t.Errorf("Manager service index mismatch: expected %d, got %d",
-			expected.PrivilegedServices.ManagerServiceIndex, actual.PrivilegedServices.ManagerServiceIndex)
-	}
+			// Convert the generic testVector.PreState into your implementation's State type
+			var preStateJSON StateJSON
+			jsonData, _ := json.Marshal(testVector.PreState)
+			err = json.Unmarshal(jsonData, &preStateJSON)
+			if err != nil {
+				t.Fatalf("Failed to unmarshal pre-state JSON: %v", err)
+			}
 
-	if expected.PrivilegedServices.AssignServiceIndex != actual.PrivilegedServices.AssignServiceIndex {
-		t.Errorf("Assign service index mismatch: expected %d, got %d",
-			expected.PrivilegedServices.AssignServiceIndex, actual.PrivilegedServices.AssignServiceIndex)
-	}
+			preState, err := ConvertJSONToState(preStateJSON)
+			if err != nil {
+				t.Fatalf("Failed to convert pre-state JSON to State: %v", err)
+			}
 
-	if expected.PrivilegedServices.DesignateServiceIndex != actual.PrivilegedServices.DesignateServiceIndex {
-		t.Errorf("Designate service index mismatch: expected %d, got %d",
-			expected.PrivilegedServices.DesignateServiceIndex, actual.PrivilegedServices.DesignateServiceIndex)
+			// Parse posterior timeslot from input
+			posteriorTimeslot := types.Timeslot(0)
+			if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
+				if posteriorTimeslotFloat, ok := inputMap["slot"].(float64); ok {
+					posteriorTimeslot = types.Timeslot(posteriorTimeslotFloat)
+				}
+			}
+
+			// Parse work reports from input
+			var workReports []workreport.WorkReport
+			if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
+				if reportsArray, ok := inputMap["reports"].([]interface{}); ok {
+					// Parse each work report
+					for _, reportInterface := range reportsArray {
+						// Convert report to JSON and then to WorkReport
+						var reportJSON WorkReportJSON
+						jsonData, _ := json.Marshal(reportInterface)
+						err = json.Unmarshal(jsonData, &reportJSON)
+						if err != nil {
+							t.Fatalf("Failed to unmarshal report JSON: %v", err)
+						}
+
+						report := ConvertJSONToReport(reportJSON)
+						workReports = append(workReports, report)
+					}
+				}
+			}
+
+			// Compute a posterior entropy accumulator
+			// For test vectors, we use a dummy header to compute it
+			// dummyHeader := header.Header{
+			// 	ParentHash: [32]byte{},
+			// 	TimeSlot:   posteriorTimeslot,
+			// }
+
+			// posteriorEntropyAccumulator := computeEntropyAccumulator(
+			// 	dummyHeader,
+			// 	preState.MostRecentBlockTimeslot,
+			// 	preState.EntropyAccumulator,
+			// )
+
+			// Call accumulateAndIntegrate with the parsed inputs
+			accumulationStateComponents, _, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
+				&preState,
+				posteriorTimeslot,
+				workReports,
+				[]workreport.WorkReportWithWorkPackageHashes{}, // Empty for test vectors as discussed
+				preState.EntropyAccumulator,                    // Pass the computed posterior entropy accumulator
+			)
+
+			// Create the actual state object from scratch using only the computation results
+			actualState := State{
+				// Only include fields that should be compared and affected by accumulation
+				ServiceAccounts:            accumulationStateComponents.ServiceAccounts,
+				ValidatorKeysetsStaging:    accumulationStateComponents.UpcomingValidatorKeysets,
+				PrivilegedServices:         accumulationStateComponents.PrivilegedServices,
+				MostRecentBlockTimeslot:    posteriorTimeslot,
+				AccumulationQueue:          posteriorAccumulationQueue,
+				AccumulationHistory:        posteriorAccumulationHistory,
+				AuthorizersPool:            [constants.NumCores][][32]byte{},
+				RecentBlocks:               []RecentBlock{},
+				SafroleBasicState:          SafroleBasicState{},
+				EntropyAccumulator:         preState.EntropyAccumulator,
+				ValidatorKeysetsActive:     types.ValidatorKeysets{},
+				ValidatorKeysetsPriorEpoch: types.ValidatorKeysets{},
+				PendingReports:             [constants.NumCores]*PendingReport{},
+				AuthorizerQueue:            [constants.NumCores][constants.AuthorizerQueueLength][32]byte{},
+				Disputes:                   types.Disputes{},
+				ValidatorStatistics:        [2][constants.NumValidators]SingleValidatorStatistics{},
+			}
+
+			// Convert post-state JSON to a Go state object for comparison (expected state)
+			var postStateJSON StateJSON
+			if postStateMap, ok := testVector.PostState.(map[string]interface{}); ok {
+				postStateBytes, err := json.Marshal(postStateMap)
+				if err != nil {
+					t.Fatalf("Failed to marshal post-state: %v", err)
+				}
+
+				if err := json.Unmarshal(postStateBytes, &postStateJSON); err != nil {
+					t.Fatalf("Failed to unmarshal post-state JSON: %v", err)
+				}
+			} else {
+				t.Fatalf("Post-state is not a map")
+			}
+
+			expectedState, err := ConvertJSONToState(postStateJSON)
+			if err != nil {
+				t.Fatalf("Failed to convert post-state JSON to State: %v", err)
+			}
+
+			// Compare the expected and actual states
+			compareStates(t, expectedState, actualState)
+		})
+	}
+}
+
+// compareStates compares two State objects and reports differences
+func compareStates(t *testing.T, expected, actual State) {
+	if diff := cmp.Diff(expected, actual); diff != "" {
+		t.Errorf("States don't match (-expected +actual):\n%s", diff)
+	}
+}
+
+// compareReports compares two WorkReport objects and reports differences
+func compareReports(t *testing.T, expected, actual workreport.WorkReport) {
+	if diff := cmp.Diff(expected, actual); diff != "" {
+		t.Errorf("WorkReports don't match (-expected +actual):\n%s", diff)
 	}
 }

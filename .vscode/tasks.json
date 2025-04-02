@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "generate-prod-constants",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/constants && go generate",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "generate-test-constants",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/constants && JAM_USE_TEST_CONSTANTS=true go generate",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

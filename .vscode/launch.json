@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Go Tests with Test Constants",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${fileDirname}",
+            "preLaunchTask": "generate-test-constants",
+            "args": [],
+            "showLog": true
+        },
+        {
+            "name": "Run Current Test File with Test Constants",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${fileDirname}",
+            "preLaunchTask": "generate-test-constants",
+            "args": ["-test.run", "${fileBasenameNoExtension}"]
+        },
+        {
+            "name": "Run All Tests with Test Constants",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go",
+            "preLaunchTask": "generate-test-constants",
+            "args": ["./..."]
+        }
+    ]
+}
