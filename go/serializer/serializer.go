@@ -26,10 +26,11 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 	case reflect.Ptr:
 		if v.IsNil() {
 			buf.WriteByte(0)
+			return
 		} else {
 			buf.WriteByte(1)
+			serializeValue(v.Elem(), buf)
 		}
-		serializeValue(v.Elem(), buf)
 		return
 	case reflect.Struct:
 		// Special handling based on the concrete type of the struct.

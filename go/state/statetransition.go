@@ -158,7 +158,9 @@ func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []R
 	copy(posteriorRecentBlocks, priorRecentBlocks)
 
 	// Now modify the copy, not the original
-	posteriorRecentBlocks[len(posteriorRecentBlocks)-1].StateRoot = header.PriorStateRoot
+	if len(posteriorRecentBlocks) > 0 {
+		posteriorRecentBlocks[len(posteriorRecentBlocks)-1].StateRoot = header.PriorStateRoot
+	}
 	return posteriorRecentBlocks
 }
 

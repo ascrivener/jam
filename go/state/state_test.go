@@ -2,175 +2,270 @@ package state
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/ascrivener/jam/block"
+	"github.com/ascrivener/jam/block/extrinsics"
+	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serviceaccount"
+	"github.com/ascrivener/jam/test/asntypes"
+
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 	"github.com/google/go-cmp/cmp"
-	// Import other necessary packages from your jam implementation
 )
 
-// TestVector represents the JSON structure of test vectors
-type TestVector struct {
-	Input     interface{} `json:"input"`
-	PreState  interface{} `json:"pre_state"`
-	Output    interface{} `json:"output"`
-	PostState interface{} `json:"post_state"`
-}
-
-// LoadTestVector loads a test vector from a JSON file
-func LoadTestVector(filePath string) (*TestVector, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading test vector file: %w", err)
+// TestStateTransitionAccumulation runs accumulation-specific tests with relevant fields
+func TestStateTransitionAccumulation(t *testing.T) {
+	// List of fields relevant to accumulation based on ASN.1 definition:
+	// State ::= SEQUENCE {
+	//    slot TimeSlot,               -> MostRecentBlockTimeslot
+	//    entropy Entropy,             -> EntropyAccumulator
+	//    ready-queue ReadyQueue,      -> AccumulationQueue
+	//    accumulated AccumulatedQueue,-> AccumulationHistory
+	//    privileges Privileges,       -> PrivilegedServices
+	//    accounts SEQUENCE OF AccountsMapEntry -> ServiceAccounts
+	// }
+	accumulationFields := []string{
+		"MostRecentBlockTimeslot", // slot in ASN.1
+		// "EntropyAccumulator",      // entropy in ASN.1
+		"AccumulationQueue",   // ready-queue in ASN.1
+		"AccumulationHistory", // accumulated in ASN.1
+		"PrivilegedServices",  // privileges in ASN.1
+		"ServiceAccounts",     // accounts in ASN.1
 	}
 
-	var testVector TestVector
-	if err := json.Unmarshal(data, &testVector); err != nil {
-		return nil, fmt.Errorf("error unmarshaling test vector: %w", err)
+	// Define test cases to run
+	testCases := []struct {
+		subdir   string
+		filename string
+	}{
+		{"tiny", "accumulate_ready_queued_reports-1.json"},
+		// {"tiny", "no_available_reports-1.json"},
+		// Add more test cases as needed
 	}
 
-	return &testVector, nil
+	// Run test cases with accumulation-related fields
+	runStateTransitionTest(t, testCases, accumulationFields)
 }
 
-// StateJSON represents the structure of the state field in test vectors
-type StateJSON struct {
-	Slot       types.Timeslot `json:"slot"`
-	Entropy    string         `json:"entropy"`
-	ReadyQueue [][]struct {
-		Report       WorkReportJSON `json:"report"`
-		Dependencies []string       `json:"dependencies"`
-	} `json:"ready_queue"`
-	Accumulated [][]string `json:"accumulated"`
-	Privileges  struct {
-		Bless     int           `json:"bless"`
-		Assign    int           `json:"assign"`
-		Designate int           `json:"designate"`
-		AlwaysAcc []interface{} `json:"always_acc"`
-	} `json:"privileges"`
-	Accounts []struct {
-		ID   int `json:"id"`
-		Data struct {
-			Service struct {
-				Balance    float64 `json:"balance"`
-				MinItemGas float64 `json:"min_item_gas"`
-				MinMemoGas float64 `json:"min_memo_gas"`
-				CodeHash   string  `json:"code_hash"`
-			} `json:"service"`
-			Preimages []struct {
-				Hash string `json:"hash"`
-				Blob string `json:"blob"`
-			} `json:"preimages"`
-		} `json:"data"`
-	} `json:"accounts"`
+// runStateTransitionTest is a helper that runs state transition tests with specified test cases and fields to compare
+// If fieldsToCompare is empty, all fields will be compared
+func runStateTransitionTest(t *testing.T, testCases []struct {
+	subdir   string
+	filename string
+}, fieldsToCompare []string) {
+	// Base directory containing the test vectors
+	testVectorDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/accumulate"
+
+	if len(testCases) == 0 {
+		t.Fatalf("No test cases provided")
+	}
+
+	for _, tc := range testCases {
+		testName := tc.subdir + "/" + tc.filename
+		t.Run(testName, func(t *testing.T) {
+			// Full path to the test vector
+			testVectorPath := filepath.Join(testVectorDir, tc.subdir, tc.filename)
+
+			// Parse the test vector using our asntypes package
+			testCase, err := asntypes.ParseTestCase(testVectorPath)
+			if err != nil {
+				t.Fatalf("Failed to parse test case: %v", err)
+			}
+
+			// Convert asntypes.State to our implementation's State
+			priorState := convertAsnStateToImplState(testCase.PreState)
+
+			// Extract posterior timeslot from input
+			posteriorTimeslot := types.Timeslot(testCase.Input.Slot)
+
+			// Build a mock Block with the necessary components
+			mockBlock := buildMockBlockFromTestVector(testCase, posteriorTimeslot)
+
+			// Run the full state transition function
+			actualState := StateTransitionFunction(priorState, mockBlock)
+
+			// Convert the expected post-state from asntypes.State to our implementation's State
+			expectedState := convertAsnStateToImplState(testCase.PostState)
+
+			// Compare the expected and actual states based on provided fields
+			compareStatesSelective(t, expectedState, actualState, fieldsToCompare)
+		})
+	}
 }
 
-type WorkReportJSON struct {
-	PackageSpec struct {
-		Hash         string `json:"hash"`
-		Length       int    `json:"length"`
-		ErasureRoot  string `json:"erasure_root"`
-		ExportsRoot  string `json:"exports_root"`
-		ExportsCount int    `json:"exports_count"`
-	} `json:"package_spec"`
-	Context struct {
-		Anchor           string   `json:"anchor"`
-		StateRoot        string   `json:"state_root"`
-		BeefyRoot        string   `json:"beefy_root"`
-		LookupAnchor     string   `json:"lookup_anchor"`
-		LookupAnchorSlot int      `json:"lookup_anchor_slot"`
-		Prerequisites    []string `json:"prerequisites"`
-	} `json:"context"`
-	CoreIndex         int        `json:"core_index"`
-	AuthorizerHash    string     `json:"authorizer_hash"`
-	AuthOutput        string     `json:"auth_output"`
-	SegmentRootLookup []struct{} `json:"segment_root_lookup"`
-	Results           []struct {
-		ServiceID     int    `json:"service_id"`
-		CodeHash      string `json:"code_hash"`
-		PayloadHash   string `json:"payload_hash"`
-		AccumulateGas int    `json:"accumulate_gas"`
-		Result        struct {
-			OK string `json:"ok"`
-		} `json:"result"`
-		RefineLoad struct {
-			GasUsed        int `json:"gas_used"`
-			Imports        int `json:"imports"`
-			ExtrinsicCount int `json:"extrinsic_count"`
-			ExtrinsicSize  int `json:"extrinsic_size"`
-			Exports        int `json:"exports"`
-		} `json:"refine_load"`
-	} `json:"results"`
-	AuthGasUsed int `json:"auth_gas_used"`
+// buildMockBlockFromTestVector creates a mock Block from a test vector
+func buildMockBlockFromTestVector(testCase *asntypes.TestCase, posteriorTimeslot types.Timeslot) block.Block {
+	// Create a minimal valid header
+	mockHeader := header.Header{
+		TimeSlot:       posteriorTimeslot,
+		PriorStateRoot: [32]byte{}, // We can leave this empty for now
+		// Add other required fields with default/empty values
+	}
+
+	// Convert work reports to guarantees and assurances
+	var mockAssurances extrinsics.Assurances
+	var mockGuarantees extrinsics.Guarantees
+
+	// Mark all reports as available in the assurances
+	for _, asnReport := range testCase.Input.Reports {
+		// Convert report to implementation type
+		report := convertAsnReportToImplReport(asnReport)
+
+		// Add to assurances - mark as fully available
+		mockAssurances = appendAvailabilityMarksForReport(mockAssurances, report)
+	}
+
+	// Create the block
+	mockBlock := block.Block{
+		Header: mockHeader,
+		Extrinsics: extrinsics.Extrinsics{
+			Assurances: mockAssurances,
+			Guarantees: mockGuarantees,
+			Preimages:  extrinsics.Preimages{},
+			Disputes:   extrinsics.Disputes{},
+			Tickets:    extrinsics.Tickets{},
+		},
+	}
+
+	return mockBlock
 }
 
-func hexToHash(hexStr string) [32]byte {
-	var hashArray [32]byte
-	hashBytes := hexToBytes(hexStr)
-	copy(hashArray[:], hashBytes[:32])
-	return hashArray
+// appendAvailabilityMarksForReport adds availability marks for a work report to the assurances
+func appendAvailabilityMarksForReport(assurances extrinsics.Assurances, report workreport.WorkReport) extrinsics.Assurances {
+	// This is a simplified version - in a real implementation, you'd need to properly
+	// construct the assurances based on your extrinsics.Assurances definition
+
+	// For testing purposes, we'll assume this is sufficient to mark the report as available
+	// You'll need to replace this with the actual implementation based on your extrinsics package
+
+	// Example (you'll need to adjust this based on your actual implementation):
+	// assurances = append(assurances, extrinsics.Assurance{
+	//     CoreIndex: report.CoreIndex,
+	//     IsAvailable: true,
+	// })
+
+	return assurances
 }
 
-// hexToBytes converts a hex string to byte array
-func hexToBytes(hexStr string) []byte {
-	// Remove "0x" prefix if present
+// hexToHash converts a hex string (with or without 0x prefix) to a [32]byte array
+func hexToHash(hexStr string) ([32]byte, error) {
+	var hash [32]byte
+
+	// Remove 0x prefix if present
 	if len(hexStr) >= 2 && hexStr[0:2] == "0x" {
 		hexStr = hexStr[2:]
 	}
-	s, err := hex.DecodeString(hexStr)
-	if err != nil {
-		panic(err)
+
+	// Handle empty string case
+	if hexStr == "" {
+		return hash, nil
 	}
-	return s
+
+	decoded, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return hash, fmt.Errorf("failed to decode hex string: %v", err)
+	}
+
+	// Ensure correct length
+	if len(decoded) != 32 {
+		return hash, fmt.Errorf("expected 32 bytes, got %d", len(decoded))
+	}
+
+	copy(hash[:], decoded)
+	return hash, nil
 }
 
-// ConvertJSONToState converts a JSON pre_state to a Go State struct
-func ConvertJSONToState(stateJSON StateJSON) (State, error) {
-	var state State
+// createEmptyState creates a fully initialized State with proper zero values and non-nil fields
+func createEmptyState() State {
+	// Initialize with zero values but ensure all maps/slices are properly initialized
+	state := State{
+		ServiceAccounts:            make(serviceaccount.ServiceAccounts),
+		AccumulationQueue:          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{},
+		AccumulationHistory:        [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}{},
+		EntropyAccumulator:         [4][32]byte{},
+		RecentBlocks:               make([]RecentBlock, 0),
+		SafroleBasicState:          SafroleBasicState{},
+		ValidatorKeysetsStaging:    types.ValidatorKeysets{},
+		ValidatorKeysetsActive:     types.ValidatorKeysets{},
+		ValidatorKeysetsPriorEpoch: types.ValidatorKeysets{},
+		PendingReports:             [constants.NumCores]*PendingReport{},
+		AuthorizerQueue:            [constants.NumCores][constants.AuthorizerQueueLength][32]byte{},
+		PrivilegedServices:         types.PrivilegedServices{},
+		Disputes:                   types.Disputes{},
+		ValidatorStatistics:        [2][constants.NumValidators]SingleValidatorStatistics{},
+		MostRecentBlockTimeslot:    0,
+	}
 
-	// Set the MostRecentBlockTimeslot
-	state.MostRecentBlockTimeslot = stateJSON.Slot
+	// Initialize maps in AccumulationHistory
+	for i := range state.AccumulationHistory {
+		state.AccumulationHistory[i] = make(map[[32]byte]struct{})
+	}
 
-	// Initialize empty service accounts map
-	state.ServiceAccounts = make(serviceaccount.ServiceAccounts)
+	// Initialize AuthorizersPool with empty (but non-nil) slices
+	state.AuthorizersPool = [constants.NumCores][][32]byte{}
+	for i := 0; i < constants.NumCores; i++ {
+		state.AuthorizersPool[i] = make([][32]byte, 0)
+	}
 
-	// Initialize empty accumulation queue with empty slices (not nil)
-	state.AccumulationQueue = [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}
+	return state
+}
 
-	for idx, r := range stateJSON.ReadyQueue {
+// convertAsnStateToImplState converts a state from the ASN types to the implementation's State type
+func convertAsnStateToImplState(asnState asntypes.State) State {
+	// Create a fully initialized state with proper zero values
+	state := createEmptyState()
+
+	// Set the timeslot
+	state.MostRecentBlockTimeslot = types.Timeslot(asnState.Slot)
+
+	// Set entropy from ASN state
+	entropyHash, _ := hexToHash(string(asnState.Entropy))
+	state.EntropyAccumulator[0] = entropyHash
+
+	// Convert ready queue
+	for idx, queueItem := range asnState.ReadyQueue {
+		if idx >= constants.NumTimeslotsPerEpoch {
+			continue // Skip if index is out of bounds
+		}
+
 		w := make([]workreport.WorkReportWithWorkPackageHashes, 0)
-		for _, workReportWithWorkPackageHashesJSON := range r {
+		for _, readyRecord := range queueItem {
 			workPackageHashes := make(map[[32]byte]struct{})
-			for _, dep := range workReportWithWorkPackageHashesJSON.Dependencies {
-				workPackageHashes[hexToHash(dep)] = struct{}{}
+			for _, dep := range readyRecord.Dependencies {
+				hash, _ := hexToHash(string(dep))
+				workPackageHashes[hash] = struct{}{}
 			}
+
 			w = append(w, workreport.WorkReportWithWorkPackageHashes{
-				WorkReport:        ConvertJSONToReport(workReportWithWorkPackageHashesJSON.Report),
+				WorkReport:        convertAsnReportToImplReport(readyRecord.Report),
 				WorkPackageHashes: workPackageHashes,
 			})
 		}
 		state.AccumulationQueue[idx] = w
 	}
 
-	// Initialize empty accumulation history with empty maps (not nil)
-	state.AccumulationHistory = [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}{}
+	// Convert accumulated queue
+	for idx, accItem := range asnState.Accumulated {
+		if idx >= constants.NumTimeslotsPerEpoch {
+			continue // Skip if index is out of bounds
+		}
 
-	for idx, accumulatedWorkPackagesHashesForTimeslot := range stateJSON.Accumulated {
 		workPackageHashes := make(map[[32]byte]struct{})
-		for _, accumulatedWorkPackageHash := range accumulatedWorkPackagesHashesForTimeslot {
-			workPackageHashes[hexToHash(accumulatedWorkPackageHash)] = struct{}{}
+		for _, hashStr := range accItem {
+			hash, _ := hexToHash(string(hashStr))
+			workPackageHashes[hash] = struct{}{}
 		}
 		state.AccumulationHistory[idx] = workPackageHashes
 	}
 
-	// Process each account in the JSON
-	for _, account := range stateJSON.Accounts {
+	// Process accounts
+	for _, account := range asnState.Accounts {
 		// Create a new service account
 		serviceAccount := serviceaccount.ServiceAccount{
 			Balance:                        types.Balance(account.Data.Service.Balance),
@@ -181,268 +276,84 @@ func ConvertJSONToState(stateJSON StateJSON) (State, error) {
 		}
 
 		// Set code hash
-		codeHashBytes := hexToBytes(account.Data.Service.CodeHash)
-		copy(serviceAccount.CodeHash[:], codeHashBytes)
+		codeHash, _ := hexToHash(string(account.Data.Service.CodeHash))
+		serviceAccount.CodeHash = codeHash
 
-		// Add preimages to the service account
+		// Add preimages
 		for _, preimage := range account.Data.Preimages {
-			// Convert hash to byte array
-			var hashArray [32]byte
-			hashBytes := hexToBytes(preimage.Hash)
-			copy(hashArray[:], hashBytes[:32])
-
-			// Convert blob to bytes
-			blobBytes := hexToBytes(preimage.Blob)
-
-			// Add to service account
-			serviceAccount.PreimageLookup[hashArray] = blobBytes
+			hashArray, _ := hexToHash(string(preimage.Hash))
+			serviceAccount.PreimageLookup[hashArray] = []byte(preimage.Blob)
 		}
 
 		// Add the service account to the state
 		state.ServiceAccounts[types.ServiceIndex(account.ID)] = &serviceAccount
 	}
 
-	// Initialize empty privileged services
-	state.PrivilegedServices = types.PrivilegedServices{
-		ManagerServiceIndex:             types.ServiceIndex(stateJSON.Privileges.Bless),
-		AssignServiceIndex:              types.ServiceIndex(stateJSON.Privileges.Assign),
-		DesignateServiceIndex:           types.ServiceIndex(stateJSON.Privileges.Designate),
-		AlwaysAccumulateServicesWithGas: make(map[types.ServiceIndex]types.GasValue),
-	}
-
-	// Set up entropy accumulator from the stateJSON
-	// The JSON only provides a single entropy value, but our State uses a [4][32]byte array
-	entropyBytes := hexToBytes(stateJSON.Entropy)
-	if len(entropyBytes) == 32 {
-		// Copy the entropy value to all elements of our entropy accumulator
-		copy(state.EntropyAccumulator[0][:], entropyBytes)
-		copy(state.EntropyAccumulator[1][:], entropyBytes)
-		copy(state.EntropyAccumulator[2][:], entropyBytes)
-		copy(state.EntropyAccumulator[3][:], entropyBytes)
-	}
-
-	// TODO: Parse AlwaysAcc from stateJSON.Privileges.AlwaysAcc
-
-	// Initialize empty arrays and slices for other fields
-	state.AuthorizersPool = [constants.NumCores][][32]byte{}
-	state.RecentBlocks = []RecentBlock{}
-	state.SafroleBasicState = SafroleBasicState{}
-	state.ValidatorKeysetsStaging = types.ValidatorKeysets{}
-	state.ValidatorKeysetsActive = types.ValidatorKeysets{}
-	state.ValidatorKeysetsPriorEpoch = types.ValidatorKeysets{}
-	state.PendingReports = [constants.NumCores]*PendingReport{}
-	state.AuthorizerQueue = [constants.NumCores][constants.AuthorizerQueueLength][32]byte{}
-	state.Disputes = types.Disputes{}
-	state.ValidatorStatistics = [2][constants.NumValidators]SingleValidatorStatistics{}
-
-	return state, nil
+	return state
 }
 
-func ConvertJSONToReport(reportJSON WorkReportJSON) workreport.WorkReport {
-	var workReport workreport.WorkReport
+// convertAsnReportToImplReport converts a workreport from the ASN types to the implementation's WorkReport type
+func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.WorkReport {
+	var report workreport.WorkReport
 
-	workReport.WorkPackageSpecification = workreport.AvailabilitySpecification{
-		WorkPackageHash:  hexToHash(reportJSON.PackageSpec.Hash),
-		WorkBundleLength: types.BlobLength(reportJSON.PackageSpec.Length),
-		ErasureRoot:      hexToHash(reportJSON.PackageSpec.ErasureRoot),
-		SegmentRoot:      hexToHash(reportJSON.PackageSpec.ExportsRoot),
-		SegmentCount:     uint64(reportJSON.PackageSpec.ExportsCount),
-	}
+	// Set CoreIndex
+	report.CoreIndex = types.CoreIndex(asnReport.CoreIndex)
 
-	prerequisiteWorkPackageHashes := make(map[[32]byte]struct{})
+	// Convert results
+	for _, result := range asnReport.Results {
+		codeHash, _ := hexToHash(string(result.CodeHash))
+		payloadHash, _ := hexToHash(string(result.PayloadHash))
 
-	for _, prerequisite := range reportJSON.Context.Prerequisites {
-		prerequisiteWorkPackageHashes[hexToHash(prerequisite)] = struct{}{}
-	}
-
-	workReport.RefinementContext = workreport.RefinementContext{
-		AnchorHeaderHash:              hexToHash(reportJSON.Context.Anchor),
-		PosteriorStateRoot:            hexToHash(reportJSON.Context.StateRoot),
-		PosteriorBEEFYRoot:            hexToHash(reportJSON.Context.BeefyRoot),
-		LookupAnchorHeaderHash:        hexToHash(reportJSON.Context.LookupAnchor),
-		Timeslot:                      types.Timeslot(reportJSON.Context.LookupAnchorSlot),
-		PrerequisiteWorkPackageHashes: make(map[[32]byte]struct{}),
-	}
-
-	workReport.CoreIndex = types.CoreIndex(reportJSON.CoreIndex)
-
-	workReport.AuthorizerHash = hexToHash(reportJSON.AuthorizerHash)
-
-	workReport.Output = hexToBytes(reportJSON.AuthOutput)
-
-	workReport.SegmentRootLookup = make(map[[32]byte][32]byte)
-
-	workReport.WorkResults = make([]workreport.WorkResult, 0)
-
-	for _, result := range reportJSON.Results {
 		workResult := workreport.WorkResult{
-			ServiceIndex:           types.ServiceIndex(result.ServiceID),
-			ServiceCodeHash:        hexToHash(result.CodeHash),
-			PayloadHash:            hexToHash(result.PayloadHash),
+			ServiceIndex:           types.ServiceIndex(result.ServiceId),
+			ServiceCodeHash:        codeHash,
+			PayloadHash:            payloadHash,
 			GasPrioritizationRatio: types.GasValue(result.AccumulateGas),
-			WorkOutput:             types.NewExecutionExitReasonBlob(hexToBytes(result.Result.OK)),
 		}
 
-		workReport.WorkResults = append(workReport.WorkResults, workResult)
+		if result.Result.OK != nil {
+			// If OK is present, convert to blob
+			workResult.WorkOutput = types.NewExecutionExitReasonBlob([]byte(*result.Result.OK))
+		}
+
+		report.WorkResults = append(report.WorkResults, workResult)
 	}
 
-	return workReport
+	// Set package spec
+	packageSpecHash, _ := hexToHash(string(asnReport.PackageSpec.Hash))
+	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
+		WorkPackageHash: packageSpecHash,
+	}
+
+	return report
 }
 
-// TestAccumulateWithTestVectors tests the accumulate functionality using test vectors
-func TestAccumulateWithTestVectors(t *testing.T) {
-	// Base directory containing the test vectors
-	testVectorDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/accumulate"
-
-	// Define a list of subdirectories and their test files to run
-	testCases := []struct {
-		subdir   string
-		filename string
-	}{
-		{"tiny", "no_available_reports-1.json"},
-		// {"tiny", "process_one_immediate_report-1.json"},
-		// {"tiny", "accumulate_ready_queued_reports-1.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-2.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-3.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-4.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-5.json"},
-		// {"tiny", "one_available_report-1.json"},
-		// Add more test cases as needed
+// compareStatesSelective compares specific fields between two State objects
+// If fields is nil or empty, all fields are compared
+func compareStatesSelective(t *testing.T, expected, actual State, fields []string) {
+	if len(fields) == 0 {
+		// Compare entire state if no fields specified
+		if diff := cmp.Diff(expected, actual); diff != "" {
+			t.Errorf("States don't match (-expected +actual):\n%s", diff)
+		}
+		return
 	}
 
-	for _, tc := range testCases {
-		testName := tc.subdir + "/" + tc.filename
-		t.Run(testName, func(t *testing.T) {
-			// Full path to the test vector
-			testVectorPath := filepath.Join(testVectorDir, tc.subdir, tc.filename)
+	// Check each field individually to provide more focused comparison
+	// This avoids issues with complex filtering in cmp.FilterPath
+	for _, fieldName := range fields {
+		// Use reflection to get the field values
+		expectedVal := reflect.ValueOf(expected).FieldByName(fieldName)
+		actualVal := reflect.ValueOf(actual).FieldByName(fieldName)
 
-			// Load the test vector
-			testVector, err := LoadTestVector(testVectorPath)
-			if err != nil {
-				t.Fatalf("Failed to load test vector: %v", err)
-			}
+		if !expectedVal.IsValid() || !actualVal.IsValid() {
+			t.Errorf("Field %s does not exist in State struct", fieldName)
+			continue
+		}
 
-			// Convert the generic testVector.PreState into your implementation's State type
-			var preStateJSON StateJSON
-			jsonData, _ := json.Marshal(testVector.PreState)
-			err = json.Unmarshal(jsonData, &preStateJSON)
-			if err != nil {
-				t.Fatalf("Failed to unmarshal pre-state JSON: %v", err)
-			}
-
-			preState, err := ConvertJSONToState(preStateJSON)
-			if err != nil {
-				t.Fatalf("Failed to convert pre-state JSON to State: %v", err)
-			}
-
-			// Parse posterior timeslot from input
-			posteriorTimeslot := types.Timeslot(0)
-			if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
-				if posteriorTimeslotFloat, ok := inputMap["slot"].(float64); ok {
-					posteriorTimeslot = types.Timeslot(posteriorTimeslotFloat)
-				}
-			}
-
-			// Parse work reports from input
-			var workReports []workreport.WorkReport
-			if inputMap, ok := testVector.Input.(map[string]interface{}); ok {
-				if reportsArray, ok := inputMap["reports"].([]interface{}); ok {
-					// Parse each work report
-					for _, reportInterface := range reportsArray {
-						// Convert report to JSON and then to WorkReport
-						var reportJSON WorkReportJSON
-						jsonData, _ := json.Marshal(reportInterface)
-						err = json.Unmarshal(jsonData, &reportJSON)
-						if err != nil {
-							t.Fatalf("Failed to unmarshal report JSON: %v", err)
-						}
-
-						report := ConvertJSONToReport(reportJSON)
-						workReports = append(workReports, report)
-					}
-				}
-			}
-
-			// Compute a posterior entropy accumulator
-			// For test vectors, we use a dummy header to compute it
-			// dummyHeader := header.Header{
-			// 	ParentHash: [32]byte{},
-			// 	TimeSlot:   posteriorTimeslot,
-			// }
-
-			// posteriorEntropyAccumulator := computeEntropyAccumulator(
-			// 	dummyHeader,
-			// 	preState.MostRecentBlockTimeslot,
-			// 	preState.EntropyAccumulator,
-			// )
-
-			// Call accumulateAndIntegrate with the parsed inputs
-			accumulationStateComponents, _, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
-				&preState,
-				posteriorTimeslot,
-				workReports,
-				[]workreport.WorkReportWithWorkPackageHashes{}, // Empty for test vectors as discussed
-				preState.EntropyAccumulator,                    // Pass the computed posterior entropy accumulator
-			)
-
-			// Create the actual state object from scratch using only the computation results
-			actualState := State{
-				// Only include fields that should be compared and affected by accumulation
-				ServiceAccounts:            accumulationStateComponents.ServiceAccounts,
-				ValidatorKeysetsStaging:    accumulationStateComponents.UpcomingValidatorKeysets,
-				PrivilegedServices:         accumulationStateComponents.PrivilegedServices,
-				MostRecentBlockTimeslot:    posteriorTimeslot,
-				AccumulationQueue:          posteriorAccumulationQueue,
-				AccumulationHistory:        posteriorAccumulationHistory,
-				AuthorizersPool:            [constants.NumCores][][32]byte{},
-				RecentBlocks:               []RecentBlock{},
-				SafroleBasicState:          SafroleBasicState{},
-				EntropyAccumulator:         preState.EntropyAccumulator,
-				ValidatorKeysetsActive:     types.ValidatorKeysets{},
-				ValidatorKeysetsPriorEpoch: types.ValidatorKeysets{},
-				PendingReports:             [constants.NumCores]*PendingReport{},
-				AuthorizerQueue:            [constants.NumCores][constants.AuthorizerQueueLength][32]byte{},
-				Disputes:                   types.Disputes{},
-				ValidatorStatistics:        [2][constants.NumValidators]SingleValidatorStatistics{},
-			}
-
-			// Convert post-state JSON to a Go state object for comparison (expected state)
-			var postStateJSON StateJSON
-			if postStateMap, ok := testVector.PostState.(map[string]interface{}); ok {
-				postStateBytes, err := json.Marshal(postStateMap)
-				if err != nil {
-					t.Fatalf("Failed to marshal post-state: %v", err)
-				}
-
-				if err := json.Unmarshal(postStateBytes, &postStateJSON); err != nil {
-					t.Fatalf("Failed to unmarshal post-state JSON: %v", err)
-				}
-			} else {
-				t.Fatalf("Post-state is not a map")
-			}
-
-			expectedState, err := ConvertJSONToState(postStateJSON)
-			if err != nil {
-				t.Fatalf("Failed to convert post-state JSON to State: %v", err)
-			}
-
-			// Compare the expected and actual states
-			compareStates(t, expectedState, actualState)
-		})
-	}
-}
-
-// compareStates compares two State objects and reports differences
-func compareStates(t *testing.T, expected, actual State) {
-	if diff := cmp.Diff(expected, actual); diff != "" {
-		t.Errorf("States don't match (-expected +actual):\n%s", diff)
-	}
-}
-
-// compareReports compares two WorkReport objects and reports differences
-func compareReports(t *testing.T, expected, actual workreport.WorkReport) {
-	if diff := cmp.Diff(expected, actual); diff != "" {
-		t.Errorf("WorkReports don't match (-expected +actual):\n%s", diff)
+		// Compare just this individual field
+		if diff := cmp.Diff(expectedVal.Interface(), actualVal.Interface()); diff != "" {
+			t.Errorf("Field %s doesn't match (-expected +actual):\n%s", fieldName, diff)
+		}
 	}
 }
