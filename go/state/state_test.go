@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
@@ -44,7 +45,8 @@ func TestStateTransitionAccumulation(t *testing.T) {
 		subdir   string
 		filename string
 	}{
-		{"tiny", "accumulate_ready_queued_reports-1.json"},
+		// {"tiny", "accumulate_ready_queued_reports-1.json"},
+		{"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
 		// {"tiny", "no_available_reports-1.json"},
 		// Add more test cases as needed
 	}
@@ -82,10 +84,25 @@ func runStateTransitionTest(t *testing.T, testCases []struct {
 			priorState := convertAsnStateToImplState(testCase.PreState)
 
 			// Extract posterior timeslot from input
-			posteriorTimeslot := types.Timeslot(testCase.Input.Slot)
+			reportsTimeslot := types.Timeslot(testCase.Input.Slot) // Assuming prior timeslot is one less
+
+			// Add input reports to pending reports in prior state (for dispute testing)
+			// This simulates reports that were submitted in a previous block
+			for _, asnReport := range testCase.Input.Reports {
+				report := convertAsnReportToImplReport(asnReport)
+				coreIndex := int(report.CoreIndex)
+
+				// Only add if there's not already a pending report for this core
+				if priorState.PendingReports[coreIndex] == nil {
+					priorState.PendingReports[coreIndex] = &PendingReport{
+						WorkReport: report,
+						Timeslot:   reportsTimeslot,
+					}
+				}
+			}
 
 			// Build a mock Block with the necessary components
-			mockBlock := buildMockBlockFromTestVector(testCase, posteriorTimeslot)
+			mockBlock := buildMockBlockFromTestVector(testCase, types.Timeslot(testCase.Input.Slot))
 
 			// Run the full state transition function
 			actualState := StateTransitionFunction(priorState, mockBlock)
@@ -112,14 +129,27 @@ func buildMockBlockFromTestVector(testCase *asntypes.TestCase, posteriorTimeslot
 	var mockAssurances extrinsics.Assurances
 	var mockGuarantees extrinsics.Guarantees
 
-	// Mark all reports as available in the assurances
+	// Process all reports in the test vector input
 	for _, asnReport := range testCase.Input.Reports {
 		// Convert report to implementation type
 		report := convertAsnReportToImplReport(asnReport)
 
-		// Add to assurances - mark as fully available
-		mockAssurances = appendAvailabilityMarksForReport(mockAssurances, report)
+		// Add to guarantees - these are the actual work reports validators have validated
+		mockGuarantee := extrinsics.Guarantee{
+			WorkReport: report,
+			Timeslot:   posteriorTimeslot, // Use the current timeslot for the guarantee
+			Credentials: []extrinsics.Credential{
+				{
+					ValidatorIndex: 0,                        // Using validator index 0 for simplicity in tests
+					Signature:      types.Ed25519Signature{}, // Empty signature for tests
+				},
+			},
+		}
+		mockGuarantees = append(mockGuarantees, mockGuarantee)
 	}
+
+	// Add to assurances - mark as fully available
+	mockAssurances = makeMockAssurances()
 
 	// Create the block
 	mockBlock := block.Block{
@@ -136,19 +166,30 @@ func buildMockBlockFromTestVector(testCase *asntypes.TestCase, posteriorTimeslot
 	return mockBlock
 }
 
-// appendAvailabilityMarksForReport adds availability marks for a work report to the assurances
-func appendAvailabilityMarksForReport(assurances extrinsics.Assurances, report workreport.WorkReport) extrinsics.Assurances {
-	// This is a simplified version - in a real implementation, you'd need to properly
-	// construct the assurances based on your extrinsics.Assurances definition
+// makeMockAssurances creates assurances for all validators with all cores marked as available
+func makeMockAssurances() extrinsics.Assurances {
+	// For test purposes, we'll create assurances for all validators with all cores marked as available
 
-	// For testing purposes, we'll assume this is sufficient to mark the report as available
-	// You'll need to replace this with the actual implementation based on your extrinsics package
+	// Create a bit sequence with all bits set to 1
+	coreContributions := bitsequence.NewZeros(constants.NumCores)
+	// Set all bits to 1
+	for i := 0; i < constants.NumCores; i++ {
+		coreContributions.SetBitAt(i, true)
+	}
 
-	// Example (you'll need to adjust this based on your actual implementation):
-	// assurances = append(assurances, extrinsics.Assurance{
-	//     CoreIndex: report.CoreIndex,
-	//     IsAvailable: true,
-	// })
+	var assurances extrinsics.Assurances
+	for validatorIndex := 0; validatorIndex < constants.NumValidators; validatorIndex++ {
+		// Create an assurance with all bits set
+		assurance := extrinsics.Assurance{
+			ParentHash:                    [32]byte{}, // Would be set to the actual parent hash in production
+			CoreAvailabilityContributions: *coreContributions,
+			ValidatorIndex:                types.ValidatorIndex(validatorIndex),
+			Signature:                     types.Ed25519Signature{}, // Empty signature for tests
+		}
+
+		// Append the new assurance
+		assurances = append(assurances, assurance)
+	}
 
 	return assurances
 }
@@ -179,6 +220,26 @@ func hexToHash(hexStr string) ([32]byte, error) {
 
 	copy(hash[:], decoded)
 	return hash, nil
+}
+
+// hexToBytes converts a hex string (with or without 0x prefix) to a byte slice
+func hexToBytes(hexStr string) ([]byte, error) {
+	// Remove 0x prefix if present
+	if len(hexStr) >= 2 && hexStr[0:2] == "0x" {
+		hexStr = hexStr[2:]
+	}
+
+	// Handle empty string case
+	if hexStr == "" {
+		return []byte{}, nil
+	}
+
+	decoded, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode hex string: %v", err)
+	}
+
+	return decoded, nil
 }
 
 // createEmptyState creates a fully initialized State with proper zero values and non-nil fields
@@ -321,8 +382,57 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 
 	// Set package spec
 	packageSpecHash, _ := hexToHash(string(asnReport.PackageSpec.Hash))
+	erasureRoot, _ := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
+	exportsRoot, _ := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
+
 	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
-		WorkPackageHash: packageSpecHash,
+		WorkPackageHash:  packageSpecHash,                                // h
+		WorkBundleLength: types.BlobLength(asnReport.PackageSpec.Length), // l
+		ErasureRoot:      erasureRoot,                                    // u
+		SegmentRoot:      exportsRoot,                                    // e - ExportsRoot maps to SegmentRoot
+		SegmentCount:     uint64(asnReport.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
+	}
+
+	// Set refinement context
+	anchorHash, _ := hexToHash(string(asnReport.Context.Anchor))
+	stateRoot, _ := hexToHash(string(asnReport.Context.StateRoot))
+	beefyRoot, _ := hexToHash(string(asnReport.Context.BeefyRoot))
+	lookupAnchor, _ := hexToHash(string(asnReport.Context.LookupAnchor))
+
+	// Convert prerequisites to map of [32]byte
+	prereqMap := make(map[[32]byte]struct{})
+	for _, prereq := range asnReport.Context.Prerequisites {
+		hash, _ := hexToHash(string(prereq))
+		prereqMap[hash] = struct{}{}
+	}
+
+	report.RefinementContext = workreport.RefinementContext{
+		AnchorHeaderHash:              anchorHash,                                         // a
+		PosteriorStateRoot:            stateRoot,                                          // s
+		PosteriorBEEFYRoot:            beefyRoot,                                          // b
+		LookupAnchorHeaderHash:        lookupAnchor,                                       // l
+		Timeslot:                      types.Timeslot(asnReport.Context.LookupAnchorSlot), // t
+		PrerequisiteWorkPackageHashes: prereqMap,                                          // p
+	}
+
+	// Set AuthorizerHash (a)
+	authorizerHash, _ := hexToHash(string(asnReport.AuthorizerHash))
+	report.AuthorizerHash = authorizerHash
+
+	// Set Output (o) - properly decode the hex string ByteSequence to bytes
+	if asnReport.AuthOutput != "" {
+		output, _ := hexToBytes(string(asnReport.AuthOutput))
+		report.Output = output
+	} else {
+		report.Output = []byte{}
+	}
+
+	// Set SegmentRootLookup (l)
+	report.SegmentRootLookup = make(map[[32]byte][32]byte)
+	for _, item := range asnReport.SegmentRootLookup {
+		key, _ := hexToHash(string(item.WorkPackageHash))
+		val, _ := hexToHash(string(item.SegmentTreeRoot))
+		report.SegmentRootLookup[key] = val
 	}
 
 	return report

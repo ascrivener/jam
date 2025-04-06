@@ -78,10 +78,6 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(block.Extrinsics.Disputes, priorState.PendingReports)
 
-	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
-
-	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
-
 	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
@@ -91,6 +87,10 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 		queuedExecutionWorkReports,
 		posteriorEntropyAccumulator,
 	)
+
+	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
+
+	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 
 	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, intermediateRecentBlocks, BEEFYCommitments)
 
@@ -413,10 +413,7 @@ func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Head
 }
 
 func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, posteriorMostRecentBlockTimeslot types.Timeslot) [constants.NumCores]*PendingReport {
-	for coreIndex, value := range postGuaranteesExtrinsicIntermediatePendingReports {
-		if value == nil {
-			continue
-		}
+	for coreIndex := range postGuaranteesExtrinsicIntermediatePendingReports {
 		for _, guarantee := range guarantees {
 			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
 				postGuaranteesExtrinsicIntermediatePendingReports[coreIndex] = &PendingReport{
