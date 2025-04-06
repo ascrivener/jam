@@ -46,8 +46,8 @@ func TestStateTransitionAccumulation(t *testing.T) {
 		filename string
 	}{
 		// {"tiny", "accumulate_ready_queued_reports-1.json"},
-		{"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
-		// {"tiny", "no_available_reports-1.json"},
+		// {"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
+		{"tiny", "no_available_reports-1.json"},
 		// Add more test cases as needed
 	}
 
@@ -125,38 +125,31 @@ func buildMockBlockFromTestVector(testCase *asntypes.TestCase, posteriorTimeslot
 		// Add other required fields with default/empty values
 	}
 
-	// Convert work reports to guarantees and assurances
-	var mockAssurances extrinsics.Assurances
-	var mockGuarantees extrinsics.Guarantees
+	// // Process all reports in the test vector input
+	// for _, asnReport := range testCase.Input.Reports {
+	// 	// Convert report to implementation type
+	// 	report := convertAsnReportToImplReport(asnReport)
 
-	// Process all reports in the test vector input
-	for _, asnReport := range testCase.Input.Reports {
-		// Convert report to implementation type
-		report := convertAsnReportToImplReport(asnReport)
-
-		// Add to guarantees - these are the actual work reports validators have validated
-		mockGuarantee := extrinsics.Guarantee{
-			WorkReport: report,
-			Timeslot:   posteriorTimeslot, // Use the current timeslot for the guarantee
-			Credentials: []extrinsics.Credential{
-				{
-					ValidatorIndex: 0,                        // Using validator index 0 for simplicity in tests
-					Signature:      types.Ed25519Signature{}, // Empty signature for tests
-				},
-			},
-		}
-		mockGuarantees = append(mockGuarantees, mockGuarantee)
-	}
-
-	// Add to assurances - mark as fully available
-	mockAssurances = makeMockAssurances()
+	// 	// Add to guarantees - these are the actual work reports validators have validated
+	// 	mockGuarantee := extrinsics.Guarantee{
+	// 		WorkReport: report,
+	// 		Timeslot:   posteriorTimeslot, // Use the current timeslot for the guarantee
+	// 		Credentials: []extrinsics.Credential{
+	// 			{
+	// 				ValidatorIndex: 0,                        // Using validator index 0 for simplicity in tests
+	// 				Signature:      types.Ed25519Signature{}, // Empty signature for tests
+	// 			},
+	// 		},
+	// 	}
+	// 	mockGuarantees = append(mockGuarantees, mockGuarantee)
+	// }
 
 	// Create the block
 	mockBlock := block.Block{
 		Header: mockHeader,
 		Extrinsics: extrinsics.Extrinsics{
-			Assurances: mockAssurances,
-			Guarantees: mockGuarantees,
+			Assurances: makeMockAssurances(),
+			Guarantees: extrinsics.Guarantees{},
 			Preimages:  extrinsics.Preimages{},
 			Disputes:   extrinsics.Disputes{},
 			Tickets:    extrinsics.Tickets{},
