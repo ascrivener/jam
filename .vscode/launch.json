@@ -2,32 +2,50 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Run Go Tests with Test Constants",
+            "name": "Debug Accumulation Tests (With Size Selection)",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go/state",
+            "args": [
+                "-test.run",
+                "TestStateTransitionAccumulation",
+                "-test.v"
+            ],
+            "env": {
+                "JAM_TEST_VECTOR_DIR": "${input:testSize}"
+            },
+            "showLog": true,
+            "preLaunchTask": "select-constants-generator"
+        },
+        {
+            "name": "Debug Current Test (With Size Selection)",
             "type": "go",
             "request": "launch",
             "mode": "test",
             "program": "${fileDirname}",
-            "preLaunchTask": "generate-test-constants",
-            "args": [],
-            "showLog": true
-        },
+            "args": [
+                "-test.run",
+                "${fileBasenameNoExtension}",
+                "-test.v"
+            ],
+            "env": {
+                "JAM_TEST_VECTOR_DIR": "${input:testSize}"
+            },
+            "showLog": true,
+            "preLaunchTask": "select-constants-generator"
+        }
+    ],
+    "inputs": [
         {
-            "name": "Run Current Test File with Test Constants",
-            "type": "go",
-            "request": "launch",
-            "mode": "test",
-            "program": "${fileDirname}",
-            "preLaunchTask": "generate-test-constants",
-            "args": ["-test.run", "${fileBasenameNoExtension}"]
-        },
-        {
-            "name": "Run All Tests with Test Constants",
-            "type": "go",
-            "request": "launch",
-            "mode": "test",
-            "program": "${workspaceFolder}/go",
-            "preLaunchTask": "generate-test-constants",
-            "args": ["./..."]
+            "id": "testSize",
+            "type": "pickString",
+            "description": "Choose test size (tiny=test constants, full=prod constants)",
+            "options": [
+                "tiny",
+                "full"
+            ],
+            "default": "tiny"
         }
     ]
 }

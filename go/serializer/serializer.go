@@ -165,19 +165,22 @@ func EncodeLength(v reflect.Value) []byte {
 		return []byte{0x00}
 	}
 
-	// Compute l = floor(log2(x)) / 7.
+	// l = floor(log2(x)/7)
 	l := uint((bits.Len64(x) - 1) / 7)
-	if l <= 7 && x < (uint64(1)<<(7*l+1)) {
-		// Compute the header byte.
+
+	// check if l < 8 (valid range for compact encoding)
+	if l < 8 {
+		// Header: 2^8 - 2^(8-l) + ⌊x/(2^(8l))⌋
 		header := (1 << 8) - (1 << (8 - l)) + (x >> (8 * l))
 		result = append(result, byte(header))
+
 		if l > 0 {
-			// Compute the remainder and append its bytes in little-endian order.
+			// Remainder: x mod 2^(8l)
 			remainder := x & ((uint64(1) << (8 * l)) - 1)
 			result = append(result, EncodeLittleEndian(int(l), remainder)...)
 		}
 	} else {
-		// Fallback: write 0xFF followed by x in 8 little-endian octets.
+		// Fallback case
 		result = append(result, 0xFF)
 		result = append(result, EncodeLittleEndian(8, x)...)
 	}

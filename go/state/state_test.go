@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -40,57 +41,69 @@ func TestStateTransitionAccumulation(t *testing.T) {
 		"ServiceAccounts",     // accounts in ASN.1
 	}
 
-	// Define test cases to run
-	testCases := []struct {
-		subdir   string
-		filename string
-	}{
-		// {"tiny", "accumulate_ready_queued_reports-1.json"},
-		// {"tiny", "enqueue_and_unlock_chain_wraps-1.json"},
-		{"tiny", "no_available_reports-1.json"},
-		// Add more test cases as needed
+	// Get test directory from environment variable, default to "tiny"
+	testDir := os.Getenv("JAM_TEST_VECTOR_DIR")
+	if testDir == "" {
+		testDir = "tiny"
 	}
 
 	// Run test cases with accumulation-related fields
-	runStateTransitionTest(t, testCases, accumulationFields)
+	// The path is relative to the testVectorDir in runStateTransitionTest
+	runStateTransitionTest(t, testDir, accumulationFields)
 }
 
-// runStateTransitionTest is a helper that runs state transition tests with specified test cases and fields to compare
+// runStateTransitionTest is a helper that runs state transition tests for all JSON files in a directory
 // If fieldsToCompare is empty, all fields will be compared
-func runStateTransitionTest(t *testing.T, testCases []struct {
-	subdir   string
-	filename string
-}, fieldsToCompare []string) {
+func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []string) {
 	// Base directory containing the test vectors
 	testVectorDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/accumulate"
 
-	if len(testCases) == 0 {
-		t.Fatalf("No test cases provided")
+	// Full path to the test directory
+	fullDirPath := filepath.Join(testVectorDir, testDir)
+
+	// Find all JSON files in the directory
+	files, err := filepath.Glob(filepath.Join(fullDirPath, "*.json"))
+	if err != nil {
+		t.Fatalf("Failed to read test directory %s: %v", fullDirPath, err)
 	}
 
-	for _, tc := range testCases {
-		testName := tc.subdir + "/" + tc.filename
+	if len(files) == 0 {
+		t.Fatalf("No test vectors found in %s", fullDirPath)
+	}
+
+	// Run each test file
+	for _, file := range files {
+		fileName := filepath.Base(file)
+		testName := testDir + "/" + fileName
+
 		t.Run(testName, func(t *testing.T) {
-			// Full path to the test vector
-			testVectorPath := filepath.Join(testVectorDir, tc.subdir, tc.filename)
+			t.Parallel() // Run tests in parallel
+
+			// Log when a test starts
+			t.Logf("Starting test vector: %s", testName)
 
 			// Parse the test vector using our asntypes package
-			testCase, err := asntypes.ParseTestCase(testVectorPath)
+			testCase, err := asntypes.ParseTestCase(file)
 			if err != nil {
 				t.Fatalf("Failed to parse test case: %v", err)
 			}
+			t.Logf("✅ Successfully parsed test vector %s", testName)
 
 			// Convert asntypes.State to our implementation's State
 			priorState := convertAsnStateToImplState(testCase.PreState)
+			t.Logf("✅ Converted prior state from ASN format")
 
 			// Extract posterior timeslot from input
 			reportsTimeslot := types.Timeslot(testCase.Input.Slot) // Assuming prior timeslot is one less
+			t.Logf("Processing reports for timeslot %d", reportsTimeslot)
 
 			// Add input reports to pending reports in prior state (for dispute testing)
 			// This simulates reports that were submitted in a previous block
+			reportCount := 0
 			for _, asnReport := range testCase.Input.Reports {
 				report := convertAsnReportToImplReport(asnReport)
 				coreIndex := int(report.CoreIndex)
+				reportCount++
 
 				// Only add if there's not already a pending report for this core
 				if priorState.PendingReports[coreIndex] == nil {
@@ -100,24 +113,33 @@ func runStateTransitionTest(t *testing.T, testCases []struct {
 					}
 				}
 			}
+			t.Logf("✅ Added %d reports to pending reports", reportCount)
 
 			// Build a mock Block with the necessary components
-			mockBlock := buildMockBlockFromTestVector(testCase, types.Timeslot(testCase.Input.Slot))
+			mockBlock := buildMockBlockFromTestVector(types.Timeslot(testCase.Input.Slot))
+			t.Logf("✅ Created mock block for timeslot %d", mockBlock.Header.TimeSlot)
 
 			// Run the full state transition function
+			t.Logf("Running state transition function...")
 			actualState := StateTransitionFunction(priorState, mockBlock)
+			t.Logf("✅ State transition completed")
 
 			// Convert the expected post-state from asntypes.State to our implementation's State
 			expectedState := convertAsnStateToImplState(testCase.PostState)
+			t.Logf("✅ Converted expected post-state from ASN format")
 
 			// Compare the expected and actual states based on provided fields
+			t.Logf("Comparing states based on %d fields...", len(fieldsToCompare))
 			compareStatesSelective(t, expectedState, actualState, fieldsToCompare)
+
+			// If we got here without failing, the test passed!
+			t.Logf("✅ TEST PASSED: %s", testName)
 		})
 	}
 }
 
 // buildMockBlockFromTestVector creates a mock Block from a test vector
-func buildMockBlockFromTestVector(testCase *asntypes.TestCase, posteriorTimeslot types.Timeslot) block.Block {
+func buildMockBlockFromTestVector(posteriorTimeslot types.Timeslot) block.Block {
 	// Create a minimal valid header
 	mockHeader := header.Header{
 		TimeSlot:       posteriorTimeslot,

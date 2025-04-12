@@ -2,18 +2,26 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "generate-prod-constants",
+            "label": "select-constants-generator",
             "type": "shell",
-            "command": "cd ${workspaceFolder}/go/constants && go generate",
-            "group": "build",
+            "command": "if [ \"${input:testSize}\" = \"tiny\" ]; then echo \"Using tiny test vectors with test constants\" && cd ${workspaceFolder}/go/constants && JAM_USE_TEST_CONSTANTS=true go run constants_gen.go; else echo \"Using full test vectors with production constants\" && cd ${workspaceFolder}/go/constants && go run constants_gen.go; fi",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
             "problemMatcher": []
-        },
+        }
+    ],
+    "inputs": [
         {
-            "label": "generate-test-constants",
-            "type": "shell",
-            "command": "cd ${workspaceFolder}/go/constants && JAM_USE_TEST_CONSTANTS=true go generate",
-            "group": "build",
-            "problemMatcher": []
+            "id": "testSize",
+            "type": "pickString",
+            "description": "Choose test size (tiny=test constants, full=prod constants)",
+            "options": [
+                "tiny",
+                "full"
+            ],
+            "default": "tiny"
         }
     ]
 }
