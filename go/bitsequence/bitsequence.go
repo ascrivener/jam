@@ -43,6 +43,40 @@ func FromBytes(b []byte) *BitSequence {
 	return bs
 }
 
+// FromBytesLSBWithLength creates a new BitSequence with a specific bit length,
+// reading bits from least significant (bit 0) to most significant (bit 7) within each byte.
+// It verifies that the provided byte slice is the correct size for the requested bit length,
+// and that all bits beyond the specified length are zeros.
+func FromBytesLSBWithLength(b []byte, bitLen int) (*BitSequence, error) {
+	requiredBytes := (bitLen + 7) / 8 // Ceiling division to determine required bytes
+	if len(b) != requiredBytes {
+		return nil, fmt.Errorf("bit length %d requires exactly %d bytes, got %d", bitLen, requiredBytes, len(b))
+	}
+
+	// Check that all bits beyond the bitLen are zeros (if there are any partial bytes)
+	if remainingBits := bitLen % 8; remainingBits > 0 {
+		lastByte := b[len(b)-1]
+		// Create a mask for the unused bits in the last byte (the higher bits)
+		// For example, if remainingBits=3, mask would be 11111000 (binary)
+		mask := byte(0xFF << remainingBits)
+		if (lastByte & mask) != 0 {
+			return nil, fmt.Errorf("invalid bit sequence: bits beyond position %d must be zeros", bitLen-1)
+		}
+	}
+
+	bs := New()
+
+	// Process all bits at once rather than splitting full bytes and remaining
+	for i := 0; i < bitLen; i++ {
+		byteIndex := i / 8
+		bitPosition := i % 8
+		bit := ((b[byteIndex] >> uint(bitPosition)) & 1) == 1
+		bs.AppendBit(bit)
+	}
+
+	return bs, nil
+}
+
 // AppendBit appends a single bit (true for 1, false for 0) to the sequence.
 func (bs *BitSequence) AppendBit(bit bool) {
 	// If we're at a byte boundary, add a new byte.
@@ -134,6 +168,35 @@ func (bs *BitSequence) SetBitAt(i int, value bool) {
 // Note that the final byte may have unused bits (in the least-significant positions).
 func (bs *BitSequence) Bytes() []byte {
 	return bs.buf
+}
+
+// ToBytesLSB returns a []byte with the bits of the sequence packed in LSB-first order within each byte.
+// This is the opposite of the internal representation (which is MSB-first) and matches
+// the bit sequence encoding specified in C.1.5.
+func (bs *BitSequence) ToBytesLSB() []byte {
+	numBytes := (bs.bitLen + 7) / 8
+	result := make([]byte, numBytes)
+
+	for byteIndex := 0; byteIndex < numBytes; byteIndex++ {
+		// For each byte in the result
+		resultByte := byte(0)
+		for bitIndex := 0; bitIndex < 8; bitIndex++ {
+			// Calculate the absolute bit position in the sequence
+			absoluteBitPos := byteIndex*8 + bitIndex
+			if absoluteBitPos >= bs.bitLen {
+				break // Don't go beyond the length of the bit sequence
+			}
+
+			// If the bit is set in the original BitSequence
+			if bs.BitAt(absoluteBitPos) {
+				// Set the corresponding bit in LSB-first order
+				resultByte |= (1 << uint(bitIndex))
+			}
+		}
+		result[byteIndex] = resultByte
+	}
+
+	return result
 }
 
 // Len returns the total number of bits in the sequence.

@@ -153,17 +153,14 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 		offset += int(z)
 	}
 
-	// 5. The next L_c bytes are c.
-	// 6. The following ceiling(L_c/8) bytes are for k, so that number of bits in k = L_c
-	kByteSize := (int(L_c) + 7) / 8 // Ceiling division to account for partial bytes
-	if offset+int(L_c)+kByteSize != len(p) {
+	c = p[offset : offset+int(L_c)]
+	offset += int(L_c)
+	// Construct k from kBuf using LSB-first ordering with exact bit length matching L_c
+	bitSeq, err := bitsequence.FromBytesLSBWithLength(p[offset:], int(L_c))
+	if err != nil {
 		return nil, k, nil, false
 	}
-	c = p[offset : offset+int(L_c)]
-	kBuf := p[offset+int(L_c) : offset+int(L_c)+kByteSize]
-
-	// Construct k from kBuf
-	k = *bitsequence.FromBytes(kBuf)
+	k = *bitSeq
 
 	return c, k, jArr, true
 }

@@ -37,8 +37,10 @@ func (pvm *PVM) SingleStep() ExitReason {
 		SkipLength:  skip(pvm.InstructionCounter, pvm.Opcodes),
 	}
 
+	exitReason := NewSimpleExitReason(ExitGo)
+
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
-		handler(pvm, &ctx)
+		exitReason = handler(pvm, &ctx)
 	} else {
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
@@ -56,7 +58,7 @@ func (pvm *PVM) SingleStep() ExitReason {
 			return NewComplexExitReason(ExitPageFault, Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
 		}
 	}
-	return NewSimpleExitReason(ExitGo)
+	return exitReason
 }
 
 func getInstruction(instructions []byte, instructionCounter Register) byte {

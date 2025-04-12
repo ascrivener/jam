@@ -58,7 +58,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 			return
 		case reflect.TypeOf(bitsequence.BitSequence{}):
 			bs := v.Interface().(bitsequence.BitSequence)
-			buf.Write(bs.Bytes())
+			buf.Write(bs.ToBytesLSB())
 			return
 		default:
 			// For other structs, iterate over all fields.
