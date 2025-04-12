@@ -77,7 +77,7 @@ func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []stri
 		testName := testDir + "/" + fileName
 
 		t.Run(testName, func(t *testing.T) {
-			t.Parallel() // Run tests in parallel
+			// t.Parallel() // Run tests in parallel
 
 			// Log when a test starts
 			t.Logf("Starting test vector: %s", testName)
@@ -210,7 +210,7 @@ func makeMockAssurances() extrinsics.Assurances {
 }
 
 // hexToHash converts a hex string (with or without 0x prefix) to a [32]byte array
-func hexToHash(hexStr string) ([32]byte, error) {
+func hexToHash(hexStr string) [32]byte {
 	var hash [32]byte
 
 	// Remove 0x prefix if present
@@ -220,25 +220,25 @@ func hexToHash(hexStr string) ([32]byte, error) {
 
 	// Handle empty string case
 	if hexStr == "" {
-		return hash, nil
+		return hash
 	}
 
 	decoded, err := hex.DecodeString(hexStr)
 	if err != nil {
-		return hash, fmt.Errorf("failed to decode hex string: %v", err)
+		panic(fmt.Errorf("failed to decode hex string: %v", err))
 	}
 
 	// Ensure correct length
 	if len(decoded) != 32 {
-		return hash, fmt.Errorf("expected 32 bytes, got %d", len(decoded))
+		panic(fmt.Errorf("expected 32 bytes, got %d", len(decoded)))
 	}
 
 	copy(hash[:], decoded)
-	return hash, nil
+	return hash
 }
 
 // hexToBytes converts a hex string (with or without 0x prefix) to a byte slice
-func hexToBytes(hexStr string) ([]byte, error) {
+func hexToBytes(hexStr string) []byte {
 	// Remove 0x prefix if present
 	if len(hexStr) >= 2 && hexStr[0:2] == "0x" {
 		hexStr = hexStr[2:]
@@ -246,15 +246,15 @@ func hexToBytes(hexStr string) ([]byte, error) {
 
 	// Handle empty string case
 	if hexStr == "" {
-		return []byte{}, nil
+		return []byte{}
 	}
 
 	decoded, err := hex.DecodeString(hexStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode hex string: %v", err)
+		panic(fmt.Errorf("failed to decode hex string: %v", err))
 	}
 
-	return decoded, nil
+	return decoded
 }
 
 // createEmptyState creates a fully initialized State with proper zero values and non-nil fields
@@ -301,7 +301,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 	state.MostRecentBlockTimeslot = types.Timeslot(asnState.Slot)
 
 	// Set entropy from ASN state
-	entropyHash, _ := hexToHash(string(asnState.Entropy))
+	entropyHash := hexToHash(string(asnState.Entropy))
 	state.EntropyAccumulator[0] = entropyHash
 
 	// Convert ready queue
@@ -314,7 +314,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 		for _, readyRecord := range queueItem {
 			workPackageHashes := make(map[[32]byte]struct{})
 			for _, dep := range readyRecord.Dependencies {
-				hash, _ := hexToHash(string(dep))
+				hash := hexToHash(string(dep))
 				workPackageHashes[hash] = struct{}{}
 			}
 
@@ -334,7 +334,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 
 		workPackageHashes := make(map[[32]byte]struct{})
 		for _, hashStr := range accItem {
-			hash, _ := hexToHash(string(hashStr))
+			hash := hexToHash(string(hashStr))
 			workPackageHashes[hash] = struct{}{}
 		}
 		state.AccumulationHistory[idx] = workPackageHashes
@@ -352,13 +352,14 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 		}
 
 		// Set code hash
-		codeHash, _ := hexToHash(string(account.Data.Service.CodeHash))
+		codeHash := hexToHash(string(account.Data.Service.CodeHash))
 		serviceAccount.CodeHash = codeHash
 
 		// Add preimages
 		for _, preimage := range account.Data.Preimages {
-			hashArray, _ := hexToHash(string(preimage.Hash))
-			serviceAccount.PreimageLookup[hashArray] = []byte(preimage.Blob)
+			hashArray := hexToHash(string(preimage.Hash))
+			// Properly decode hex string to binary
+			serviceAccount.PreimageLookup[hashArray] = hexToBytes(string(preimage.Blob))
 		}
 
 		// Add the service account to the state
@@ -377,8 +378,8 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 
 	// Convert results
 	for _, result := range asnReport.Results {
-		codeHash, _ := hexToHash(string(result.CodeHash))
-		payloadHash, _ := hexToHash(string(result.PayloadHash))
+		codeHash := hexToHash(string(result.CodeHash))
+		payloadHash := hexToHash(string(result.PayloadHash))
 
 		workResult := workreport.WorkResult{
 			ServiceIndex:           types.ServiceIndex(result.ServiceId),
@@ -388,17 +389,17 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 		}
 
 		if result.Result.OK != nil {
-			// If OK is present, convert to blob
-			workResult.WorkOutput = types.NewExecutionExitReasonBlob([]byte(*result.Result.OK))
+			// If OK is present, convert hex string to binary
+			workResult.WorkOutput = types.NewExecutionExitReasonBlob(hexToBytes(string(*result.Result.OK)))
 		}
 
 		report.WorkResults = append(report.WorkResults, workResult)
 	}
 
 	// Set package spec
-	packageSpecHash, _ := hexToHash(string(asnReport.PackageSpec.Hash))
-	erasureRoot, _ := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
-	exportsRoot, _ := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
+	packageSpecHash := hexToHash(string(asnReport.PackageSpec.Hash))
+	erasureRoot := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
+	exportsRoot := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
 
 	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
 		WorkPackageHash:  packageSpecHash,                                // h
@@ -409,15 +410,15 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	}
 
 	// Set refinement context
-	anchorHash, _ := hexToHash(string(asnReport.Context.Anchor))
-	stateRoot, _ := hexToHash(string(asnReport.Context.StateRoot))
-	beefyRoot, _ := hexToHash(string(asnReport.Context.BeefyRoot))
-	lookupAnchor, _ := hexToHash(string(asnReport.Context.LookupAnchor))
+	anchorHash := hexToHash(string(asnReport.Context.Anchor))
+	stateRoot := hexToHash(string(asnReport.Context.StateRoot))
+	beefyRoot := hexToHash(string(asnReport.Context.BeefyRoot))
+	lookupAnchor := hexToHash(string(asnReport.Context.LookupAnchor))
 
 	// Convert prerequisites to map of [32]byte
 	prereqMap := make(map[[32]byte]struct{})
 	for _, prereq := range asnReport.Context.Prerequisites {
-		hash, _ := hexToHash(string(prereq))
+		hash := hexToHash(string(prereq))
 		prereqMap[hash] = struct{}{}
 	}
 
@@ -431,12 +432,12 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	}
 
 	// Set AuthorizerHash (a)
-	authorizerHash, _ := hexToHash(string(asnReport.AuthorizerHash))
+	authorizerHash := hexToHash(string(asnReport.AuthorizerHash))
 	report.AuthorizerHash = authorizerHash
 
 	// Set Output (o) - properly decode the hex string ByteSequence to bytes
 	if asnReport.AuthOutput != "" {
-		output, _ := hexToBytes(string(asnReport.AuthOutput))
+		output := hexToBytes(string(asnReport.AuthOutput))
 		report.Output = output
 	} else {
 		report.Output = []byte{}
@@ -445,8 +446,8 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	// Set SegmentRootLookup (l)
 	report.SegmentRootLookup = make(map[[32]byte][32]byte)
 	for _, item := range asnReport.SegmentRootLookup {
-		key, _ := hexToHash(string(item.WorkPackageHash))
-		val, _ := hexToHash(string(item.SegmentTreeRoot))
+		key := hexToHash(string(item.WorkPackageHash))
+		val := hexToHash(string(item.SegmentTreeRoot))
 		report.SegmentRootLookup[key] = val
 	}
 

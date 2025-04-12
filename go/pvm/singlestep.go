@@ -116,22 +116,23 @@ func signExtendImmediate(n int, x uint64) Register {
 	return Register(x + sign*offset)
 }
 
-func branch(b Register, C bool, instructionCounter Register, basicBlockBeginningOpcodes bitsequence.BitSequence) (ExitReason, Register) {
+func branch(b Register, C bool, instructionCounter Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, Register) {
 	if !C {
 		return NewSimpleExitReason(ExitGo), instructionCounter
 	}
-	if !basicBlockBeginningOpcodes.BitAt(int(b)) {
+	if _, exists := basicBlockBeginningOpcodes[int(b)]; !exists {
 		return NewSimpleExitReason(ExitPanic), instructionCounter
 	}
 	return NewSimpleExitReason(ExitGo), b
 }
 
-func djump(a uint32, instructionCounter Register, dynamicJumpTable []Register, basicBlockBeginningOpcodes bitsequence.BitSequence) (ExitReason, Register) {
+func djump(a uint32, instructionCounter Register, dynamicJumpTable []Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, Register) {
 	if a == (1<<32)-(1<<16) { // ??
 		return NewSimpleExitReason(ExitHalt), instructionCounter
 	}
 	nextInstructionCounter := dynamicJumpTable[a/DynamicAddressAlignmentFactor-1]
-	if a == 0 || a > uint32(len(dynamicJumpTable)*DynamicAddressAlignmentFactor) || a%DynamicAddressAlignmentFactor != 0 || !basicBlockBeginningOpcodes.BitAt(int(nextInstructionCounter)) {
+	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
+	if a == 0 || a > uint32(len(dynamicJumpTable)*DynamicAddressAlignmentFactor) || a%DynamicAddressAlignmentFactor != 0 || !exists {
 		return NewSimpleExitReason(ExitPanic), instructionCounter
 	}
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter

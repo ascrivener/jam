@@ -10,7 +10,7 @@ import (
 type PVM struct {
 	Instructions               []byte
 	Opcodes                    bitsequence.BitSequence
-	BasicBlockBeginningOpcodes bitsequence.BitSequence // Precomputed basic block beginning opcodes.
+	BasicBlockBeginningOpcodes map[int]struct{} // Precomputed basic block beginning opcodes.
 	DynamicJumpTable           []Register
 	InstructionCounter         Register
 	State                      *State
@@ -21,19 +21,16 @@ func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructio
 	if !ok {
 		return nil
 	}
-	basicBlockBeginningOpcodes := bitsequence.New()
-	bits := make([]bool, len(instructions))
-	basicBlockBeginningOpcodes.AppendBits(bits)
-	basicBlockBeginningOpcodes.SetBitAt(0, true)
+	basicBlockBeginningOpcodes := map[int]struct{}{0: {}} // Start with index 0 as it's always a basic block beginning
 	for n, instruction := range instructions {
 		if opcodes.BitAt(n) && terminationOpcodes[instruction] {
-			basicBlockBeginningOpcodes.SetBitAt(n+1+skip(Register(n), opcodes), true)
+			basicBlockBeginningOpcodes[n+1+skip(Register(n), opcodes)] = struct{}{}
 		}
 	}
 	return &PVM{
 		Instructions:               instructions,
 		Opcodes:                    opcodes,
-		BasicBlockBeginningOpcodes: *basicBlockBeginningOpcodes,
+		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes,
 		DynamicJumpTable:           dynamicJumpTable,
 		InstructionCounter:         instructionCounter,
 		State: &State{
@@ -157,12 +154,13 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	}
 
 	// 5. The next L_c bytes are c.
-	// 6. The following L_c/8 bytes are for k, so that number of bits in k = L_c
-	if offset+int(L_c)+int(L_c)/8 != len(p) {
+	// 6. The following ceiling(L_c/8) bytes are for k, so that number of bits in k = L_c
+	kByteSize := (int(L_c) + 7) / 8 // Ceiling division to account for partial bytes
+	if offset+int(L_c)+kByteSize != len(p) {
 		return nil, k, nil, false
 	}
 	c = p[offset : offset+int(L_c)]
-	kBuf := p[offset+int(L_c) : offset+int(L_c)+int(L_c)/8]
+	kBuf := p[offset+int(L_c) : offset+int(L_c)+kByteSize]
 
 	// Construct k from kBuf
 	k = *bitsequence.FromBytes(kBuf)

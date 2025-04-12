@@ -40,23 +40,16 @@ type BEEFYCommitment struct {
 }
 
 func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (types.GasValue, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}) {
-	// Calculate total work results across all reports
-	totalWorkResults := 0
-	for _, report := range workReports {
-		totalWorkResults += len(report.WorkResults)
-	}
-
-	// Collect all service indices to process, including the privileged ones
-	// Allocate capacity for: all free accumulation services + all work results + 3 privileged services
-	serviceIndices := make([]types.ServiceIndex, 0, len(freeAccumulationServices)+totalWorkResults+3)
+	// Use a map to collect unique service indices to process
+	serviceIndicesMap := make(map[types.ServiceIndex]struct{})
 
 	// Add regular service indices
 	for idx := range freeAccumulationServices {
-		serviceIndices = append(serviceIndices, idx)
+		serviceIndicesMap[idx] = struct{}{}
 	}
 	for _, report := range workReports {
 		for _, workResult := range report.WorkResults {
-			serviceIndices = append(serviceIndices, workResult.ServiceIndex)
+			serviceIndicesMap[workResult.ServiceIndex] = struct{}{}
 		}
 	}
 
@@ -65,7 +58,15 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	designateServiceIndex := accumulationStateComponents.PrivilegedServices.DesignateServiceIndex
 	assignServiceIndex := accumulationStateComponents.PrivilegedServices.AssignServiceIndex
 
-	serviceIndices = append(serviceIndices, managerServiceIndex, designateServiceIndex, assignServiceIndex)
+	serviceIndicesMap[managerServiceIndex] = struct{}{}
+	serviceIndicesMap[designateServiceIndex] = struct{}{}
+	serviceIndicesMap[assignServiceIndex] = struct{}{}
+
+	// Convert map keys to a slice for deterministic processing order
+	serviceIndices := make([]types.ServiceIndex, 0, len(serviceIndicesMap))
+	for idx := range serviceIndicesMap {
+		serviceIndices = append(serviceIndices, idx)
+	}
 
 	// Sort service indices for deterministic processing order
 	sort.Slice(serviceIndices, func(i, j int) bool {
