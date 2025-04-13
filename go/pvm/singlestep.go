@@ -90,12 +90,17 @@ func skip(instructionCounter Register, opcodes bitsequence.BitSequence) int {
 }
 
 func signExtendImmediate(n int, x uint64) Register {
+	// Special case for n=0: no sign extension needed
+	if n == 0 {
+		return Register(x)
+	}
+
 	// Check that n is one of the allowed sizes.
 	switch n {
 	case 1, 2, 3, 4, 8:
 		// ok
 	default:
-		log.Fatalf("signExtendImmediate: invalid byte length %d (must be 1,2,3,4, or 8)", n)
+		log.Fatalf("signExtendImmediate: invalid byte length %d (must be 0,1,2,3,4, or 8)", n)
 	}
 
 	// Compute the bit position of the sign bit: 8*n - 1.

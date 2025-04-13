@@ -265,7 +265,21 @@ func UnsignedToSigned(octets int, x uint64) int64 {
 	if totalBits > 64 {
 		panic(fmt.Sprintf("Unsupported octet width: %d (max 8 allowed)", octets))
 	}
+
 	signBit := uint64(1) << uint(totalBits-1)
+
+	// Special case for octets = 8 (64 bits)
+	if octets == 8 {
+		// For 64-bit integers, if the sign bit is set, we need to interpret as negative
+		if x >= signBit {
+			// This is equivalent to x - 2^64, but we need to be careful with the arithmetic
+			// to avoid overflow. Since int64(x) already gives us the correct bit pattern
+			// interpreted as signed, we can just return it directly.
+			return int64(x)
+		}
+		return int64(x)
+	}
+
 	modVal := uint64(1) << uint(totalBits)
 	if x < signBit {
 		return int64(x)
@@ -277,6 +291,13 @@ func UnsignedToSigned(octets int, x uint64) int64 {
 // [ -2^(8*l-1), 2^(8*l-1) - 1 ], into its unsigned natural representation
 // in [0, 2^(8*l)).
 func SignedToUnsigned(octets int, a int64) uint64 {
+	// Special case for octets = 8 (64 bits)
+	if octets == 8 {
+		// For 64-bit values, we don't need modular arithmetic
+		// because uint64(a) already gives the correct bit pattern
+		return uint64(a)
+	}
+
 	totalBits := 8 * octets
 	modVal := uint64(1) << uint(totalBits)
 	// Adjust a so that negative values wrap around properly.
