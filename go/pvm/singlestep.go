@@ -32,22 +32,30 @@ func (pvm *PVM) SingleStep() ExitReason {
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 	priorIC := pvm.InstructionCounter
 
+	log.Printf("SingleStep: IC=%d, instructions length=%d", pvm.InstructionCounter, len(pvm.Instructions))
+
 	ctx := InstructionContext{
 		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
 		SkipLength:  skip(pvm.InstructionCounter, pvm.Opcodes),
 	}
 
-	exitReason := NewSimpleExitReason(ExitGo)
+	log.Printf("SingleStep: Fetched instruction=%d, skipLength=%d", ctx.Instruction, ctx.SkipLength)
+
+	var exitReason ExitReason
 
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
+		log.Printf("SingleStep: Executing instruction handler for opcode=%d", ctx.Instruction)
 		exitReason = handler(pvm, &ctx)
+		log.Printf("SingleStep: Handler completed, new IC=%d, exit reason=%v", pvm.InstructionCounter, exitReason)
 	} else {
+		log.Printf("SingleStep: No handler found for instruction=%d", ctx.Instruction)
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
 
 	// default instruction counter increment
 	if priorIC == pvm.InstructionCounter {
 		pvm.InstructionCounter += 1 + Register(ctx.SkipLength)
+		log.Printf("SingleStep: Default IC increment applied, new IC=%d", pvm.InstructionCounter)
 	}
 
 	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())
@@ -63,9 +71,13 @@ func (pvm *PVM) SingleStep() ExitReason {
 
 func getInstruction(instructions []byte, instructionCounter Register) byte {
 	if instructionCounter >= Register(len(instructions)) {
+		log.Printf("getInstruction: IC=%d is beyond instructions length=%d, returning trap (0)",
+			instructionCounter, len(instructions))
 		return 0
 	}
-	return instructions[instructionCounter]
+	instr := instructions[instructionCounter]
+	log.Printf("getInstruction: IC=%d, instruction=%d", instructionCounter, instr)
+	return instr
 }
 
 func getInstructionRange(instructions []byte, instructionCounter Register, count int) []byte {

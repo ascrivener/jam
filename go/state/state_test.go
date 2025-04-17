@@ -52,6 +52,119 @@ func TestStateTransitionAccumulation(t *testing.T) {
 	runStateTransitionTest(t, testDir, accumulationFields)
 }
 
+func TestStateTransitionAssurances(t *testing.T) {
+	// List of fields relevant to accumulation based on ASN.1 definition:
+	// State ::= SEQUENCE {
+	//    slot TimeSlot,               -> MostRecentBlockTimeslot
+	//    entropy Entropy,             -> EntropyAccumulator
+	//    ready-queue ReadyQueue,      -> AccumulationQueue
+	//    accumulated AccumulatedQueue,-> AccumulationHistory
+	//    privileges Privileges,       -> PrivilegedServices
+	//    accounts SEQUENCE OF AccountsMapEntry -> ServiceAccounts
+	// }
+	fields := []string{
+		"PendingReports",         // slot in ASN.1
+		"ValidatorKeysetsActive", // ready-queue in ASN.1
+	}
+
+	// Get test directory from environment variable, default to "tiny"
+	testDir := os.Getenv("JAM_TEST_VECTOR_DIR")
+	if testDir == "" {
+		testDir = "tiny"
+	}
+
+	// Run test cases with accumulation-related fields
+	// The path is relative to the testVectorDir in runStateTransitionTest
+	runStateTransitionTestAssurances(t, testDir, fields)
+}
+
+// runStateTransitionTestAssurances is a helper that runs state transition tests for all JSON files in a directory
+// If fieldsToCompare is empty, all fields will be compared
+func runStateTransitionTestAssurances(t *testing.T, testDir string, fieldsToCompare []string) {
+	// Base directory containing the test vectors
+	testVectorDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/assurances"
+
+	// Full path to the test directory
+	fullDirPath := filepath.Join(testVectorDir, testDir)
+
+	// Find all JSON files in the directory
+	files, err := filepath.Glob(filepath.Join(fullDirPath, "*.json"))
+	if err != nil {
+		t.Fatalf("Failed to read test directory %s: %v", fullDirPath, err)
+	}
+
+	if len(files) == 0 {
+		t.Fatalf("No test vectors found in %s", fullDirPath)
+	}
+
+	// Run each test file
+	for _, file := range files {
+		fileName := filepath.Base(file)
+		testName := testDir + "/" + fileName
+
+		t.Run(testName, func(t *testing.T) {
+			// t.Parallel() // Run tests in parallel
+
+			// Log when a test starts
+			t.Logf("Starting test vector: %s", testName)
+
+			// Parse the test vector using our asntypes package
+			testCase, err := asntypes.ParseAssurancesTestCase(file)
+			if err != nil {
+				t.Fatalf("Failed to parse test case: %v", err)
+			}
+			t.Logf("✅ Successfully parsed test vector %s", testName)
+
+			// Convert asntypes.State to our implementation's State
+			priorState := convertAsnStateToImplState(testCase.PreState)
+			t.Logf("✅ Converted prior state from ASN format")
+
+			// Extract data from AssurancesInput
+			slot := types.Timeslot(testCase.Input.Slot)
+			parentHash := hexToHash(string(testCase.Input.Parent))
+
+			// Extract assurances extrinsic data
+			assurancesEx := testCase.Input.Assurances
+
+			// Get attestation parent from the first assurance's anchor if available
+			var attestationParent [32]byte
+			if len(assurancesEx) > 0 {
+				attestationParent = hexToHash(string(assurancesEx[0].Anchor))
+			}
+
+			// Convert assurers to implementation format
+			var assurers []Assurer
+			for _, asnAssurer := range assurancesEx {
+				signature := convertSignatureString(string(asnAssurer.Signature))
+				assurers = append(assurers, Assurer{
+					Index:     uint32(asnAssurer.ValidatorIndex),
+					Signature: signature,
+				})
+			}
+
+			// Build a mock Block with the necessary components from the test vector
+			mockBlock := buildMockBlockWithAssurances(slot, parentHash, attestationParent, assurers)
+			t.Logf("✅ Created mock block for timeslot %d", mockBlock.Header.TimeSlot)
+
+			// Run the full state transition function
+			t.Logf("Running state transition function...")
+			actualState := StateTransitionFunction(priorState, mockBlock)
+			t.Logf("✅ State transition completed")
+
+			// Convert the expected post-state from asntypes.State to our implementation's State
+			expectedState := convertAsnStateToImplState(testCase.PostState)
+			t.Logf("✅ Converted expected post-state from ASN format")
+
+			// Compare the expected and actual states based on provided fields
+			t.Logf("Comparing states based on %d fields...", len(fieldsToCompare))
+			compareStatesSelective(t, expectedState, actualState, fieldsToCompare)
+
+			// If we got here without failing, the test passed!
+			t.Logf("✅ TEST PASSED: %s", testName)
+		})
+	}
+}
+
 // runStateTransitionTest is a helper that runs state transition tests for all JSON files in a directory
 // If fieldsToCompare is empty, all fields will be compared
 func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []string) {
@@ -138,6 +251,32 @@ func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []stri
 	}
 }
 
+// Assurer represents a validator providing assurance
+type Assurer struct {
+	Index     uint32
+	Signature [64]byte
+}
+
+// buildMockBlockWithAssurances creates a mock Block with assurances extrinsic
+func buildMockBlockWithAssurances(slot types.Timeslot, parentHash [32]byte, attestationParent [32]byte, assurers []Assurer) block.Block {
+	// Create a minimal valid header
+	mockHeader := header.Header{
+		TimeSlot:       slot,
+		PriorStateRoot: parentHash, // Set parent hash
+		// Add other required fields with default/empty values
+	}
+
+	// Create the block
+	mockBlock := block.Block{
+		Header: mockHeader,
+		Extrinsics: extrinsics.Extrinsics{
+			Assurances: buildAssurances(attestationParent, assurers),
+		},
+	}
+
+	return mockBlock
+}
+
 // buildMockBlockFromTestVector creates a mock Block from a test vector
 func buildMockBlockFromTestVector(posteriorTimeslot types.Timeslot) block.Block {
 	// Create a minimal valid header
@@ -209,6 +348,30 @@ func makeMockAssurances() extrinsics.Assurances {
 	return assurances
 }
 
+// buildAssurances creates an Assurances object from attestation parent and assurers
+func buildAssurances(attestationParent [32]byte, assurers []Assurer) extrinsics.Assurances {
+	assurances := make(extrinsics.Assurances, 0, len(assurers))
+
+	// Create a default bit sequence with all cores available
+	defaultBitSequence := bitsequence.NewZeros(constants.NumCores)
+	for i := 0; i < constants.NumCores; i++ {
+		defaultBitSequence.SetBitAt(i, true)
+	}
+
+	// Create an assurance for each assurer
+	for _, assurer := range assurers {
+		assurance := extrinsics.Assurance{
+			ParentHash:                    attestationParent,
+			CoreAvailabilityContributions: *defaultBitSequence,
+			ValidatorIndex:                types.ValidatorIndex(assurer.Index),
+			Signature:                     assurer.Signature,
+		}
+		assurances = append(assurances, assurance)
+	}
+
+	return assurances
+}
+
 // hexToHash converts a hex string (with or without 0x prefix) to a [32]byte array
 func hexToHash(hexStr string) [32]byte {
 	var hash [32]byte
@@ -239,22 +402,35 @@ func hexToHash(hexStr string) [32]byte {
 
 // hexToBytes converts a hex string (with or without 0x prefix) to a byte slice
 func hexToBytes(hexStr string) []byte {
-	// Remove 0x prefix if present
+	// Remove 0x prefix if it exists
 	if len(hexStr) >= 2 && hexStr[0:2] == "0x" {
 		hexStr = hexStr[2:]
 	}
-
-	// Handle empty string case
-	if hexStr == "" {
-		return []byte{}
+	// Add leading zero if odd length
+	if len(hexStr)%2 != 0 {
+		hexStr = "0" + hexStr
 	}
 
-	decoded, err := hex.DecodeString(hexStr)
+	bytes, err := hex.DecodeString(hexStr)
 	if err != nil {
-		panic(fmt.Errorf("failed to decode hex string: %v", err))
+		panic(fmt.Sprintf("Failed to decode hex string: %s", hexStr))
 	}
 
-	return decoded
+	return bytes
+}
+
+// convertSignatureString converts a hex string signature to a [64]byte array
+func convertSignatureString(hexStr string) [64]byte {
+	bytes := hexToBytes(hexStr)
+
+	// Ensure we have exactly 64 bytes
+	if len(bytes) != 64 {
+		panic(fmt.Sprintf("Invalid signature length. Expected 64 bytes, got %d bytes from string: %s", len(bytes), hexStr))
+	}
+
+	var signature [64]byte
+	copy(signature[:], bytes)
+	return signature
 }
 
 // createEmptyState creates a fully initialized State with proper zero values and non-nil fields
