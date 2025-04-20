@@ -1,7 +1,12 @@
 package asntypes
 
 // AvailabilityAssignments represents assignments for availability
-type AvailabilityAssignments []WorkReport
+type AvailabilityAssignments []*AssignmentEntry
+
+type AssignmentEntry struct {
+	WorkReport WorkReport `json:"report" asn1:"tag:0"`
+	Timeout    TimeSlot   `json:"timeout" asn1:"tag:1"`
+}
 
 // AssurancesInput represents the input for assurances test vectors
 type AssurancesInput struct {
@@ -43,10 +48,15 @@ type AssurancesOutput struct {
 	Err string                `json:"err,omitempty" asn1:"tag:1,optional"`
 }
 
+type AssurancesState struct {
+	AvailAssignments AvailabilityAssignments `json:"avail_assignments" asn1:"tag:0"`
+	CurrValidators   ValidatorsData          `json:"curr_validators" asn1:"tag:1"`
+}
+
 // AssurancesTestCase represents a complete test case for assurances
 type AssurancesTestCase struct {
 	Input     AssurancesInput  `json:"input" asn1:"tag:0"`
-	PreState  State            `json:"pre_state" asn1:"tag:1"`
+	PreState  AssurancesState  `json:"pre_state" asn1:"tag:1"`
 	Output    AssurancesOutput `json:"output" asn1:"tag:2"`
-	PostState State            `json:"post_state" asn1:"tag:3"`
+	PostState AssurancesState  `json:"post_state" asn1:"tag:3"`
 }

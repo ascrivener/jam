@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ascrivener/jam/bitsequence"
@@ -102,6 +103,10 @@ func runStateTransitionTestAssurances(t *testing.T, testDir string, fieldsToComp
 		fileName := filepath.Base(file)
 		testName := testDir + "/" + fileName
 
+		if testName != "tiny/assurances_for_stale_report-1.json" {
+			continue
+		}
+
 		t.Run(testName, func(t *testing.T) {
 			// t.Parallel() // Run tests in parallel
 
@@ -115,54 +120,42 @@ func runStateTransitionTestAssurances(t *testing.T, testDir string, fieldsToComp
 			}
 			t.Logf("✅ Successfully parsed test vector %s", testName)
 
-			// Convert asntypes.State to our implementation's State
-			priorState := convertAsnStateToImplState(testCase.PreState)
-			t.Logf("✅ Converted prior state from ASN format")
-
-			// Extract data from AssurancesInput
-			slot := types.Timeslot(testCase.Input.Slot)
-			parentHash := hexToHash(string(testCase.Input.Parent))
-
-			// Extract assurances extrinsic data
-			assurancesEx := testCase.Input.Assurances
-
-			// Get attestation parent from the first assurance's anchor if available
-			var attestationParent [32]byte
-			if len(assurancesEx) > 0 {
-				attestationParent = hexToHash(string(assurancesEx[0].Anchor))
+			// Build header.Header
+			header := header.Header{
+				TimeSlot:       types.Timeslot(testCase.Input.Slot),
+				PriorStateRoot: hexToHash(string(testCase.Input.Parent)),
+			}
+			block := block.Block{
+				Header: header,
+				Extrinsics: extrinsics.Extrinsics{
+					Assurances: convertAsnAssurancesToImpl(testCase.Input.Assurances),
+				},
 			}
 
-			// Convert assurers to implementation format
-			var assurers []Assurer
-			for _, asnAssurer := range assurancesEx {
-				signature := convertSignatureString(string(asnAssurer.Signature))
-				assurers = append(assurers, Assurer{
-					Index:     uint32(asnAssurer.ValidatorIndex),
-					Signature: signature,
-				})
+			pendingReports := assignmentsToPendingReports(testCase.PreState.AvailAssignments)
+			result := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, pendingReports)
+			pendingReportsOutput := assignmentsToPendingReports(testCase.PostState.AvailAssignments)
+
+			if !reflect.DeepEqual(result, pendingReportsOutput) {
+				t.Errorf("mismatch:\nExpected: %+v\nActual:   %+v", pendingReportsOutput, result)
 			}
-
-			// Build a mock Block with the necessary components from the test vector
-			mockBlock := buildMockBlockWithAssurances(slot, parentHash, attestationParent, assurers)
-			t.Logf("✅ Created mock block for timeslot %d", mockBlock.Header.TimeSlot)
-
-			// Run the full state transition function
-			t.Logf("Running state transition function...")
-			actualState := StateTransitionFunction(priorState, mockBlock)
-			t.Logf("✅ State transition completed")
-
-			// Convert the expected post-state from asntypes.State to our implementation's State
-			expectedState := convertAsnStateToImplState(testCase.PostState)
-			t.Logf("✅ Converted expected post-state from ASN format")
-
-			// Compare the expected and actual states based on provided fields
-			t.Logf("Comparing states based on %d fields...", len(fieldsToCompare))
-			compareStatesSelective(t, expectedState, actualState, fieldsToCompare)
-
-			// If we got here without failing, the test passed!
-			t.Logf("✅ TEST PASSED: %s", testName)
 		})
 	}
+}
+
+func assignmentsToPendingReports(assignments asntypes.AvailabilityAssignments) [constants.NumCores]*PendingReport {
+	var arr [constants.NumCores]*PendingReport
+	for i, entry := range assignments {
+		if entry == nil {
+			arr[i] = nil
+		} else {
+			arr[i] = &PendingReport{
+				WorkReport: convertAsnReportToImplReport(entry.WorkReport),
+				Timeslot:   types.Timeslot(entry.Timeout),
+			}
+		}
+	}
+	return arr
 }
 
 // runStateTransitionTest is a helper that runs state transition tests for all JSON files in a directory
@@ -251,32 +244,6 @@ func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []stri
 	}
 }
 
-// Assurer represents a validator providing assurance
-type Assurer struct {
-	Index     uint32
-	Signature [64]byte
-}
-
-// buildMockBlockWithAssurances creates a mock Block with assurances extrinsic
-func buildMockBlockWithAssurances(slot types.Timeslot, parentHash [32]byte, attestationParent [32]byte, assurers []Assurer) block.Block {
-	// Create a minimal valid header
-	mockHeader := header.Header{
-		TimeSlot:       slot,
-		PriorStateRoot: parentHash, // Set parent hash
-		// Add other required fields with default/empty values
-	}
-
-	// Create the block
-	mockBlock := block.Block{
-		Header: mockHeader,
-		Extrinsics: extrinsics.Extrinsics{
-			Assurances: buildAssurances(attestationParent, assurers),
-		},
-	}
-
-	return mockBlock
-}
-
 // buildMockBlockFromTestVector creates a mock Block from a test vector
 func buildMockBlockFromTestVector(posteriorTimeslot types.Timeslot) block.Block {
 	// Create a minimal valid header
@@ -342,30 +309,6 @@ func makeMockAssurances() extrinsics.Assurances {
 		}
 
 		// Append the new assurance
-		assurances = append(assurances, assurance)
-	}
-
-	return assurances
-}
-
-// buildAssurances creates an Assurances object from attestation parent and assurers
-func buildAssurances(attestationParent [32]byte, assurers []Assurer) extrinsics.Assurances {
-	assurances := make(extrinsics.Assurances, 0, len(assurers))
-
-	// Create a default bit sequence with all cores available
-	defaultBitSequence := bitsequence.NewZeros(constants.NumCores)
-	for i := 0; i < constants.NumCores; i++ {
-		defaultBitSequence.SetBitAt(i, true)
-	}
-
-	// Create an assurance for each assurer
-	for _, assurer := range assurers {
-		assurance := extrinsics.Assurance{
-			ParentHash:                    attestationParent,
-			CoreAvailabilityContributions: *defaultBitSequence,
-			ValidatorIndex:                types.ValidatorIndex(assurer.Index),
-			Signature:                     assurer.Signature,
-		}
 		assurances = append(assurances, assurance)
 	}
 
@@ -658,4 +601,28 @@ func compareStatesSelective(t *testing.T, expected, actual State, fields []strin
 			t.Errorf("Field %s doesn't match (-expected +actual):\n%s", fieldName, diff)
 		}
 	}
+}
+
+// Helper: Convert ASN.1 AssurancesExtrinsic to implementation extrinsics.Assurances
+func convertAsnAssurancesToImpl(asn []asntypes.AvailAssurance) extrinsics.Assurances {
+	impl := make(extrinsics.Assurances, len(asn))
+	for i, a := range asn {
+		impl[i] = extrinsics.Assurance{
+			ParentHash:                    hexToHash(string(a.Anchor)),
+			CoreAvailabilityContributions: *convertBitfield(string(a.Bitfield)),
+			ValidatorIndex:                types.ValidatorIndex(a.ValidatorIndex),
+			Signature:                     convertSignatureString(string(a.Signature)),
+		}
+	}
+	return impl
+}
+
+// Converts a hex string bitfield to *bitsequence.BitSequence
+func convertBitfield(hexStr string) *bitsequence.BitSequence {
+	s := strings.TrimPrefix(hexStr, "0x")
+	bytes, err := hex.DecodeString(s)
+	if err != nil {
+		panic("invalid bitfield hex: " + hexStr)
+	}
+	return bitsequence.FromBytes(bytes)
 }

@@ -2,14 +2,12 @@ package asntypes
 
 // State represents the state of the JAM system used in test vectors
 type State struct {
-	Slot             U32                     `json:"slot" asn1:"tag:0"`
-	Entropy          Entropy                 `json:"entropy" asn1:"tag:1"`
-	ReadyQueue       ReadyQueue              `json:"ready_queue" asn1:"tag:2"`
-	Accumulated      AccumulatedQueue        `json:"accumulated" asn1:"tag:3"`
-	Privileges       Privileges              `json:"privileges" asn1:"tag:4"`
-	Accounts         []AccountsMapEntry      `json:"accounts" asn1:"tag:5"`
-	AvailAssignments AvailabilityAssignments `json:"avail_assignments" asn1:"tag:6"`
-	CurrValidators   ValidatorsData          `json:"curr_validators" asn1:"tag:7"`
+	Slot        U32                `json:"slot" asn1:"tag:0"`
+	Entropy     Entropy            `json:"entropy" asn1:"tag:1"`
+	ReadyQueue  ReadyQueue         `json:"ready_queue" asn1:"tag:2"`
+	Accumulated AccumulatedQueue   `json:"accumulated" asn1:"tag:3"`
+	Privileges  Privileges         `json:"privileges" asn1:"tag:4"`
+	Accounts    []AccountsMapEntry `json:"accounts" asn1:"tag:5"`
 }
 
 // Privileges represents privilege settings in the state

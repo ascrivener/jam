@@ -19,6 +19,23 @@
             "preLaunchTask": "select-constants-generator"
         },
         {
+            "name": "Debug Assurances Tests (With Size Selection)",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go/state",
+            "args": [
+                "-test.run",
+                "TestStateTransitionAssurances",
+                "-test.v"
+            ],
+            "env": {
+                "JAM_TEST_VECTOR_DIR": "${input:testSize}"
+            },
+            "showLog": true,
+            "preLaunchTask": "select-constants-generator"
+        },
+        {
             "name": "Debug Current Test (With Size Selection)",
             "type": "go",
             "request": "launch",
