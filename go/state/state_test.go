@@ -1,7 +1,9 @@
 package state
 
 import (
+	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +23,58 @@ import (
 	"github.com/ascrivener/jam/workreport"
 	"github.com/google/go-cmp/cmp"
 )
+
+// Disputes represents the disputes section in a test vector
+type Disputes struct {
+	Verdicts []interface{} `json:"verdicts"`
+	Culprits []interface{} `json:"culprits"`
+	Faults   []interface{} `json:"faults"`
+}
+
+// Extrinsic represents the extrinsic section in a test vector
+type Extrinsic struct {
+	Tickets    []interface{} `json:"tickets"`
+	Preimages  []interface{} `json:"preimages"`
+	Guarantees []interface{} `json:"guarantees"`
+	Assurances []interface{} `json:"assurances"`
+	Disputes   Disputes      `json:"disputes"`
+}
+
+// TestVector represents a complete state transition test vector
+type TestVector struct {
+	PreState  StateKeyValues `json:"pre_state"`
+	PostState StateKeyValues `json:"post_state"`
+	Block     Block          `json:"block"`
+}
+
+// Block represents a block in a test vector
+type Block struct {
+	Header struct {
+		Parent          string `json:"parent"`
+		ParentStateRoot string `json:"parent_state_root"`
+		ExtrinsicHash   string `json:"extrinsic_hash"`
+		Slot            int    `json:"slot"`
+		AuthorIndex     int    `json:"author_index"`
+		EntropySource   string `json:"entropy_source"`
+		Seal            string `json:"seal"`
+		EpochMark       struct {
+			Validators []struct {
+				Bandersnatch string `json:"bandersnatch"`
+			} `json:"validators"`
+			Entropy        string `json:"entropy"`
+			TicketsEntropy string `json:"tickets_entropy"`
+		} `json:"epoch_mark"`
+		OffendersMark []interface{} `json:"offenders_mark"`
+		TicketsMark   interface{}   `json:"tickets_mark"`
+	} `json:"header"`
+	Extrinsic Extrinsic `json:"extrinsic"`
+}
+
+// StateKeyValues represents the key-value pairs in a state
+type StateKeyValues struct {
+	StateRoot string     `json:"state_root"`
+	KeyVals   [][]string `json:"keyvals"`
+}
 
 // TestStateTransitionAccumulation runs accumulation-specific tests with relevant fields
 func TestStateTransitionAccumulation(t *testing.T) {
@@ -244,7 +298,6 @@ func runStateTransitionTest(t *testing.T, testDir string, fieldsToCompare []stri
 	}
 }
 
-// buildMockBlockFromTestVector creates a mock Block from a test vector
 func buildMockBlockFromTestVector(posteriorTimeslot types.Timeslot) block.Block {
 	// Create a minimal valid header
 	mockHeader := header.Header{
@@ -287,7 +340,6 @@ func buildMockBlockFromTestVector(posteriorTimeslot types.Timeslot) block.Block 
 	return mockBlock
 }
 
-// makeMockAssurances creates assurances for all validators with all cores marked as available
 func makeMockAssurances() extrinsics.Assurances {
 	// For test purposes, we'll create assurances for all validators with all cores marked as available
 
@@ -625,4 +677,175 @@ func convertBitfield(hexStr string) *bitsequence.BitSequence {
 		panic("invalid bitfield hex: " + hexStr)
 	}
 	return bitsequence.FromBytes(bytes)
+}
+
+// convertTestVectorToBlock converts a test vector block to a block.Block
+func convertTestVectorToBlock(testVectorBlock Block) block.Block {
+	// Build the header
+	blockHeader := header.Header{
+		ParentHash:                   hexToHash(testVectorBlock.Header.Parent),
+		PriorStateRoot:               hexToHash(testVectorBlock.Header.ParentStateRoot),
+		ExtrinsicHash:                hexToHash(testVectorBlock.Header.ExtrinsicHash),
+		TimeSlot:                     types.Timeslot(testVectorBlock.Header.Slot),
+		BandersnatchBlockAuthorIndex: types.ValidatorIndex(testVectorBlock.Header.AuthorIndex),
+		VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(testVectorBlock.Header.EntropySource)),
+		BlockSeal:                    types.BandersnatchVRFSignature(hexToBytes(testVectorBlock.Header.Seal)),
+	}
+
+	// Convert validators from test vector to the required format
+	var validatorKeys [constants.NumValidators]types.BandersnatchPublicKey
+	for i, v := range testVectorBlock.Header.EpochMark.Validators {
+		validatorKeys[i] = types.BandersnatchPublicKey(hexToHash(v.Bandersnatch))
+	}
+
+	// Set up epoch mark - mapping from the JSON representation to implementation types
+	blockHeader.EpochMarker = &header.EpochMarker{
+		CurrentEpochRandomness: hexToHash(testVectorBlock.Header.EpochMark.Entropy),
+		NextEpochRandomness:    hexToHash(testVectorBlock.Header.EpochMark.TicketsEntropy),
+		ValidatorKeys:          validatorKeys,
+	}
+
+	// Handle OffendersMark if present - convert from string representation to implementation type
+	offenders := make([]types.Ed25519PublicKey, 0)
+	for _, offender := range testVectorBlock.Header.OffendersMark {
+		// Convert offender to string if possible, otherwise skip
+		if offenderMap, ok := offender.(map[string]interface{}); ok {
+			if ed25519Str, ok := offenderMap["ed25519"].(string); ok {
+				var key types.Ed25519PublicKey
+				copy(key[:], hexToBytes(ed25519Str))
+				offenders = append(offenders, key)
+			}
+		}
+	}
+	blockHeader.OffendersMarker = offenders
+
+	// Handle WinningTicketsMarker if present
+	if testVectorBlock.Header.TicketsMark != nil {
+		// In a real implementation, we would parse the tickets from the test vector
+		// For now, initialize with empty tickets to satisfy the type
+		var tickets [constants.NumTimeslotsPerEpoch]header.Ticket
+		blockHeader.WinningTicketsMarker = &tickets
+	}
+
+	// Build the full block
+	return block.Block{
+		Header:     blockHeader,
+		Extrinsics: convertExtrinsics(testVectorBlock.Extrinsic),
+	}
+}
+
+// TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
+func TestStateDeserializerWithTransition(t *testing.T) {
+	t.Parallel()
+
+	// Load the test file
+	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions/1_000.json"
+	fileData, err := os.ReadFile(testFilePath)
+	if err != nil {
+		t.Fatalf("Failed to load test file: %v", err)
+	}
+
+	// Parse the JSON
+	var testVector TestVector
+	if err := json.Unmarshal(fileData, &testVector); err != nil {
+		t.Fatalf("Failed to parse JSON: %v", err)
+	}
+
+	// STEP 1: Convert the pre_state key-value pairs to a serialized state map
+	preStateMap := make(map[[32]byte][]byte)
+	for _, kv := range testVector.PreState.KeyVals {
+		key := hexToHash(kv[0])
+		value := hexToBytes(kv[1])
+		preStateMap[key] = value
+	}
+
+	// STEP 2: Deserialize the pre-state
+	preState, err := StateDeserializer(preStateMap)
+	if err != nil {
+		t.Fatalf("StateDeserializer failed on pre-state: %v", err)
+	}
+
+	// STEP 3: Build a block from the test vector using the helper function
+	testBlock := convertTestVectorToBlock(testVector.Block)
+
+	// STEP 4: Run the StateTransitionFunction
+	postState := StateTransitionFunction(preState, testBlock)
+
+	// STEP 5: Serialize the resulting state
+	resultStateMap := StateSerializer(postState)
+
+	// STEP 6: Convert the expected post_state key-value pairs to a serialized state map
+	expectedPostStateMap := make(map[[32]byte][]byte)
+	for _, kv := range testVector.PostState.KeyVals {
+		key := hexToHash(kv[0])
+		value := hexToBytes(kv[1])
+		expectedPostStateMap[key] = value
+	}
+
+	// STEP 7: Compare the result with the expected post-state
+	// First check the total key count
+	if len(resultStateMap) != len(expectedPostStateMap) {
+		t.Errorf("Post-state key count mismatch: got %d, want %d",
+			len(resultStateMap), len(expectedPostStateMap))
+	}
+
+	// Check each key-value pair
+	for key, expectedValue := range expectedPostStateMap {
+		actualValue, exists := resultStateMap[key]
+		if !exists {
+			t.Errorf("Expected key not found in result: %x", key)
+			continue
+		}
+
+		if !bytes.Equal(actualValue, expectedValue) {
+			t.Errorf("Value mismatch for key %x: got %x, want %x",
+				key, actualValue, expectedValue)
+		}
+	}
+
+	// Additional validation for successful deserialization
+	t.Logf("Successfully deserialized pre-state with %d service accounts", len(preState.ServiceAccounts))
+	t.Logf("Successfully ran state transition and produced valid post-state")
+}
+
+// convertExtrinsics converts the test vector extrinsic to block.Extrinsics
+func convertExtrinsics(extrinsic Extrinsic) extrinsics.Extrinsics {
+	result := extrinsics.Extrinsics{}
+
+	// // Convert tickets if any
+	// for _, ticket := range extrinsic.Tickets {
+	// 	// Parse ticket data from the test vector and add to result.Tickets
+	// 	// This would require the specific ticket structure from the test vector
+	// 	// For now, we'll skip if there are no tickets
+	// }
+
+	// // Convert preimages if any
+	// for _, preimage := range extrinsic.Preimages {
+	// 	// Parse preimage data from the test vector and add to result.Preimages
+	// 	// This would require the specific preimage structure from the test vector
+	// 	// For now, we'll skip if there are no preimages
+	// }
+
+	// // Convert guarantees if any
+	// for _, guarantee := range extrinsic.Guarantees {
+	// 	// Parse guarantee data from the test vector and add to result.Guarantees
+	// 	// This would require the specific guarantee structure from the test vector
+	// 	// For now, we'll skip if there are no guarantees
+	// }
+
+	// // Convert assurances if any
+	// for _, assurance := range extrinsic.Assurances {
+	// 	// Parse assurance data from the test vector and add to result.Assurances
+	// 	// This would require the specific assurance structure from the test vector
+	// 	// For now, we'll skip if there are no assurances
+	// }
+
+	// Convert disputes if any
+	if len(extrinsic.Disputes.Verdicts) > 0 || len(extrinsic.Disputes.Culprits) > 0 || len(extrinsic.Disputes.Faults) > 0 {
+		// Parse dispute data from the test vector and add to result.Disputes
+		// This would require the specific dispute structure from the test vector
+		// For now, we'll skip if there are no disputes
+	}
+
+	return result
 }

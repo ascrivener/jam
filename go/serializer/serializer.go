@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/ascrivener/jam/bitsequence"
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
@@ -64,10 +65,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 			sks := v.Interface().(sealingkeysequence.SealingKeySequence)
 			if sks.IsSealKeyTickets() {
 				buf.WriteByte(0)
-				serializeValue(reflect.ValueOf(sks.SealKeyTickets), buf)
+				serializeValue(reflect.ValueOf(*sks.SealKeyTickets), buf)
 			} else {
 				buf.WriteByte(1)
-				serializeValue(reflect.ValueOf(sks.BandersnatchKeys), buf)
+				serializeValue(reflect.ValueOf(*sks.BandersnatchKeys), buf)
 			}
 			return
 		case reflect.TypeOf(bitsequence.BitSequence{}):
@@ -175,19 +176,25 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 			sks := sealingkeysequence.SealingKeySequence{}
 			if tag == 0 {
-				// SealKeyTickets
-				tickets := reflect.New(reflect.TypeOf(sks.SealKeyTickets)).Elem()
-				if err := deserializeValue(tickets, buf); err != nil {
+				// Deserialize SealKeyTickets (array of tickets)
+				// First create a temporary value to hold the array
+				arrayValue := reflect.New(reflect.TypeOf([constants.NumTimeslotsPerEpoch]ticket.Ticket{})).Elem()
+				if err := deserializeValue(arrayValue, buf); err != nil {
 					return err
 				}
-				sks.SealKeyTickets = tickets.Interface().(*[12]ticket.Ticket)
+				// Extract the array and set a pointer to it in the struct
+				ticketArray := arrayValue.Interface().([constants.NumTimeslotsPerEpoch]ticket.Ticket)
+				sks.SealKeyTickets = &ticketArray
 			} else {
-				// BandersnatchKeys
-				keys := reflect.New(reflect.TypeOf(sks.BandersnatchKeys)).Elem()
-				if err := deserializeValue(keys, buf); err != nil {
+				// Deserialize BandersnatchKeys (array of public keys)
+				// First create a temporary value to hold the array
+				arrayValue := reflect.New(reflect.TypeOf([constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey{})).Elem()
+				if err := deserializeValue(arrayValue, buf); err != nil {
 					return err
 				}
-				sks.BandersnatchKeys = keys.Interface().(*[12]types.BandersnatchPublicKey)
+				// Extract the array and set a pointer to it in the struct
+				keyArray := arrayValue.Interface().([constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey)
+				sks.BandersnatchKeys = &keyArray
 			}
 			v.Set(reflect.ValueOf(sks))
 			return nil
