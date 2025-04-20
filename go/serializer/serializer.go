@@ -9,6 +9,7 @@ import (
 
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/sealingkeysequence"
+	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -18,6 +19,19 @@ func Serialize(v any) []byte {
 	var buf bytes.Buffer
 	serializeValue(reflect.ValueOf(v), &buf)
 	return buf.Bytes()
+}
+
+// Deserialize takes serialized data and reconstructs the original value
+// The target parameter must be a pointer to the desired type
+func Deserialize(data []byte, target any) error {
+	// Ensure target is a pointer
+	val := reflect.ValueOf(target)
+	if val.Kind() != reflect.Ptr || val.IsNil() {
+		return fmt.Errorf("deserialize target must be a non-nil pointer")
+	}
+
+	buf := bytes.NewBuffer(data)
+	return deserializeValue(val.Elem(), buf)
 }
 
 // serializeValue is the recursive helper that writes the serialized form of v into buf.
@@ -58,6 +72,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 			return
 		case reflect.TypeOf(bitsequence.BitSequence{}):
 			bs := v.Interface().(bitsequence.BitSequence)
+			buf.Write(EncodeLength(reflect.ValueOf(bs.ToBytesLSB())))
 			buf.Write(bs.ToBytesLSB())
 			return
 		default:
@@ -100,6 +115,154 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 	}
 }
 
+// deserializeValue is the recursive helper that reads from buf into value v
+func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
+	switch v.Kind() {
+	case reflect.Ptr:
+		// Check if pointer is nil
+		b, err := buf.ReadByte()
+		if err != nil {
+			return fmt.Errorf("failed to read pointer tag: %w", err)
+		}
+
+		if b == 0 {
+			// Nil pointer
+			return nil
+		}
+
+		// Allocate if nil
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+
+		// Deserialize the pointed-to value
+		return deserializeValue(v.Elem(), buf)
+
+	case reflect.Struct:
+		// Special handling based on the concrete type of the struct
+		switch v.Type() {
+		case reflect.TypeOf(types.ExecutionExitReason{}):
+			tag, err := buf.ReadByte()
+			if err != nil {
+				return fmt.Errorf("failed to read ExecutionExitReason tag: %w", err)
+			}
+
+			er := types.ExecutionExitReason{}
+			if tag == 0 {
+				// Valid data
+				blob := reflect.New(reflect.TypeOf(er.Blob)).Elem()
+				if err := deserializeValue(blob, buf); err != nil {
+					return err
+				}
+				if blobPtr, ok := blob.Interface().(*[]byte); ok {
+					er.Blob = blobPtr
+				} else {
+					return fmt.Errorf("expected *[]byte but got %T", blob.Interface())
+				}
+			} else {
+				// Error value
+				errVal := types.ExecutionErrorType(tag)
+				er.ExecutionError = &errVal
+			}
+			v.Set(reflect.ValueOf(er))
+			return nil
+
+		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
+			tag, err := buf.ReadByte()
+			if err != nil {
+				return fmt.Errorf("failed to read SealingKeySequence tag: %w", err)
+			}
+
+			sks := sealingkeysequence.SealingKeySequence{}
+			if tag == 0 {
+				// SealKeyTickets
+				tickets := reflect.New(reflect.TypeOf(sks.SealKeyTickets)).Elem()
+				if err := deserializeValue(tickets, buf); err != nil {
+					return err
+				}
+				sks.SealKeyTickets = tickets.Interface().(*[12]ticket.Ticket)
+			} else {
+				// BandersnatchKeys
+				keys := reflect.New(reflect.TypeOf(sks.BandersnatchKeys)).Elem()
+				if err := deserializeValue(keys, buf); err != nil {
+					return err
+				}
+				sks.BandersnatchKeys = keys.Interface().(*[12]types.BandersnatchPublicKey)
+			}
+			v.Set(reflect.ValueOf(sks))
+			return nil
+
+		case reflect.TypeOf(bitsequence.BitSequence{}):
+			// First read length of the bit sequence
+			seqLength, n, ok := DecodeLength(buf.Bytes())
+			if !ok {
+				return fmt.Errorf("failed to decode BitSequence length")
+			}
+			// Consume the length bytes
+			buf.Next(n)
+
+			// Now read only the required bytes for the BitSequence
+			dataBytes := make([]byte, seqLength)
+			if _, err := buf.Read(dataBytes); err != nil {
+				return fmt.Errorf("failed to read BitSequence data: %w", err)
+			}
+
+			bs := bitsequence.FromBytes(dataBytes)
+			v.Set(reflect.ValueOf(bs))
+			return nil
+
+		default:
+			// For other structs, iterate over all fields
+			for i := 0; i < v.NumField(); i++ {
+				if err := deserializeValue(v.Field(i), buf); err != nil {
+					return fmt.Errorf("failed to deserialize field %s: %w", v.Type().Field(i).Name, err)
+				}
+			}
+			return nil
+		}
+
+	case reflect.Map:
+		return deserializeMap(v, buf)
+
+	case reflect.Array, reflect.Slice:
+		return deserializeSlice(v, buf)
+
+	// Handle integer types by reading their little-endian representation
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		l := int(v.Type().Size()) // number of octets to decode
+		if buf.Len() < l {
+			return fmt.Errorf("not enough data to read %d-byte integer", l)
+		}
+
+		bytes := make([]byte, l)
+		if _, err := buf.Read(bytes); err != nil {
+			return fmt.Errorf("failed to read integer bytes: %w", err)
+		}
+
+		x := UnsignedToSigned(l, DecodeLittleEndian(bytes))
+		v.SetInt(x)
+		return nil
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		l := int(v.Type().Size())
+		if buf.Len() < l {
+			return fmt.Errorf("not enough data to read %d-byte unsigned integer", l)
+		}
+
+		bytes := make([]byte, l)
+		if _, err := buf.Read(bytes); err != nil {
+			return fmt.Errorf("failed to read unsigned integer bytes: %w", err)
+		}
+
+		x := DecodeLittleEndian(bytes)
+		v.SetUint(x)
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported kind for deserialization: %s", v.Kind())
+	}
+}
+
 // serializeMap handles map serialization.
 // For maps with value type struct{} (used as sets), it serializes the sorted keys.
 // Otherwise, it writes the length encoding, then each key/value pair in key order.
@@ -139,6 +302,67 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 	}
 }
 
+// deserializeMap is a helper to deserialize maps
+func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
+	// Special handling for maps with value type struct{} (used as sets)
+	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
+		// Create a new map if the map is nil
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(v.Type()))
+		}
+
+		// For sets, deserialize keys only
+		keyType := v.Type().Key()
+		for buf.Len() > 0 {
+			key := reflect.New(keyType).Elem()
+			if err := deserializeValue(key, buf); err != nil {
+				return fmt.Errorf("failed to deserialize set key: %w", err)
+			}
+			// Set key with empty struct{}{} value
+			v.SetMapIndex(key, reflect.ValueOf(struct{}{}))
+		}
+		return nil
+	}
+
+	// For regular maps, read length prefix
+	length, n, ok := DecodeLength(buf.Bytes())
+	if !ok {
+		return fmt.Errorf("failed to decode map length")
+	}
+	// Consume the bytes used for length
+	buf.Next(n)
+
+	// Create a new map if the map is nil
+	if v.IsNil() {
+		v.Set(reflect.MakeMap(v.Type()))
+	}
+
+	// Deserialize each key-value pair
+	keyType := v.Type().Key()
+	valueType := v.Type().Elem()
+
+	for i := uint64(0); i < length; i++ {
+		// Create new key and value instances
+		key := reflect.New(keyType).Elem()
+		value := reflect.New(valueType).Elem()
+
+		// Deserialize key
+		if err := deserializeValue(key, buf); err != nil {
+			return fmt.Errorf("failed to deserialize map key %d: %w", i, err)
+		}
+
+		// Deserialize value
+		if err := deserializeValue(value, buf); err != nil {
+			return fmt.Errorf("failed to deserialize map value %d: %w", i, err)
+		}
+
+		// Set key-value pair in map
+		v.SetMapIndex(key, value)
+	}
+
+	return nil
+}
+
 // serializeSlice handles array/slice serialization.
 // For slices (but not arrays), it encodes the length first.
 // For boolean slices, it bit-packs the booleans; otherwise, it serializes each element.
@@ -151,6 +375,53 @@ func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
 	for i := range v.Len() {
 		serializeValue(v.Index(i), buf)
 	}
+}
+
+// deserializeSlice is a helper to deserialize arrays and slices
+func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
+	// For arrays, we know the length; for slices, read length prefix
+	isArray := v.Kind() == reflect.Array
+	length := v.Len()
+
+	if !isArray {
+		// Read slice length using DecodeLength for consistent decoding
+		lengthBytes := buf.Bytes()
+		decodedLength, n, ok := DecodeLength(lengthBytes)
+		if !ok {
+			return fmt.Errorf("failed to decode slice length")
+		}
+		// Consume the bytes used for length
+		buf.Next(n)
+		length = int(decodedLength)
+
+		// Allocate slice
+		v.Set(reflect.MakeSlice(v.Type(), length, length))
+	}
+
+	// Deserialize elements
+	elemType := v.Type().Elem()
+
+	// Special case for byte arrays/slices
+	if elemType.Kind() == reflect.Uint8 {
+		// Directly read bytes
+		bytes := make([]byte, length)
+		if _, err := buf.Read(bytes); err != nil {
+			return fmt.Errorf("failed to read byte slice: %w", err)
+		}
+
+		// Copy bytes to array/slice
+		reflect.Copy(v, reflect.ValueOf(bytes))
+		return nil
+	}
+
+	// General case
+	for i := 0; i < length; i++ {
+		if err := deserializeValue(v.Index(i), buf); err != nil {
+			return fmt.Errorf("failed to deserialize element %d: %w", i, err)
+		}
+	}
+
+	return nil
 }
 
 // appendLengthEncoding encodes the length (v.Len()) of a collection into buf.
