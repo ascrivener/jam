@@ -78,7 +78,9 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(block.Extrinsics.Disputes, priorState.PendingReports)
 
-	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
+	availableReports := computeAvailableReports(postJudgementIntermediatePendingReports, block.Extrinsics.Assurances)
+
+	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
 		&priorState,
@@ -99,7 +101,7 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
-	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header)
+	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header, availableReports)
 
 	return State{
 		AuthorizersPool:            authorizersPool,
@@ -119,6 +121,20 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 		AccumulationQueue:          posteriorAccumulationQueue,
 		AccumulationHistory:        posteriorAccumulationHistory,
 	}
+}
+
+func computeAvailableReports(pendingReports [constants.NumCores]*PendingReport, assurances extrinsics.Assurances) []workreport.WorkReport {
+	var availableReports []workreport.WorkReport
+	for coreIndex := range constants.NumCores {
+		if pendingReports[coreIndex] == nil {
+			continue
+		}
+		if !assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex)) {
+			continue
+		}
+		availableReports = append(availableReports, pendingReports[coreIndex].WorkReport)
+	}
+	return availableReports
 }
 
 // Now, update each compute function to return (result, error).
@@ -375,7 +391,7 @@ func computeValidatorKeysetsPriorEpoch(header header.Header, mostRecentBlockTime
 	return priorValidatorKeysetsPriorEpoch
 }
 
-// destroys priorPendingReports
+// destroys priorDisputes
 func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes, priorPendingReports [constants.NumCores]*PendingReport) [constants.NumCores]*PendingReport {
 	posteriorPendingReports := priorPendingReports // Direct array assignment
 	validJudgementsMap := disputes.ToSumOfValidJudgementsMap()
@@ -427,7 +443,7 @@ func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtri
 	return postGuaranteesExtrinsicIntermediatePendingReports
 }
 
-func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*PendingReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) ([]workreport.WorkReport, []workreport.WorkReportWithWorkPackageHashes) {
+func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.Header, assurances extrinsics.Assurances, availableReports []workreport.WorkReport, priorAccumulationHistory AccumulationHistory, priorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes) ([]workreport.WorkReport, []workreport.WorkReportWithWorkPackageHashes) {
 	// 1. function utils
 	var accumulationPriorityQueue func(r []workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport
 	accumulationPriorityQueue = func(r []workreport.WorkReportWithWorkPackageHashes) []workreport.WorkReport {
@@ -446,14 +462,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 	// 2. create immediate and queued WRs
 	immediatelyAccumulatableWorkReports := make([]workreport.WorkReport, 0)
 	queuedExecutionWorkReports := make([]workreport.WorkReportWithWorkPackageHashes, 0)
-	for coreIndex, pendingReport := range postJudgementIntermediatePendingReports {
-		if pendingReport == nil {
-			continue
-		}
-		if !assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex)) {
-			continue
-		}
-		workReport := pendingReport.WorkReport
+	for _, workReport := range availableReports {
 		if len(workReport.RefinementContext.PrerequisiteWorkPackageHashes) == 0 && len(workReport.SegmentRootLookup) == 0 {
 			immediatelyAccumulatableWorkReports = append(immediatelyAccumulatableWorkReports, workReport)
 		} else {
@@ -567,36 +576,73 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics [2][constants.NumValidators]SingleValidatorStatistics, header header.Header) [2][constants.NumValidators]SingleValidatorStatistics {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport) ValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
-		a = priorValidatorStatistics[0]
+		a = priorValidatorStatistics.AccumulatorStatistics
 	} else {
-		posteriorValidatorStatistics[1] = priorValidatorStatistics[0]
+		posteriorValidatorStatistics.PreviousEpochStatistics = priorValidatorStatistics.AccumulatorStatistics
 	}
 	for vIndex, vStats := range a {
 		vIndex := types.ValidatorIndex(vIndex)
 		vIndexIsBlockAuthor := header.BandersnatchBlockAuthorIndex == vIndex
-		posteriorValidatorStatistics[0][vIndex].BlocksProduced = vStats.BlocksProduced
-		posteriorValidatorStatistics[0][vIndex].TicketsIntroduced = vStats.TicketsIntroduced
-		posteriorValidatorStatistics[0][vIndex].PreimagesIntroduced = vStats.PreimagesIntroduced
-		posteriorValidatorStatistics[0][vIndex].OctetsIntroduced = vStats.OctetsIntroduced
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].BlocksProduced = vStats.BlocksProduced
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].TicketsIntroduced = vStats.TicketsIntroduced
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].PreimagesIntroduced = vStats.PreimagesIntroduced
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].OctetsIntroduced = vStats.OctetsIntroduced
 		if vIndexIsBlockAuthor {
-			posteriorValidatorStatistics[0][vIndex].BlocksProduced++
-			posteriorValidatorStatistics[0][vIndex].TicketsIntroduced += uint64(len(tickets))
-			posteriorValidatorStatistics[0][vIndex].PreimagesIntroduced += uint64(len(preimages))
-			posteriorValidatorStatistics[0][vIndex].OctetsIntroduced += uint64(preimages.TotalDataSize())
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].BlocksProduced++
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].TicketsIntroduced += uint32(len(tickets))
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].PreimagesIntroduced += uint32(len(preimages))
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].OctetsIntroduced += uint32(preimages.TotalDataSize())
 		}
-		posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
 		r := guarantees.ReporterValidatorKeysets(header.TimeSlot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch)
 		if r.ContainsKeyset(posteriorValidatorKeysetsActive[vIndex]) {
-			posteriorValidatorStatistics[0][vIndex].ReportsGuaranteed++
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].ReportsGuaranteed++
 		}
-		posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances
+		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances
 		if assurances.HasValidatorIndex(vIndex) {
-			posteriorValidatorStatistics[0][vIndex].AvailabilityAssurances++
+			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].AvailabilityAssurances++
 		}
 	}
+	for cIndex := range constants.NumCores {
+		// Reset core statistics to zero (don't add to existing values)
+		coreStats := CoreStatistics{} // Initialize a fresh stats object
+
+		// Find all work reports for this core in the guarantees
+		for _, guarantee := range guarantees {
+			workReport := guarantee.WorkReport
+			if workReport.CoreIndex != types.CoreIndex(cIndex) {
+				continue
+			}
+
+			// Sum statistics from each work digest in the work report
+			for _, digest := range workReport.WorkDigests {
+				coreStats.NumSegmentsImportedFrom += uint64(digest.NumSegmentsImportedFrom)
+				coreStats.NumExtrinsicsUsed += uint64(digest.NumExtrinsicsUsed)
+				coreStats.SizeInOctetsOfExtrinsicsUsed += uint64(digest.SizeInOctetsOfExtrinsicsUsed)
+				coreStats.NumSegmentsExportedInto += uint64(digest.NumSegmentsExportedInto)
+				coreStats.ActualRefinementGasUsed += digest.ActualRefinementGasUsed
+				coreStats.WorkBundleLength += uint64(workReport.WorkPackageSpecification.WorkBundleLength)
+			}
+		}
+
+		for _, availableReport := range availableReports {
+			if availableReport.CoreIndex != types.CoreIndex(cIndex) {
+				continue
+			}
+
+			coreStats.OctetsIntroduced += uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0)))
+		}
+
+		coreStats.AvailabilityContributionsInAssurancesExtrinsic = uint64(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))
+
+		// Set the new statistics in the return value
+		posteriorValidatorStatistics.CoreStatistics[cIndex] = coreStats
+	}
+
+	// TODO: service statistics
 	return posteriorValidatorStatistics
 }

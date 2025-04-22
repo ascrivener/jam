@@ -23,7 +23,7 @@ type State struct {
 	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // φ
 	PrivilegedServices         types.PrivilegedServices                                                     // χ
 	Disputes                   types.Disputes                                                               // ψ
-	ValidatorStatistics        [2][constants.NumValidators]SingleValidatorStatistics                        // π
+	ValidatorStatistics        ValidatorStatistics                                                          // π
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
 	AccumulationHistory        AccumulationHistory                                                          // ξ
 }
@@ -33,13 +33,54 @@ type PendingReport struct {
 	Timeslot   types.Timeslot
 }
 
+type ValidatorStatistics struct {
+	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics // V
+	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics // L
+	CoreStatistics          [constants.NumCores]CoreStatistics                 // C
+	ServiceStatistics       map[types.ServiceIndex]ServiceStatistics           // S
+}
+
 type SingleValidatorStatistics struct {
-	BlocksProduced         uint64
-	TicketsIntroduced      uint64
-	PreimagesIntroduced    uint64
-	OctetsIntroduced       uint64
-	ReportsGuaranteed      uint64
-	AvailabilityAssurances uint64
+	BlocksProduced         uint32 // b
+	TicketsIntroduced      uint32 // t
+	PreimagesIntroduced    uint32 // p
+	OctetsIntroduced       uint32 // d
+	ReportsGuaranteed      uint32 // g
+	AvailabilityAssurances uint32 // a
+}
+
+type CoreStatistics struct {
+	OctetsIntroduced                               uint64         // d
+	AvailabilityContributionsInAssurancesExtrinsic uint64         // p
+	NumSegmentsImportedFrom                        uint64         // i
+	NumSegmentsExportedInto                        uint64         // e
+	SizeInOctetsOfExtrinsicsUsed                   uint64         // z
+	NumExtrinsicsUsed                              uint64         // x
+	WorkBundleLength                               uint64         // b
+	ActualRefinementGasUsed                        types.GasValue // u
+}
+
+type ServiceStatistics struct {
+	PreimageExtrinsicSize struct {
+		ExtrinsicCount    uint64
+		TotalSizeInOctets uint64
+	} // p
+	ActualRefinementGasUsed struct {
+		WorkReportCount uint64
+		Amount          types.GasValue
+	} // u
+	NumSegmentsImportedFrom      uint64 // i
+	NumSegmentsExportedInto      uint64 // e
+	SizeInOctetsOfExtrinsicsUsed uint64 // z
+	NumExtrinsicsUsed            uint64 // x
+	AccumulationStatistics       struct {
+		WorkItemsAccumulated                  uint64
+		AmountOfGasUsedThroughoutAccumulation types.GasValue
+	} // a
+	DeferredTransferStatistics struct {
+		NumTransfers            uint64
+		TotalGasUsedInTransfers types.GasValue
+	} // t
 }
 
 type AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}

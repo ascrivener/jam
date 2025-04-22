@@ -3,13 +3,14 @@ package workreport
 import "github.com/ascrivener/jam/types"
 
 type WorkReport struct {
-	WorkPackageSpecification AvailabilitySpecification // s
-	RefinementContext        RefinementContext         // x
-	CoreIndex                types.CoreIndex           // c
-	AuthorizerHash           [32]byte                  // a
-	Output                   []byte                    // o
-	SegmentRootLookup        map[[32]byte][32]byte     // l
-	WorkResults              []WorkResult              // r
+	WorkPackageSpecification   AvailabilitySpecification // s
+	RefinementContext          RefinementContext         // x
+	CoreIndex                  types.CoreIndex           // c
+	AuthorizerHash             [32]byte                  // a
+	Output                     []byte                    // o
+	SegmentRootLookup          map[[32]byte][32]byte     // l
+	WorkDigests                []WorkDigest              // r
+	IsAuthorizedGasConsumption types.GasValue            // g
 }
 
 type AvailabilitySpecification struct {
@@ -29,12 +30,17 @@ type RefinementContext struct {
 	PrerequisiteWorkPackageHashes map[[32]byte]struct{} // p
 }
 
-type WorkResult struct {
-	ServiceIndex           types.ServiceIndex        // s
-	ServiceCodeHash        [32]byte                  // c
-	PayloadHash            [32]byte                  // y
-	GasPrioritizationRatio types.GasValue            // g
-	WorkOutput             types.ExecutionExitReason // d
+type WorkDigest struct {
+	ServiceIndex                 types.ServiceIndex        // s
+	ServiceCodeHash              [32]byte                  // c
+	PayloadHash                  [32]byte                  // y
+	AccumulateGasLimit           types.GasValue            // g
+	WorkResult                   types.ExecutionExitReason // d
+	ActualRefinementGasUsed      types.GasValue            // u
+	NumSegmentsImportedFrom      uint32                    // i
+	NumExtrinsicsUsed            uint32                    // x
+	SizeInOctetsOfExtrinsicsUsed uint32                    // z
+	NumSegmentsExportedInto      uint32                    // e
 }
 
 type WorkReportWithWorkPackageHashes struct {

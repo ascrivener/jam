@@ -26,11 +26,15 @@ func (a Assurances) HasValidatorIndex(vIndex types.ValidatorIndex) bool {
 }
 
 func (a Assurances) AvailabilityContributionsForCoreSupermajority(coreIndex types.CoreIndex) bool {
+	return a.AvailabilityContributionsForCore(coreIndex) > constants.TwoThirdsNumValidators
+}
+
+func (a Assurances) AvailabilityContributionsForCore(coreIndex types.CoreIndex) int {
 	sum := 0
 	for _, assurance := range a {
 		if assurance.CoreAvailabilityContributions.BitAt(int(coreIndex)) {
 			sum += 1
 		}
 	}
-	return sum > constants.TwoThirdsNumValidators
+	return sum
 }
