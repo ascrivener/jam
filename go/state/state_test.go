@@ -445,7 +445,7 @@ func createEmptyState() State {
 		AuthorizerQueue:            [constants.NumCores][constants.AuthorizerQueueLength][32]byte{},
 		PrivilegedServices:         types.PrivilegedServices{},
 		Disputes:                   types.Disputes{},
-		ValidatorStatistics:        [2][constants.NumValidators]SingleValidatorStatistics{},
+		ValidatorStatistics:        ValidatorStatistics{},
 		MostRecentBlockTimeslot:    0,
 	}
 
@@ -542,87 +542,88 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 
 // convertAsnReportToImplReport converts a workreport from the ASN types to the implementation's WorkReport type
 func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.WorkReport {
-	var report workreport.WorkReport
+	return workreport.WorkReport{}
+	// var report workreport.WorkReport
 
-	// Set CoreIndex
-	report.CoreIndex = types.CoreIndex(asnReport.CoreIndex)
+	// // Set CoreIndex
+	// report.CoreIndex = types.CoreIndex(asnReport.CoreIndex)
 
-	// Convert results
-	for _, result := range asnReport.Results {
-		codeHash := hexToHash(string(result.CodeHash))
-		payloadHash := hexToHash(string(result.PayloadHash))
+	// // Convert results
+	// for _, result := range asnReport.Results {
+	// 	codeHash := hexToHash(string(result.CodeHash))
+	// 	payloadHash := hexToHash(string(result.PayloadHash))
 
-		workResult := workreport.WorkResult{
-			ServiceIndex:           types.ServiceIndex(result.ServiceId),
-			ServiceCodeHash:        codeHash,
-			PayloadHash:            payloadHash,
-			GasPrioritizationRatio: types.GasValue(result.AccumulateGas),
-		}
+	// 	workResult := workreport.WorkResult{
+	// 		ServiceIndex:           types.ServiceIndex(result.ServiceId),
+	// 		ServiceCodeHash:        codeHash,
+	// 		PayloadHash:            payloadHash,
+	// 		GasPrioritizationRatio: types.GasValue(result.AccumulateGas),
+	// 	}
 
-		if result.Result.OK != nil {
-			// If OK is present, convert hex string to binary
-			workResult.WorkOutput = types.NewExecutionExitReasonBlob(hexToBytes(string(*result.Result.OK)))
-		}
+	// 	if result.Result.OK != nil {
+	// 		// If OK is present, convert hex string to binary
+	// 		workResult.WorkOutput = types.NewExecutionExitReasonBlob(hexToBytes(string(*result.Result.OK)))
+	// 	}
 
-		report.WorkResults = append(report.WorkResults, workResult)
-	}
+	// 	report.WorkResults = append(report.WorkResults, workResult)
+	// }
 
-	// Set package spec
-	packageSpecHash := hexToHash(string(asnReport.PackageSpec.Hash))
-	erasureRoot := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
-	exportsRoot := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
+	// // Set package spec
+	// packageSpecHash := hexToHash(string(asnReport.PackageSpec.Hash))
+	// erasureRoot := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
+	// exportsRoot := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
 
-	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
-		WorkPackageHash:  packageSpecHash,                                // h
-		WorkBundleLength: types.BlobLength(asnReport.PackageSpec.Length), // l
-		ErasureRoot:      erasureRoot,                                    // u
-		SegmentRoot:      exportsRoot,                                    // e - ExportsRoot maps to SegmentRoot
-		SegmentCount:     uint64(asnReport.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
-	}
+	// report.WorkPackageSpecification = workreport.AvailabilitySpecification{
+	// 	WorkPackageHash:  packageSpecHash,                                // h
+	// 	WorkBundleLength: types.BlobLength(asnReport.PackageSpec.Length), // l
+	// 	ErasureRoot:      erasureRoot,                                    // u
+	// 	SegmentRoot:      exportsRoot,                                    // e - ExportsRoot maps to SegmentRoot
+	// 	SegmentCount:     uint64(asnReport.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
+	// }
 
-	// Set refinement context
-	anchorHash := hexToHash(string(asnReport.Context.Anchor))
-	stateRoot := hexToHash(string(asnReport.Context.StateRoot))
-	beefyRoot := hexToHash(string(asnReport.Context.BeefyRoot))
-	lookupAnchor := hexToHash(string(asnReport.Context.LookupAnchor))
+	// // Set refinement context
+	// anchorHash := hexToHash(string(asnReport.Context.Anchor))
+	// stateRoot := hexToHash(string(asnReport.Context.StateRoot))
+	// beefyRoot := hexToHash(string(asnReport.Context.BeefyRoot))
+	// lookupAnchor := hexToHash(string(asnReport.Context.LookupAnchor))
 
-	// Convert prerequisites to map of [32]byte
-	prereqMap := make(map[[32]byte]struct{})
-	for _, prereq := range asnReport.Context.Prerequisites {
-		hash := hexToHash(string(prereq))
-		prereqMap[hash] = struct{}{}
-	}
+	// // Convert prerequisites to map of [32]byte
+	// prereqMap := make(map[[32]byte]struct{})
+	// for _, prereq := range asnReport.Context.Prerequisites {
+	// 	hash := hexToHash(string(prereq))
+	// 	prereqMap[hash] = struct{}{}
+	// }
 
-	report.RefinementContext = workreport.RefinementContext{
-		AnchorHeaderHash:              anchorHash,                                         // a
-		PosteriorStateRoot:            stateRoot,                                          // s
-		PosteriorBEEFYRoot:            beefyRoot,                                          // b
-		LookupAnchorHeaderHash:        lookupAnchor,                                       // l
-		Timeslot:                      types.Timeslot(asnReport.Context.LookupAnchorSlot), // t
-		PrerequisiteWorkPackageHashes: prereqMap,                                          // p
-	}
+	// report.RefinementContext = workreport.RefinementContext{
+	// 	AnchorHeaderHash:              anchorHash,                                         // a
+	// 	PosteriorStateRoot:            stateRoot,                                          // s
+	// 	PosteriorBEEFYRoot:            beefyRoot,                                          // b
+	// 	LookupAnchorHeaderHash:        lookupAnchor,                                       // l
+	// 	Timeslot:                      types.Timeslot(asnReport.Context.LookupAnchorSlot), // t
+	// 	PrerequisiteWorkPackageHashes: prereqMap,                                          // p
+	// }
 
-	// Set AuthorizerHash (a)
-	authorizerHash := hexToHash(string(asnReport.AuthorizerHash))
-	report.AuthorizerHash = authorizerHash
+	// // Set AuthorizerHash (a)
+	// authorizerHash := hexToHash(string(asnReport.AuthorizerHash))
+	// report.AuthorizerHash = authorizerHash
 
-	// Set Output (o) - properly decode the hex string ByteSequence to bytes
-	if asnReport.AuthOutput != "" {
-		output := hexToBytes(string(asnReport.AuthOutput))
-		report.Output = output
-	} else {
-		report.Output = []byte{}
-	}
+	// // Set Output (o) - properly decode the hex string ByteSequence to bytes
+	// if asnReport.AuthOutput != "" {
+	// 	output := hexToBytes(string(asnReport.AuthOutput))
+	// 	report.Output = output
+	// } else {
+	// 	report.Output = []byte{}
+	// }
 
-	// Set SegmentRootLookup (l)
-	report.SegmentRootLookup = make(map[[32]byte][32]byte)
-	for _, item := range asnReport.SegmentRootLookup {
-		key := hexToHash(string(item.WorkPackageHash))
-		val := hexToHash(string(item.SegmentTreeRoot))
-		report.SegmentRootLookup[key] = val
-	}
+	// // Set SegmentRootLookup (l)
+	// report.SegmentRootLookup = make(map[[32]byte][32]byte)
+	// for _, item := range asnReport.SegmentRootLookup {
+	// 	key := hexToHash(string(item.WorkPackageHash))
+	// 	val := hexToHash(string(item.SegmentTreeRoot))
+	// 	report.SegmentRootLookup[key] = val
+	// }
 
-	return report
+	// return report
 }
 
 // compareStatesSelective compares specific fields between two State objects

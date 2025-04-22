@@ -188,6 +188,7 @@ type OperandTuple struct { // O
 	AuthorizerHash        [32]byte                  // a
 	WorkReportOutput      []byte                    // o
 	WorkResultPayloadHash [32]byte                  // y
+	GasLimit              types.GasValue            // g
 	ExecutionExitReason   types.ExecutionExitReason // d
 }
 
@@ -357,7 +358,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed
 }
 
-func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, deferredTransfers []DeferredTransfer) {
+func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
@@ -388,21 +389,20 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 			return NewSimpleExitReason(ExitGo)
 		}
 	}
-
-	if len(deferredTransfers) == 0 {
-		return
-	}
 	serviceAccount := serviceAccounts[serviceIndex]
-	_, code := serviceAccount.MetadataAndCode()
-	if code == nil {
-		return
+	if len(deferredTransfers) == 0 {
+		return serviceAccount, 0
 	}
 	DeferredTransferGasLimitTotal := types.GasValue(0)
 	for _, deferredTransfer := range deferredTransfers {
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
-	ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
+	_, code := serviceAccount.MetadataAndCode()
+	if code == nil {
+		return serviceAccount, 0
+	}
+	_, gas := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
 		Timeslot          types.Timeslot
 		ServiceIndex      types.ServiceIndex
 		DeferredTransfers []DeferredTransfer
@@ -411,4 +411,5 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		ServiceIndex:      serviceIndex,
 		DeferredTransfers: deferredTransfers,
 	}), hf, serviceAccount)
+	return serviceAccount, gas
 }

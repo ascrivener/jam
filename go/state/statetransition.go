@@ -80,12 +80,12 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	availableReports := computeAvailableReports(postJudgementIntermediatePendingReports, block.Extrinsics.Assurances)
 
-	workReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
+	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory := accumulateAndIntegrate(
+	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics := accumulateAndIntegrate(
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
-		workReports,
+		accumulatableWorkReports,
 		queuedExecutionWorkReports,
 		posteriorEntropyAccumulator,
 	)
@@ -101,7 +101,7 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
-	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header, availableReports)
+	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, posteriorMostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header, availableReports, deferredTransferStatistics, accumulationStatistics)
 
 	return State{
 		AuthorizersPool:            authorizersPool,
@@ -499,32 +499,68 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 func accumulateAndIntegrate(
 	priorState *State,
 	posteriorMostRecentBlockTimeslot types.Timeslot,
-	workReports []workreport.WorkReport,
+	accumulatableWorkReports []workreport.WorkReport,
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
-) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory) {
+) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory, TransferStatistics, AccumulationStatistics) {
 	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, workReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
 		PrivilegedServices:       priorState.PrivilegedServices,
 	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
 
+	var accumulationStatistics = AccumulationStatistics{}
+	for serviceIndex := range priorState.ServiceAccounts {
+		N := make([]workreport.WorkDigest, 0)
+		for _, workReport := range accumulatableWorkReports[:n] {
+			for _, workDigest := range workReport.WorkDigests {
+				if workDigest.ServiceIndex == serviceIndex {
+					N = append(N, workDigest)
+				}
+			}
+		}
+		if len(N) > 0 {
+			var gasUsed types.GasValue
+			for _, serviceAndGasUsage := range serviceGasUsage {
+				if serviceAndGasUsage.ServiceIndex != serviceIndex {
+					continue
+				}
+				gasUsed += serviceAndGasUsage.GasUsed
+			}
+			accumulationStatistics[serviceIndex] = ServiceAccumulationStatistics{
+				NumberOfWorkItems: uint64(len(N)),
+				GasUsed:           gasUsed,
+			}
+		}
+	}
+
 	var wg sync.WaitGroup
+	var deferredTransferStatistics = TransferStatistics{}
+	var mutex sync.Mutex // Add mutex to protect map access
+
 	for serviceIndex := range priorState.ServiceAccounts {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			pvm.OnTransfer(priorState.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
+			_, gasUsed := pvm.OnTransfer(priorState.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
+			if len(selectedTransfers) > 0 {
+				mutex.Lock() // Lock before writing to the map
+				deferredTransferStatistics[sIndex] = ServiceTransferStatistics{
+					NumberOfTransfers: uint64(len(selectedTransfers)),
+					GasUsed:           gasUsed,
+				}
+				mutex.Unlock() // Don't forget to unlock
+			}
 		}(serviceIndex)
 	}
 	wg.Wait()
 
 	// Create a copy of the accumulation history before modifying it
 	posteriorAccumulationHistory := priorState.AccumulationHistory
-	posteriorAccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(workReports[:n]))
+	posteriorAccumulationHistory.ShiftLeft(WorkReportsToWorkPackageHashes(accumulatableWorkReports[:n]))
 
 	var posteriorAccumulationQueue [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
 
@@ -548,7 +584,7 @@ func accumulateAndIntegrate(
 		}
 	}
 
-	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory
+	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) types.Timeslot {
@@ -576,7 +612,7 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport) ValidatorStatistics {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics TransferStatistics, accumulationStatistics AccumulationStatistics) ValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
@@ -643,6 +679,49 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		posteriorValidatorStatistics.CoreStatistics[cIndex] = coreStats
 	}
 
-	// TODO: service statistics
+	trackedServiceIndices := map[types.ServiceIndex]struct{}{}
+	for _, guarantee := range guarantees {
+		for _, workDigest := range guarantee.WorkReport.WorkDigests {
+			trackedServiceIndices[workDigest.ServiceIndex] = struct{}{}
+		}
+	}
+	for _, preimage := range preimages {
+		trackedServiceIndices[preimage.ServiceIndex] = struct{}{}
+	}
+	for serviceIndex, _ := range deferredTransferStatistics {
+		trackedServiceIndices[serviceIndex] = struct{}{}
+	}
+	for serviceIndex, _ := range accumulationStatistics {
+		trackedServiceIndices[serviceIndex] = struct{}{}
+	}
+	for serviceIndex, _ := range trackedServiceIndices {
+		serviceStatistics := ServiceStatistics{}
+		for _, guarantee := range guarantees {
+			for _, workDigest := range guarantee.WorkReport.WorkDigests {
+				if workDigest.ServiceIndex == serviceIndex {
+					serviceStatistics.NumSegmentsImportedFrom += uint64(workDigest.NumSegmentsImportedFrom)
+					serviceStatistics.NumExtrinsicsUsed += uint64(workDigest.NumExtrinsicsUsed)
+					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += uint64(workDigest.SizeInOctetsOfExtrinsicsUsed)
+					serviceStatistics.NumSegmentsExportedInto += uint64(workDigest.NumSegmentsExportedInto)
+					serviceStatistics.ActualRefinementGasUsed.WorkReportCount++
+					serviceStatistics.ActualRefinementGasUsed.Amount += workDigest.ActualRefinementGasUsed
+				}
+			}
+		}
+		for _, preimage := range preimages {
+			if preimage.ServiceIndex == serviceIndex {
+				serviceStatistics.PreimageExtrinsicSize.ExtrinsicCount++
+				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += uint64(len(preimage.Data))
+			}
+		}
+		if _, ok := accumulationStatistics[serviceIndex]; ok {
+			serviceStatistics.AccumulationStatistics = accumulationStatistics[serviceIndex]
+		}
+		if _, ok := deferredTransferStatistics[serviceIndex]; ok {
+			serviceStatistics.DeferredTransferStatistics = deferredTransferStatistics[serviceIndex]
+		}
+		posteriorValidatorStatistics.ServiceStatistics[serviceIndex] = serviceStatistics
+	}
+
 	return posteriorValidatorStatistics
 }

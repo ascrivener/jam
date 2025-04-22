@@ -60,6 +60,20 @@ type CoreStatistics struct {
 	ActualRefinementGasUsed                        types.GasValue // u
 }
 
+type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
+
+type TransferStatistics map[types.ServiceIndex]ServiceTransferStatistics
+
+type ServiceAccumulationStatistics struct {
+	NumberOfWorkItems uint64
+	GasUsed           types.GasValue
+}
+
+type ServiceTransferStatistics struct {
+	NumberOfTransfers uint64
+	GasUsed           types.GasValue
+}
+
 type ServiceStatistics struct {
 	PreimageExtrinsicSize struct {
 		ExtrinsicCount    uint64
@@ -68,19 +82,13 @@ type ServiceStatistics struct {
 	ActualRefinementGasUsed struct {
 		WorkReportCount uint64
 		Amount          types.GasValue
-	} // u
+	} // r
 	NumSegmentsImportedFrom      uint64 // i
 	NumSegmentsExportedInto      uint64 // e
 	SizeInOctetsOfExtrinsicsUsed uint64 // z
 	NumExtrinsicsUsed            uint64 // x
-	AccumulationStatistics       struct {
-		WorkItemsAccumulated                  uint64
-		AmountOfGasUsedThroughoutAccumulation types.GasValue
-	} // a
-	DeferredTransferStatistics struct {
-		NumTransfers            uint64
-		TotalGasUsedInTransfers types.GasValue
-	} // t
+	AccumulationStatistics       ServiceAccumulationStatistics
+	DeferredTransferStatistics   ServiceTransferStatistics
 }
 
 type AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}

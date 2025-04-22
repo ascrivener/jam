@@ -17,16 +17,17 @@ func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateCom
 		gas = g
 	}
 	for _, report := range workReports {
-		for _, workResult := range report.WorkResults {
-			if workResult.ServiceIndex == serviceIndex {
-				gas += workResult.GasPrioritizationRatio
+		for _, workDigest := range report.WorkDigests {
+			if workDigest.ServiceIndex == serviceIndex {
+				gas += workDigest.AccumulateGasLimit
 				operandTuples = append(operandTuples, OperandTuple{
 					WorkPackageHash:       report.WorkPackageSpecification.WorkPackageHash,
 					SegmentRoot:           report.WorkPackageSpecification.SegmentRoot,
 					AuthorizerHash:        report.AuthorizerHash,
 					WorkReportOutput:      report.Output,
-					WorkResultPayloadHash: workResult.PayloadHash,
-					ExecutionExitReason:   workResult.WorkOutput,
+					WorkResultPayloadHash: workDigest.PayloadHash,
+					GasLimit:              workDigest.AccumulateGasLimit,
+					ExecutionExitReason:   workDigest.WorkResult,
 				})
 			}
 		}
@@ -39,7 +40,10 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (types.GasValue, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}) {
+func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+	ServiceIndex types.ServiceIndex
+	GasUsed      types.GasValue
+}) {
 	// Use a map to collect unique service indices to process
 	serviceIndicesMap := make(map[types.ServiceIndex]struct{})
 
@@ -48,8 +52,8 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		serviceIndicesMap[idx] = struct{}{}
 	}
 	for _, report := range workReports {
-		for _, workResult := range report.WorkResults {
-			serviceIndicesMap[workResult.ServiceIndex] = struct{}{}
+		for _, workDigest := range report.WorkDigests {
+			serviceIndicesMap[workDigest.ServiceIndex] = struct{}{}
 		}
 	}
 
@@ -75,7 +79,10 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var totalGasUsed types.GasValue
+	var serviceGasUsage []struct {
+		ServiceIndex types.ServiceIndex
+		GasUsed      types.GasValue
+	}
 	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
 	n := make(serviceaccount.ServiceAccounts)
 
@@ -101,7 +108,13 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 			defer wg.Done()
 			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed := SingleServiceAccumulation(accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
 			mu.Lock()
-			totalGasUsed += gasUsed
+			serviceGasUsage = append(serviceGasUsage, struct {
+				ServiceIndex types.ServiceIndex
+				GasUsed      types.GasValue
+			}{
+				ServiceIndex: sIndex,
+				GasUsed:      gasUsed,
+			})
 
 			// Store result for privileged services
 			if sIndex == managerServiceIndex || sIndex == designateServiceIndex || sIndex == assignServiceIndex {
@@ -189,20 +202,27 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		privilegedServices = accumulationStateComponents.PrivilegedServices
 	}
 
-	return totalGasUsed, AccumulationStateComponents{
+	return AccumulationStateComponents{
 		ServiceAccounts:          finalServiceAccounts,
 		UpcomingValidatorKeysets: upcomingValidatorKeysets,
 		AuthorizersQueue:         authorizersQueue,
 		PrivilegedServices:       privilegedServices,
-	}, deferredTransfers, accumulationOutputPairings
+	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage
 }
 
-func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}) {
+func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+	ServiceIndex types.ServiceIndex
+	GasUsed      types.GasValue
+}) {
 	// Initialize return values
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
 	allDeferredTransfers := make([]DeferredTransfer, 0)
 	allOutputPairings := make(map[BEEFYCommitment]struct{})
+	allServiceGasUsage := make([]struct {
+		ServiceIndex types.ServiceIndex
+		GasUsed      types.GasValue
+	}, 0)
 
 	// Remaining gas for processing
 	remainingGas := gas
@@ -218,8 +238,8 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 
 		for ; batchEndIdx < len(workReports); batchEndIdx++ {
 			batchGas := types.GasValue(0)
-			for _, report := range workReports[batchEndIdx].WorkResults {
-				batchGas += report.GasPrioritizationRatio
+			for _, report := range workReports[batchEndIdx].WorkDigests {
+				batchGas += report.AccumulateGasLimit
 			}
 
 			if gasPrioritizationRatioSum+batchGas > remainingGas {
@@ -234,7 +254,7 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 		}
 
 		// Process this batch
-		batchGasUsed, newStateComponents, batchTransfers, batchPairings := ParallelizedAccumulation(
+		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage := ParallelizedAccumulation(
 			&currentStateComponents,
 			timeslot,
 			workReports[startIdx:batchEndIdx],
@@ -243,9 +263,14 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 		)
 
 		// Update our state for the next iteration
+		var batchGasUsed types.GasValue
+		for _, serviceGas := range batchServiceGasUsage {
+			batchGasUsed += serviceGas.GasUsed
+		}
 		remainingGas -= batchGasUsed
 		currentStateComponents = newStateComponents
 		allDeferredTransfers = append(allDeferredTransfers, batchTransfers...)
+		allServiceGasUsage = append(allServiceGasUsage, batchServiceGasUsage...)
 
 		// Merge the output pairings
 		for pairing := range batchPairings {
@@ -262,5 +287,5 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 		freeAccumulationServices = make(map[types.ServiceIndex]types.GasValue)
 	}
 
-	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairings
+	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairings, allServiceGasUsage
 }
