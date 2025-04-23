@@ -21,6 +21,7 @@ import (
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/validatorstatistics"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
 )
@@ -502,7 +503,7 @@ func accumulateAndIntegrate(
 	accumulatableWorkReports []workreport.WorkReport,
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
-) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory, TransferStatistics, AccumulationStatistics) {
+) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics) {
 	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
@@ -511,7 +512,7 @@ func accumulateAndIntegrate(
 		PrivilegedServices:       priorState.PrivilegedServices,
 	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
 
-	var accumulationStatistics = AccumulationStatistics{}
+	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
 	for serviceIndex := range priorState.ServiceAccounts {
 		N := make([]workreport.WorkDigest, 0)
 		for _, workReport := range accumulatableWorkReports[:n] {
@@ -529,15 +530,15 @@ func accumulateAndIntegrate(
 				}
 				gasUsed += serviceAndGasUsage.GasUsed
 			}
-			accumulationStatistics[serviceIndex] = ServiceAccumulationStatistics{
-				NumberOfWorkItems: uint64(len(N)),
-				GasUsed:           gasUsed,
+			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: validatorstatistics.ValidatorStatisticsNum(len(N)),
+				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(gasUsed),
 			}
 		}
 	}
 
 	var wg sync.WaitGroup
-	var deferredTransferStatistics = TransferStatistics{}
+	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}
 	var mutex sync.Mutex // Add mutex to protect map access
 
 	for serviceIndex := range priorState.ServiceAccounts {
@@ -548,9 +549,9 @@ func accumulateAndIntegrate(
 			_, gasUsed := pvm.OnTransfer(priorState.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
-				deferredTransferStatistics[sIndex] = ServiceTransferStatistics{
-					NumberOfTransfers: uint64(len(selectedTransfers)),
-					GasUsed:           gasUsed,
+				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{
+					NumberOfTransfers: validatorstatistics.ValidatorStatisticsNum(len(selectedTransfers)),
+					GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(gasUsed),
 				}
 				mutex.Unlock() // Don't forget to unlock
 			}
@@ -612,9 +613,9 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics TransferStatistics, accumulationStatistics AccumulationStatistics) ValidatorStatistics {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics validatorstatistics.ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics validatorstatistics.TransferStatistics, accumulationStatistics validatorstatistics.AccumulationStatistics) validatorstatistics.ValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
-	var a [constants.NumValidators]SingleValidatorStatistics
+	var a [constants.NumValidators]validatorstatistics.SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
 		a = priorValidatorStatistics.AccumulatorStatistics
 	} else {
@@ -645,7 +646,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 	}
 	for cIndex := range constants.NumCores {
 		// Reset core statistics to zero (don't add to existing values)
-		coreStats := CoreStatistics{} // Initialize a fresh stats object
+		coreStats := validatorstatistics.CoreStatistics{} // Initialize a fresh stats object
 
 		// Find all work reports for this core in the guarantees
 		for _, guarantee := range guarantees {
@@ -656,12 +657,12 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 
 			// Sum statistics from each work digest in the work report
 			for _, digest := range workReport.WorkDigests {
-				coreStats.NumSegmentsImportedFrom += uint64(digest.NumSegmentsImportedFrom)
-				coreStats.NumExtrinsicsUsed += uint64(digest.NumExtrinsicsUsed)
-				coreStats.SizeInOctetsOfExtrinsicsUsed += uint64(digest.SizeInOctetsOfExtrinsicsUsed)
-				coreStats.NumSegmentsExportedInto += uint64(digest.NumSegmentsExportedInto)
-				coreStats.ActualRefinementGasUsed += digest.ActualRefinementGasUsed
-				coreStats.WorkBundleLength += uint64(workReport.WorkPackageSpecification.WorkBundleLength)
+				coreStats.NumSegmentsImportedFrom += validatorstatistics.ValidatorStatisticsNum(digest.NumSegmentsImportedFrom)
+				coreStats.NumExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(digest.NumExtrinsicsUsed)
+				coreStats.SizeInOctetsOfExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(digest.SizeInOctetsOfExtrinsicsUsed)
+				coreStats.NumSegmentsExportedInto += validatorstatistics.ValidatorStatisticsNum(digest.NumSegmentsExportedInto)
+				coreStats.ActualRefinementGasUsed += validatorstatistics.ValidatorStatisticsGasValue(digest.ActualRefinementGasUsed)
+				coreStats.WorkBundleLength += validatorstatistics.ValidatorStatisticsNum(workReport.WorkPackageSpecification.WorkBundleLength)
 			}
 		}
 
@@ -670,10 +671,10 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 				continue
 			}
 
-			coreStats.OctetsIntroduced += uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0)))
+			coreStats.OctetsIntroduced += validatorstatistics.ValidatorStatisticsNum(uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0))))
 		}
 
-		coreStats.AvailabilityContributionsInAssurancesExtrinsic = uint64(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))
+		coreStats.AvailabilityContributionsInAssurancesExtrinsic = validatorstatistics.ValidatorStatisticsNum(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))
 
 		// Set the new statistics in the return value
 		posteriorValidatorStatistics.CoreStatistics[cIndex] = coreStats
@@ -695,23 +696,23 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		trackedServiceIndices[serviceIndex] = struct{}{}
 	}
 	for serviceIndex, _ := range trackedServiceIndices {
-		serviceStatistics := ServiceStatistics{}
+		serviceStatistics := validatorstatistics.ServiceStatistics{}
 		for _, guarantee := range guarantees {
 			for _, workDigest := range guarantee.WorkReport.WorkDigests {
 				if workDigest.ServiceIndex == serviceIndex {
-					serviceStatistics.NumSegmentsImportedFrom += uint64(workDigest.NumSegmentsImportedFrom)
-					serviceStatistics.NumExtrinsicsUsed += uint64(workDigest.NumExtrinsicsUsed)
-					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += uint64(workDigest.SizeInOctetsOfExtrinsicsUsed)
-					serviceStatistics.NumSegmentsExportedInto += uint64(workDigest.NumSegmentsExportedInto)
+					serviceStatistics.NumSegmentsImportedFrom += validatorstatistics.ValidatorStatisticsNum(workDigest.NumSegmentsImportedFrom)
+					serviceStatistics.NumExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(workDigest.NumExtrinsicsUsed)
+					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(workDigest.SizeInOctetsOfExtrinsicsUsed)
+					serviceStatistics.NumSegmentsExportedInto += validatorstatistics.ValidatorStatisticsNum(workDigest.NumSegmentsExportedInto)
 					serviceStatistics.ActualRefinementGasUsed.WorkReportCount++
-					serviceStatistics.ActualRefinementGasUsed.Amount += workDigest.ActualRefinementGasUsed
+					serviceStatistics.ActualRefinementGasUsed.Amount += validatorstatistics.ValidatorStatisticsGasValue(workDigest.ActualRefinementGasUsed)
 				}
 			}
 		}
 		for _, preimage := range preimages {
 			if preimage.ServiceIndex == serviceIndex {
 				serviceStatistics.PreimageExtrinsicSize.ExtrinsicCount++
-				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += uint64(len(preimage.Data))
+				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += validatorstatistics.ValidatorStatisticsNum(len(preimage.Data))
 			}
 		}
 		if _, ok := accumulationStatistics[serviceIndex]; ok {

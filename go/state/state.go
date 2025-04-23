@@ -6,6 +6,7 @@ import (
 	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/validatorstatistics"
 	"github.com/ascrivener/jam/workreport"
 )
 
@@ -23,7 +24,7 @@ type State struct {
 	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // φ
 	PrivilegedServices         types.PrivilegedServices                                                     // χ
 	Disputes                   types.Disputes                                                               // ψ
-	ValidatorStatistics        ValidatorStatistics                                                          // π
+	ValidatorStatistics        validatorstatistics.ValidatorStatistics                                      // π
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
 	AccumulationHistory        AccumulationHistory                                                          // ξ
 }
@@ -31,64 +32,6 @@ type State struct {
 type PendingReport struct {
 	WorkReport workreport.WorkReport
 	Timeslot   types.Timeslot
-}
-
-type ValidatorStatistics struct {
-	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics // V
-	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics // L
-	CoreStatistics          [constants.NumCores]CoreStatistics                 // C
-	ServiceStatistics       map[types.ServiceIndex]ServiceStatistics           // S
-}
-
-type SingleValidatorStatistics struct {
-	BlocksProduced         uint32 // b
-	TicketsIntroduced      uint32 // t
-	PreimagesIntroduced    uint32 // p
-	OctetsIntroduced       uint32 // d
-	ReportsGuaranteed      uint32 // g
-	AvailabilityAssurances uint32 // a
-}
-
-type CoreStatistics struct {
-	OctetsIntroduced                               uint64         // d
-	AvailabilityContributionsInAssurancesExtrinsic uint64         // p
-	NumSegmentsImportedFrom                        uint64         // i
-	NumSegmentsExportedInto                        uint64         // e
-	SizeInOctetsOfExtrinsicsUsed                   uint64         // z
-	NumExtrinsicsUsed                              uint64         // x
-	WorkBundleLength                               uint64         // b
-	ActualRefinementGasUsed                        types.GasValue // u
-}
-
-type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
-
-type TransferStatistics map[types.ServiceIndex]ServiceTransferStatistics
-
-type ServiceAccumulationStatistics struct {
-	NumberOfWorkItems uint64
-	GasUsed           types.GasValue
-}
-
-type ServiceTransferStatistics struct {
-	NumberOfTransfers uint64
-	GasUsed           types.GasValue
-}
-
-type ServiceStatistics struct {
-	PreimageExtrinsicSize struct {
-		ExtrinsicCount    uint64
-		TotalSizeInOctets uint64
-	} // p
-	ActualRefinementGasUsed struct {
-		WorkReportCount uint64
-		Amount          types.GasValue
-	} // r
-	NumSegmentsImportedFrom      uint64 // i
-	NumSegmentsExportedInto      uint64 // e
-	SizeInOctetsOfExtrinsicsUsed uint64 // z
-	NumExtrinsicsUsed            uint64 // x
-	AccumulationStatistics       ServiceAccumulationStatistics
-	DeferredTransferStatistics   ServiceTransferStatistics
 }
 
 type AccumulationHistory [constants.NumTimeslotsPerEpoch]map[[32]byte]struct{}

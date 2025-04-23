@@ -12,6 +12,7 @@ import (
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/validatorstatistics"
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -22,8 +23,6 @@ func Serialize(v any) []byte {
 	return buf.Bytes()
 }
 
-// Deserialize takes serialized data and reconstructs the original value
-// The target parameter must be a pointer to the desired type
 func Deserialize(data []byte, target any) error {
 	// Ensure target is a pointer
 	val := reflect.ValueOf(target)
@@ -32,7 +31,16 @@ func Deserialize(data []byte, target any) error {
 	}
 
 	buf := bytes.NewBuffer(data)
-	return deserializeValue(val.Elem(), buf)
+	if err := deserializeValue(val.Elem(), buf); err != nil {
+		return err
+	}
+
+	// Check if there are leftover bytes
+	if buf.Len() > 0 {
+		return fmt.Errorf("extra %d bytes left after deserialization", buf.Len())
+	}
+
+	return nil
 }
 
 // serializeValue is the recursive helper that writes the serialized form of v into buf.
@@ -251,6 +259,17 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		return nil
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) {
+			// For regular maps, read length prefix
+			length, n, ok := DecodeLength(buf.Bytes())
+			if !ok {
+				return fmt.Errorf("failed to decode ValidatorStatisticsNum length")
+			}
+			// Consume the bytes used for length
+			buf.Next(n)
+			v.SetUint(length)
+			return nil
+		}
 		l := int(v.Type().Size())
 		if buf.Len() < l {
 			return fmt.Errorf("not enough data to read %d-byte unsigned integer", l)

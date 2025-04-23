@@ -18,6 +18,7 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/test/asntypes"
+	"github.com/ascrivener/jam/validatorstatistics"
 
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
@@ -445,7 +446,7 @@ func createEmptyState() State {
 		AuthorizerQueue:            [constants.NumCores][constants.AuthorizerQueueLength][32]byte{},
 		PrivilegedServices:         types.PrivilegedServices{},
 		Disputes:                   types.Disputes{},
-		ValidatorStatistics:        ValidatorStatistics{},
+		ValidatorStatistics:        validatorstatistics.ValidatorStatistics{},
 		MostRecentBlockTimeslot:    0,
 	}
 
