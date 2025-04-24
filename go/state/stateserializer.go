@@ -1,11 +1,14 @@
 package state
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -226,9 +229,167 @@ func StateSerializer(state State) map[[32]byte][]byte {
 	return serialized
 }
 
+// findStorageDictionaryEntries finds all storage dictionary entries for a specific service
+func findStorageDictionaryEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[32]byte]bool) (map[[32]byte][]byte, error) {
+	result := make(map[[32]byte][]byte)
+	ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
+
+	for key, data := range serialized {
+		// Extract service index and hash using our inverse function
+		extractedSIndex, hash := invertStateKeyConstructorFromHash(key)
+
+		// Check if this matches our service and has the "ones" prefix
+		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], ones) {
+			// Extract the actual storage key (without the prefix)
+			var storageKey [32]byte
+			copy(storageKey[:], hash[4:])
+
+			result[storageKey] = data
+
+			// Check if key already processed
+			if alreadyProcessed := processedKeys[key]; alreadyProcessed {
+				return nil, fmt.Errorf("duplicate key processing detected: storage dictionary key %x already processed", key)
+			}
+
+			// Mark key as processed
+			processedKeys[key] = true
+		}
+	}
+
+	return result, nil
+}
+
+// findPreimageLookupEntries finds all preimage lookup entries for a specific service
+// Returns a map of hash keys to preimage bytes
+func findPreimageLookupEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[32]byte]bool) (map[[32]byte][]byte, error) {
+	result := make(map[[32]byte][]byte)
+	onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
+
+	for key, data := range serialized {
+		// Extract service index and hash using our inverse function
+		extractedSIndex, hash := invertStateKeyConstructorFromHash(key)
+
+		// Check if this matches our service and has the "onesMinusOne" prefix
+		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], onesMinusOne) {
+			// The data is already the raw preimage bytes (not serialized)
+			preimage := data
+
+			// Compute the Blake2b hash of the preimage
+			// This should reconstruct the original key if keys are Blake2b hashes of preimages
+			hashKey := blake2b.Sum256(preimage)
+
+			// Validate that the stored hash portion matches our computed hash
+			// During serialization we used: combined := append(onesMinusOne, hashH[1:29]...)
+			// So hash[4:32] should match hashKey[1:25]
+			if bytes.Equal(hash[4:28], hashKey[1:25]) {
+				// Store the preimage with the reconstructed key
+				result[hashKey] = preimage
+
+				// Check if key already processed
+				if alreadyProcessed := processedKeys[key]; alreadyProcessed {
+					return nil, fmt.Errorf("duplicate key processing detected: preimage lookup key %x already processed", key)
+				}
+
+				// Mark key as processed
+				processedKeys[key] = true
+			} else {
+				return nil, fmt.Errorf("preimage hash mismatch for service %d", sIndex)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// findPreimageHistoricalStatusEntries finds all preimage historical status entries for a specific service
+// It requires the already populated PreimageLookup to correctly identify the historical status entries
+// Returns a map of historical status keys to deserialized timeslots
+func findPreimageHistoricalStatusEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, account *serviceaccount.ServiceAccount, processedKeys map[[32]byte]bool) (map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot, error) {
+	result := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
+
+	// We need to identify keys that:
+	// 1. Are constructed with stateKeyConstructorFromHash
+	// 2. Have the correct service index
+	// 3. The first 4 bytes are NOT ones or onesMinusOne (i.e., not storage dictionary or preimage lookup)
+	// 4. The hash part matches one of our preimage's hashes
+
+	for key, data := range serialized {
+		// Extract service index and hash
+		extractedSIndex, hash := invertStateKeyConstructorFromHash(key)
+
+		// Skip if not for our service or hash too short
+		if extractedSIndex != sIndex || len(hash) < 4 {
+			continue
+		}
+
+		// Skip if this key has already been processed
+		// This replaces the previous check for storage dictionary and preimage lookup entries,
+		// since those would already be marked as processed in their respective functions
+		if processedKeys[key] {
+			continue
+		}
+
+		// This is a potential historical status entry - extract the blob length
+		blobLength := binary.LittleEndian.Uint32(hash[:4])
+
+		// Now search through our preimages to find a matching one
+		found := false
+		for preimageKey, preimage := range account.PreimageLookup {
+			// In serialization we do: combined := append(encodedBlobLen, hashH[2:30]...)
+			// We need to take the Blake2b hash of preimageKey first
+			preimageKeyHash := blake2b.Sum256(preimageKey[:])
+
+			// Then compare hash[4:28] with preimageKeyHash[2:26]
+			if bytes.Equal(hash[4:28], preimageKeyHash[2:26]) {
+				if blobLength != uint32(len(preimage)) {
+					return nil, fmt.Errorf("preimage historical status blob length mismatch for service %d", sIndex)
+				}
+
+				// Create the key
+				lookupKey := serviceaccount.PreimageLookupHistoricalStatusKey{
+					Preimage:   preimageKey,
+					BlobLength: types.BlobLength(blobLength),
+				}
+
+				// Deserialize the timeslots here instead of in the main function
+				var timeslots []types.Timeslot
+				if err := serializer.Deserialize(data, &timeslots); err != nil {
+					return nil, fmt.Errorf("failed to deserialize preimage historical status for service %d: %w", sIndex, err)
+				}
+
+				result[lookupKey] = timeslots
+
+				// Check if key already processed
+				if alreadyProcessed := processedKeys[key]; alreadyProcessed {
+					return nil, fmt.Errorf("duplicate key processing detected: historical status key %x already processed", key)
+				}
+
+				// Mark key as processed
+				processedKeys[key] = true
+
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// We found a key that looks like a historical status entry but no matching preimage
+			// This is a potential data inconsistency
+			return nil, fmt.Errorf("found historical status entry with no matching preimage for service %d", sIndex)
+		}
+	}
+
+	return result, nil
+}
+
 // StateDeserializer reconstructs a State object from its serialized form
 func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
-	state := State{}
+	// Create a map to track which keys have been processed
+	processedKeys := make(map[[32]byte]bool)
+
+	state := State{
+		ServiceAccounts: make(map[types.ServiceIndex]*serviceaccount.ServiceAccount),
+	}
 
 	// --- Handle basic state components ---
 
@@ -261,18 +422,92 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 			if err := serializer.Deserialize(data, component.target); err != nil {
 				return State{}, fmt.Errorf("failed to deserialize component with key %x: %w", key, err)
 			}
+			// Mark key as processed
+			processedKeys[key] = true
 		}
 	}
 
 	// --- Handle ServiceAccounts ---
 
 	// First, identify service account indexes by looking for the pattern of keys
-	serviceIndexes := make(map[uint32]bool)
-	for key := range serialized {
+	serviceIndexes := make(map[uint32][]byte)
+	for key, data := range serialized {
 		// Try to extract service index from any key
 		// We ignore the error since not all keys are related to services
 		if sIndex, _, err := extractServiceIndexFromKey(key); err == nil {
-			serviceIndexes[sIndex] = true
+			serviceIndexes[sIndex] = data
+			// Mark the service account base key as processed
+			if i, _, validStandard := invertStateKeyConstructor(key); validStandard && i == 255 {
+				processedKeys[key] = true
+			}
+		}
+	}
+
+	for sIndex, data := range serviceIndexes {
+		// Deserialize account state
+		var accountData struct {
+			CodeHash                 [32]byte
+			Balance                  types.Balance
+			MinimumGasForAccumulate  types.GasValue
+			MinimumGasForOnTransfer  types.GasValue
+			TotalOctetsUsedInStorage uint64
+			TotalItemsUsedInStorage  uint32
+		}
+
+		if err := serializer.Deserialize(data, &accountData); err != nil {
+			return State{}, fmt.Errorf("failed to deserialize service account %d: %w", sIndex, err)
+		}
+
+		// Create and populate service account
+		account := &serviceaccount.ServiceAccount{
+			CodeHash:                       accountData.CodeHash,
+			Balance:                        accountData.Balance,
+			MinimumGasForAccumulate:        accountData.MinimumGasForAccumulate,
+			MinimumGasForOnTransfer:        accountData.MinimumGasForOnTransfer,
+			StorageDictionary:              make(map[[32]byte][]byte),
+			PreimageLookup:                 make(map[[32]byte][]byte),
+			PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
+		}
+
+		// Now look for storage dictionary entries
+		storageEntries, err := findStorageDictionaryEntries(serialized, types.ServiceIndex(sIndex), processedKeys)
+		if err != nil {
+			return State{}, fmt.Errorf("failed to find storage dictionary entries: %w", err)
+		}
+		for storageKey, storageValue := range storageEntries {
+			account.StorageDictionary[storageKey] = storageValue
+		}
+
+		// Look for preimage lookup entries - already deserialized
+		preimageEntries, err := findPreimageLookupEntries(serialized, types.ServiceIndex(sIndex), processedKeys)
+		if err != nil {
+			return State{}, fmt.Errorf("failed to find preimage lookup entries: %w", err)
+		}
+		for lookupKey, preimage := range preimageEntries {
+			// The preimage is already deserialized, just store it
+			account.PreimageLookup[lookupKey] = preimage
+		}
+
+		// Look for preimage historical status entries (requires PreimageLookup to be populated first)
+		// Already deserialized by the function
+		historicalEntries, err := findPreimageHistoricalStatusEntries(serialized, types.ServiceIndex(sIndex), account, processedKeys)
+		if err != nil {
+			return State{}, fmt.Errorf("failed to find preimage historical status entries: %w", err)
+		}
+
+		// Simply copy the entries to the account's map - no need to deserialize again
+		for lookupKey, timeslots := range historicalEntries {
+			account.PreimageLookupHistoricalStatus[lookupKey] = timeslots
+		}
+
+		// Add to state after all data has been populated
+		state.ServiceAccounts[types.ServiceIndex(sIndex)] = account
+	}
+
+	// Check for unprocessed keys
+	for key := range serialized {
+		if !processedKeys[key] {
+			return State{}, fmt.Errorf("unprocessed key found in serialized data: %x", key)
 		}
 	}
 
