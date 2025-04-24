@@ -1,14 +1,11 @@
 package state
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/ascrivener/jam/serializer"
-	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -29,6 +26,31 @@ func stateKeyConstructor(i uint8, s types.ServiceIndex) [32]byte {
 
 	// The rest of the key is already zeroed by default.
 	return key
+}
+
+// invertStateKeyConstructor extracts the component ID and service index from a key
+// created with stateKeyConstructor, also returning if the key matches the expected pattern
+func invertStateKeyConstructor(key [32]byte) (uint8, types.ServiceIndex, bool) {
+	i := key[0] // Component ID is first byte
+
+	// Extract the service index from bytes 1, 3, 5, 7
+	s := uint32(key[1]) | // Least-significant byte (n0)
+		(uint32(key[3]) << 8) | // Next byte (n1)
+		(uint32(key[5]) << 16) | // Next byte (n2)
+		(uint32(key[7]) << 24) // Most-significant byte (n3)
+
+	// Validate: all bytes at even positions (except 0) and positions beyond 7 should be zero
+	valid := true
+	for idx := range key {
+		if idx > 7 || (idx > 0 && idx%2 == 0) {
+			if key[idx] != 0 {
+				valid = false
+				break
+			}
+		}
+	}
+
+	return i, types.ServiceIndex(s), valid
 }
 
 func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [32]byte {
@@ -54,6 +76,30 @@ func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [32]byte {
 	copy(key[8:], h[4:])
 
 	return key
+}
+
+// invertStateKeyConstructorFromHash extracts the service index and hash from a key
+// created with stateKeyConstructorFromHash
+func invertStateKeyConstructorFromHash(key [32]byte) (types.ServiceIndex, [32]byte) {
+	// Extract service index from interleaved positions 0, 2, 4, 6
+	s := uint32(key[0]) |
+		(uint32(key[2]) << 8) |
+		(uint32(key[4]) << 16) |
+		(uint32(key[6]) << 24)
+
+	// Reconstruct the original hash
+	var h [32]byte
+
+	// First 4 bytes were interleaved at positions 1, 3, 5, 7
+	h[0] = key[1]
+	h[1] = key[3]
+	h[2] = key[5]
+	h[3] = key[7]
+
+	// Remaining bytes were copied starting at position 8
+	copy(h[4:], key[8:])
+
+	return types.ServiceIndex(s), h
 }
 
 // --- Helper: Convert []byte to [32]byte ---
@@ -230,121 +276,16 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 		}
 	}
 
-	// Process each service account
-	for sIndex := range serviceIndexes {
-		// Deserialize account state
-		accountKey := stateKeyConstructor(255, types.ServiceIndex(sIndex))
-		if data, exists := serialized[accountKey]; exists {
-			var accountData struct {
-				CodeHash                 [32]byte
-				Balance                  types.Balance
-				MinimumGasForAccumulate  types.GasValue
-				MinimumGasForOnTransfer  types.GasValue
-				TotalOctetsUsedInStorage uint64
-				TotalItemsUsedInStorage  uint32
-			}
-
-			if err := serializer.Deserialize(data, &accountData); err != nil {
-				return State{}, fmt.Errorf("failed to deserialize service account %d: %w", sIndex, err)
-			}
-
-			// Create and populate service account
-			account := serviceaccount.ServiceAccount{}
-			account.CodeHash = accountData.CodeHash
-			account.Balance = accountData.Balance
-			account.MinimumGasForAccumulate = accountData.MinimumGasForAccumulate
-			account.MinimumGasForOnTransfer = accountData.MinimumGasForOnTransfer
-
-			// Add to state
-			state.ServiceAccounts[types.ServiceIndex(sIndex)] = &account
-
-			// Process StorageDictionary
-			ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
-
-			// Process PreimageLookup
-			onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
-
-			// Deserialize all entries related to this service account
-			for key, data := range serialized {
-				if keyIndex, keyHash, err := extractServiceIndexFromKey(key); err == nil && keyIndex == sIndex {
-					prefix := keyHash[:4]
-
-					// StorageDictionary entry
-					if bytes.Equal(prefix, ones) {
-						var storageValue []byte
-						var storageKey [32]byte
-
-						// Extract the storage key
-						copy(storageKey[:], append(make([]byte, 4), keyHash[4:32]...))
-
-						if err := serializer.Deserialize(data, &storageValue); err != nil {
-							return State{}, fmt.Errorf("failed to deserialize storage dictionary entry: %w", err)
-						}
-
-						account.StorageDictionary[storageKey] = storageValue
-					} else if bytes.Equal(prefix, onesMinusOne) {
-						// PreimageLookup entry
-						var preimage []byte
-						var lookupKey [32]byte
-
-						// Extract the lookup hash (prepend 0x00 to match original hash format)
-						lookupKey[0] = 0
-						copy(lookupKey[1:], append(make([]byte, 0), keyHash[4:32]...))
-
-						if err := serializer.Deserialize(data, &preimage); err != nil {
-							return State{}, fmt.Errorf("failed to deserialize preimage lookup entry: %w", err)
-						}
-
-						account.PreimageLookup[lookupKey] = preimage
-					} else {
-						// PreimageLookupHistoricalStatus entry - extract blob length
-						blobLength := binary.LittleEndian.Uint32(prefix)
-						if blobLength != 0 && blobLength != 1<<32-1 && blobLength != 1<<32-2 {
-							// This is likely a PreimageLookupHistoricalStatus entry
-							var timeslots []types.Timeslot
-
-							if err := serializer.Deserialize(data, &timeslots); err != nil {
-								return State{}, fmt.Errorf("failed to deserialize preimage historical status: %w", err)
-							}
-
-							// Find corresponding preimage
-							for _, preimage := range account.PreimageLookup {
-								preimageHash := blake2b.Sum256(preimage)
-								if bytes.Equal(preimageHash[2:30], keyHash[4:32]) {
-									lookupKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-										Preimage:   sliceToArray32(preimage),
-										BlobLength: types.BlobLength(blobLength),
-									}
-									account.PreimageLookupHistoricalStatus[lookupKey] = timeslots
-									break
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
 	return state, nil
 }
 
-// extractServiceIndexFromKey attempts to extract the service index and the hash part from a key
-// It returns the service index, the hash portion, and an error if extraction fails
 func extractServiceIndexFromKey(key [32]byte) (uint32, []byte, error) {
-	// All service-related keys are constructed with stateKeyConstructor or stateKeyConstructorFromHash
-	// The service index is in the first 4 bytes (though mixed with other data)
-	// For simplicity, we just try to extract what might be a service index
+	// Only look for standard keys with component ID 255
+	i, sIndex, validStandard := invertStateKeyConstructor(key)
 
-	// This is a simplified approach and may need refinement based on the actual key construction
-	sIndex := binary.LittleEndian.Uint32(key[:4])
-
-	// We consider it a valid service index if it's in a reasonable range
-	// Adjust these bounds based on your application's requirements
-	if sIndex > 1<<24 {
-		// Probably not a service index
-		return 0, nil, fmt.Errorf("not a service index key")
+	if validStandard && i == 255 {
+		return uint32(sIndex), nil, nil
 	}
 
-	return sIndex, key[4:], nil
+	return 0, nil, fmt.Errorf("not a service index key")
 }
