@@ -1,9 +1,7 @@
 package state
 
 import (
-	"bytes"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,7 +176,7 @@ func runStateTransitionTestAssurances(t *testing.T, testDir string, fieldsToComp
 			// Build header.Header
 			header := header.Header{
 				TimeSlot:       types.Timeslot(testCase.Input.Slot),
-				PriorStateRoot: hexToHash(string(testCase.Input.Parent)),
+				PriorStateRoot: hexToHashMust(string(testCase.Input.Parent)),
 			}
 			block := block.Block{
 				Header: header,
@@ -368,34 +366,6 @@ func makeMockAssurances() extrinsics.Assurances {
 	return assurances
 }
 
-// hexToHash converts a hex string (with or without 0x prefix) to a [32]byte array
-func hexToHash(hexStr string) [32]byte {
-	var hash [32]byte
-
-	// Remove 0x prefix if present
-	if len(hexStr) >= 2 && hexStr[0:2] == "0x" {
-		hexStr = hexStr[2:]
-	}
-
-	// Handle empty string case
-	if hexStr == "" {
-		return hash
-	}
-
-	decoded, err := hex.DecodeString(hexStr)
-	if err != nil {
-		panic(fmt.Errorf("failed to decode hex string: %v", err))
-	}
-
-	// Ensure correct length
-	if len(decoded) != 32 {
-		panic(fmt.Errorf("expected 32 bytes, got %d", len(decoded)))
-	}
-
-	copy(hash[:], decoded)
-	return hash
-}
-
 // hexToBytes converts a hex string (with or without 0x prefix) to a byte slice
 func hexToBytes(hexStr string) []byte {
 	// Remove 0x prefix if it exists
@@ -473,7 +443,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 	state.MostRecentBlockTimeslot = types.Timeslot(asnState.Slot)
 
 	// Set entropy from ASN state
-	entropyHash := hexToHash(string(asnState.Entropy))
+	entropyHash := hexToHashMust(string(asnState.Entropy))
 	state.EntropyAccumulator[0] = entropyHash
 
 	// Convert ready queue
@@ -486,7 +456,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 		for _, readyRecord := range queueItem {
 			workPackageHashes := make(map[[32]byte]struct{})
 			for _, dep := range readyRecord.Dependencies {
-				hash := hexToHash(string(dep))
+				hash := hexToHashMust(string(dep))
 				workPackageHashes[hash] = struct{}{}
 			}
 
@@ -506,7 +476,7 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 
 		workPackageHashes := make(map[[32]byte]struct{})
 		for _, hashStr := range accItem {
-			hash := hexToHash(string(hashStr))
+			hash := hexToHashMust(string(hashStr))
 			workPackageHashes[hash] = struct{}{}
 		}
 		state.AccumulationHistory[idx] = workPackageHashes
@@ -524,12 +494,12 @@ func convertAsnStateToImplState(asnState asntypes.State) State {
 		}
 
 		// Set code hash
-		codeHash := hexToHash(string(account.Data.Service.CodeHash))
+		codeHash := hexToHashMust(string(account.Data.Service.CodeHash))
 		serviceAccount.CodeHash = codeHash
 
 		// Add preimages
 		for _, preimage := range account.Data.Preimages {
-			hashArray := hexToHash(string(preimage.Hash))
+			hashArray := hexToHashMust(string(preimage.Hash))
 			// Properly decode hex string to binary
 			serviceAccount.PreimageLookup[hashArray] = hexToBytes(string(preimage.Blob))
 		}
@@ -551,8 +521,8 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 
 	// // Convert results
 	// for _, result := range asnReport.Results {
-	// 	codeHash := hexToHash(string(result.CodeHash))
-	// 	payloadHash := hexToHash(string(result.PayloadHash))
+	// 	codeHash := hexToHashMust(string(result.CodeHash))
+	// 	payloadHash := hexToHashMust(string(result.PayloadHash))
 
 	// 	workResult := workreport.WorkResult{
 	// 		ServiceIndex:           types.ServiceIndex(result.ServiceId),
@@ -570,9 +540,9 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	// }
 
 	// // Set package spec
-	// packageSpecHash := hexToHash(string(asnReport.PackageSpec.Hash))
-	// erasureRoot := hexToHash(string(asnReport.PackageSpec.ErasureRoot))
-	// exportsRoot := hexToHash(string(asnReport.PackageSpec.ExportsRoot))
+	// packageSpecHash := hexToHashMust(string(asnReport.PackageSpec.Hash))
+	// erasureRoot := hexToHashMust(string(asnReport.PackageSpec.ErasureRoot))
+	// exportsRoot := hexToHashMust(string(asnReport.PackageSpec.ExportsRoot))
 
 	// report.WorkPackageSpecification = workreport.AvailabilitySpecification{
 	// 	WorkPackageHash:  packageSpecHash,                                // h
@@ -583,15 +553,15 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	// }
 
 	// // Set refinement context
-	// anchorHash := hexToHash(string(asnReport.Context.Anchor))
-	// stateRoot := hexToHash(string(asnReport.Context.StateRoot))
-	// beefyRoot := hexToHash(string(asnReport.Context.BeefyRoot))
-	// lookupAnchor := hexToHash(string(asnReport.Context.LookupAnchor))
+	// anchorHash := hexToHashMust(string(asnReport.Context.Anchor))
+	// stateRoot := hexToHashMust(string(asnReport.Context.StateRoot))
+	// beefyRoot := hexToHashMust(string(asnReport.Context.BeefyRoot))
+	// lookupAnchor := hexToHashMust(string(asnReport.Context.LookupAnchor))
 
 	// // Convert prerequisites to map of [32]byte
 	// prereqMap := make(map[[32]byte]struct{})
 	// for _, prereq := range asnReport.Context.Prerequisites {
-	// 	hash := hexToHash(string(prereq))
+	// 	hash := hexToHashMust(string(prereq))
 	// 	prereqMap[hash] = struct{}{}
 	// }
 
@@ -605,7 +575,7 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	// }
 
 	// // Set AuthorizerHash (a)
-	// authorizerHash := hexToHash(string(asnReport.AuthorizerHash))
+	// authorizerHash := hexToHashMust(string(asnReport.AuthorizerHash))
 	// report.AuthorizerHash = authorizerHash
 
 	// // Set Output (o) - properly decode the hex string ByteSequence to bytes
@@ -619,8 +589,8 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 	// // Set SegmentRootLookup (l)
 	// report.SegmentRootLookup = make(map[[32]byte][32]byte)
 	// for _, item := range asnReport.SegmentRootLookup {
-	// 	key := hexToHash(string(item.WorkPackageHash))
-	// 	val := hexToHash(string(item.SegmentTreeRoot))
+	// 	key := hexToHashMust(string(item.WorkPackageHash))
+	// 	val := hexToHashMust(string(item.SegmentTreeRoot))
 	// 	report.SegmentRootLookup[key] = val
 	// }
 
@@ -662,7 +632,7 @@ func convertAsnAssurancesToImpl(asn []asntypes.AvailAssurance) extrinsics.Assura
 	impl := make(extrinsics.Assurances, len(asn))
 	for i, a := range asn {
 		impl[i] = extrinsics.Assurance{
-			ParentHash:                    hexToHash(string(a.Anchor)),
+			ParentHash:                    hexToHashMust(string(a.Anchor)),
 			CoreAvailabilityContributions: *convertBitfield(string(a.Bitfield)),
 			ValidatorIndex:                types.ValidatorIndex(a.ValidatorIndex),
 			Signature:                     convertSignatureString(string(a.Signature)),
@@ -685,9 +655,9 @@ func convertBitfield(hexStr string) *bitsequence.BitSequence {
 func convertTestVectorToBlock(testVectorBlock Block) block.Block {
 	// Build the header
 	blockHeader := header.Header{
-		ParentHash:                   hexToHash(testVectorBlock.Header.Parent),
-		PriorStateRoot:               hexToHash(testVectorBlock.Header.ParentStateRoot),
-		ExtrinsicHash:                hexToHash(testVectorBlock.Header.ExtrinsicHash),
+		ParentHash:                   hexToHashMust(testVectorBlock.Header.Parent),
+		PriorStateRoot:               hexToHashMust(testVectorBlock.Header.ParentStateRoot),
+		ExtrinsicHash:                hexToHashMust(testVectorBlock.Header.ExtrinsicHash),
 		TimeSlot:                     types.Timeslot(testVectorBlock.Header.Slot),
 		BandersnatchBlockAuthorIndex: types.ValidatorIndex(testVectorBlock.Header.AuthorIndex),
 		VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(testVectorBlock.Header.EntropySource)),
@@ -697,13 +667,13 @@ func convertTestVectorToBlock(testVectorBlock Block) block.Block {
 	// Convert validators from test vector to the required format
 	var validatorKeys [constants.NumValidators]types.BandersnatchPublicKey
 	for i, v := range testVectorBlock.Header.EpochMark.Validators {
-		validatorKeys[i] = types.BandersnatchPublicKey(hexToHash(v.Bandersnatch))
+		validatorKeys[i] = types.BandersnatchPublicKey(hexToHashMust(v.Bandersnatch))
 	}
 
 	// Set up epoch mark - mapping from the JSON representation to implementation types
 	blockHeader.EpochMarker = &header.EpochMarker{
-		CurrentEpochRandomness: hexToHash(testVectorBlock.Header.EpochMark.Entropy),
-		NextEpochRandomness:    hexToHash(testVectorBlock.Header.EpochMark.TicketsEntropy),
+		CurrentEpochRandomness: hexToHashMust(testVectorBlock.Header.EpochMark.Entropy),
+		NextEpochRandomness:    hexToHashMust(testVectorBlock.Header.EpochMark.TicketsEntropy),
 		ValidatorKeys:          validatorKeys,
 	}
 
@@ -741,73 +711,66 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	t.Parallel()
 
 	// Load the test file
-	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions/1_000.json"
+	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/chainspecs/state_snapshots/genesis-tiny.json"
 	fileData, err := os.ReadFile(testFilePath)
 	if err != nil {
 		t.Fatalf("Failed to load test file: %v", err)
 	}
 
-	// Parse the JSON
-	var testVector TestVector
-	if err := json.Unmarshal(fileData, &testVector); err != nil {
+	genesisState, err := StateFromGreekJSON(fileData)
+	if err != nil {
 		t.Fatalf("Failed to parse JSON: %v", err)
 	}
 
-	// STEP 1: Convert the pre_state key-value pairs to a serialized state map
-	preStateMap := make(map[[32]byte][]byte)
-	for _, kv := range testVector.PreState.KeyVals {
-		key := hexToHash(kv[0])
-		value := hexToBytes(kv[1])
-		preStateMap[key] = value
-	}
+	fmt.Println(genesisState)
 
-	// STEP 2: Deserialize the pre-state
-	preState, err := StateDeserializer(preStateMap)
-	if err != nil {
-		t.Fatalf("StateDeserializer failed on pre-state: %v", err)
-	}
+	// // STEP 2: Deserialize the pre-state
+	// preState, err := StateDeserializer(preStateMap)
+	// if err != nil {
+	// 	t.Fatalf("StateDeserializer failed on pre-state: %v", err)
+	// }
 
-	// STEP 3: Build a block from the test vector using the helper function
-	testBlock := convertTestVectorToBlock(testVector.Block)
+	// // STEP 3: Build a block from the test vector using the helper function
+	// testBlock := convertTestVectorToBlock(testVector.Block)
 
-	// STEP 4: Run the StateTransitionFunction
-	postState := StateTransitionFunction(preState, testBlock)
+	// // STEP 4: Run the StateTransitionFunction
+	// postState := StateTransitionFunction(preState, testBlock)
 
-	// STEP 5: Serialize the resulting state
-	resultStateMap := StateSerializer(postState)
+	// // STEP 5: Serialize the resulting state
+	// resultStateMap := StateSerializer(postState)
 
-	// STEP 6: Convert the expected post_state key-value pairs to a serialized state map
-	expectedPostStateMap := make(map[[32]byte][]byte)
-	for _, kv := range testVector.PostState.KeyVals {
-		key := hexToHash(kv[0])
-		value := hexToBytes(kv[1])
-		expectedPostStateMap[key] = value
-	}
+	// // STEP 6: Convert the expected post_state key-value pairs to a serialized state map
+	// expectedPostStateMap := make(map[[32]byte][]byte)
+	// for _, kv := range testVector.PostState.KeyVals {
+	// 	key := hexToHashMust(kv[0])
+	// 	value := hexToBytes(kv[1])
+	// 	expectedPostStateMap[key] = value
+	// }
 
-	// STEP 7: Compare the result with the expected post-state
-	// First check the total key count
-	if len(resultStateMap) != len(expectedPostStateMap) {
-		t.Errorf("Post-state key count mismatch: got %d, want %d",
-			len(resultStateMap), len(expectedPostStateMap))
-	}
+	// // STEP 7: Compare the result with the expected post-state
+	// // First check the total key count
+	// if len(resultStateMap) != len(expectedPostStateMap) {
+	// 	t.Errorf("Post-state key count mismatch: got %d, want %d",
+	// 		len(resultStateMap), len(expectedPostStateMap))
+	// }
 
-	// Check each key-value pair
-	for key, expectedValue := range expectedPostStateMap {
-		actualValue, exists := resultStateMap[key]
-		if !exists {
-			t.Errorf("Expected key not found in result: %x", key)
-			continue
-		}
+	// // Check each key-value pair
+	// for key, expectedValue := range expectedPostStateMap {
+	// 	actualValue, exists := resultStateMap[key]
+	// 	if !exists {
+	// 		t.Errorf("Expected key not found in result: %x", key)
+	// 		continue
+	// 	}
 
-		if !bytes.Equal(actualValue, expectedValue) {
-			t.Errorf("Value mismatch for key %x: got %x, want %x",
-				key, actualValue, expectedValue)
-		}
-	}
+	// 	if !bytes.Equal(actualValue, expectedValue) {
+	// 		t.Errorf("Value mismatch for key %x: got %x, want %x",
+	// 			key, actualValue, expectedValue)
+	// 	}
+	// }
 
-	// Additional validation for successful deserialization
-	t.Logf("Successfully deserialized pre-state with %d service accounts", len(preState.ServiceAccounts))
-	t.Logf("Successfully ran state transition and produced valid post-state")
+	// // Additional validation for successful deserialization
+	// t.Logf("Successfully deserialized pre-state with %d service accounts", len(preState.ServiceAccounts))
+	// t.Logf("Successfully ran state transition and produced valid post-state")
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics

@@ -474,8 +474,10 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 		if err != nil {
 			return State{}, fmt.Errorf("failed to find storage dictionary entries: %w", err)
 		}
-		for storageKey, storageValue := range storageEntries {
-			account.StorageDictionary[storageKey] = storageValue
+
+		// Return an error if any storage dictionary entries are found
+		if len(storageEntries) > 0 {
+			return State{}, fmt.Errorf("deserialization doesn't support storage dictionary entries for service %d", sIndex)
 		}
 
 		// Look for preimage lookup entries - already deserialized
