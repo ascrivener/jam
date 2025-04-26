@@ -20,8 +20,11 @@ type Header struct {
 
 type EpochMarker struct {
 	CurrentEpochRandomness [32]byte
-	NextEpochRandomness    [32]byte
-	ValidatorKeys          [constants.NumValidators]types.BandersnatchPublicKey
+	TicketsRandomness      [32]byte
+	ValidatorKeys          [constants.NumValidators]struct {
+		types.BandersnatchPublicKey
+		types.Ed25519PublicKey
+	}
 }
 
 type Ticket struct {

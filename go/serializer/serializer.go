@@ -115,7 +115,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) {
-			buf.Write(EncodeLength(v))
+			buf.Write(EncodeGeneralNatural(v.Uint()))
 			return
 		}
 		l := int(v.Type().Size())
@@ -213,7 +213,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 		case reflect.TypeOf(bitsequence.BitSequence{}):
 			// First read length of the bit sequence
-			seqLength, n, ok := DecodeLength(buf.Bytes())
+			seqLength, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {
 				return fmt.Errorf("failed to decode BitSequence length")
 			}
@@ -265,7 +265,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) {
 			// For regular maps, read length prefix
-			length, n, ok := DecodeLength(buf.Bytes())
+			length, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {
 				return fmt.Errorf("failed to decode ValidatorStatisticsNum length")
 			}
@@ -318,6 +318,7 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 
 	// If the map is used as a set (value type is struct{}), simply serialize the keys.
 	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
+		buf.Write(EncodeLength(v))
 		for _, key := range keys {
 			serializeValue(key, buf)
 		}
@@ -355,7 +356,7 @@ func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
 	}
 
 	// For regular maps, read length prefix
-	length, n, ok := DecodeLength(buf.Bytes())
+	length, n, ok := DecodeGeneralNatural(buf.Bytes())
 	if !ok {
 		return fmt.Errorf("failed to decode map length")
 	}
@@ -395,8 +396,26 @@ func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
 
 // serializeSlice handles array/slice serialization.
 // For slices (but not arrays), it encodes the length first.
-// For boolean slices, it bit-packs the booleans; otherwise, it serializes each element.
+// Special case for []byte/[]uint8 to handle them as raw binary data (no length prefix).
 func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
+	// Special case for byte slices ([]uint8) - write raw bytes with no length prefix
+	if v.Type().Elem().Kind() == reflect.Uint8 {
+		// Handle both addressable slices and unaddressable arrays/slices
+		if v.CanAddr() {
+			buf.Write(v.Bytes()) // This only works for addressable slices
+		} else {
+			// Manual copy for unaddressable arrays/slices
+			length := v.Len()
+			bytes := make([]byte, length)
+			for i := 0; i < length; i++ {
+				bytes[i] = byte(v.Index(i).Uint())
+			}
+			buf.Write(bytes)
+		}
+		return
+	}
+
+	// Regular handling for non-byte slices/arrays
 	if v.Kind() == reflect.Slice {
 		buf.Write(EncodeLength(v))
 	}
@@ -414,9 +433,9 @@ func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 	length := v.Len()
 
 	if !isArray {
-		// Read slice length using DecodeLength for consistent decoding
+		// Read slice length using DecodeGeneralNatural for consistent decoding
 		lengthBytes := buf.Bytes()
-		decodedLength, n, ok := DecodeLength(lengthBytes)
+		decodedLength, n, ok := DecodeGeneralNatural(lengthBytes)
 		if !ok {
 			return fmt.Errorf("failed to decode slice length")
 		}
@@ -454,13 +473,22 @@ func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 	return nil
 }
 
-// appendLengthEncoding encodes the length (v.Len()) of a collection into buf.
+// EncodeLength encodes the length (v.Len()) of a collection into buf.
 // It follows three cases:
 //  1. x == 0: output a single 0x00 octet.
 //  2. x fits in a computed header + remainder format.
 //  3. Otherwise, output 0xFF followed by x as 8 little-endian octets.
 func EncodeLength(v reflect.Value) []byte {
 	x := uint64(v.Len())
+	return EncodeGeneralNatural(x)
+}
+
+// EncodeGeneralNatural encodes a uint64 length value using the compact encoding format.
+// It follows three cases:
+//  1. x == 0: output a single 0x00 octet.
+//  2. x fits in a computed header + remainder format.
+//  3. Otherwise, output 0xFF followed by x as 8 little-endian octets.
+func EncodeGeneralNatural(x uint64) []byte {
 	var result []byte
 	if x == 0 {
 		return []byte{0x00}
@@ -502,9 +530,9 @@ func countLeadingOnes(b byte) int {
 	return count
 }
 
-// DecodeLength decodes a length value encoded by EncodeLength from p.
+// DecodeGeneralNatural decodes a length value encoded by EncodeGeneralNatural from p.
 // It returns the decoded length x, the number of bytes consumed, and ok==true on success.
-func DecodeLength(p []byte) (x uint64, n int, ok bool) {
+func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 	if len(p) == 0 {
 		return 0, 0, false
 	}

@@ -10,7 +10,7 @@ type Ed25519PublicKey [32]byte
 
 type BandersnatchPublicKey [32]byte
 
-type BandersnatchVRFSignature [64]byte
+type BandersnatchVRFSignature [96]byte
 
 type BandersnatchRingVRFProof [784]byte
 

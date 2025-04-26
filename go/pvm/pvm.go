@@ -121,7 +121,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	offset := 0
 
 	// 1. Decode E(|j|): the encoded number of elements in j.
-	L_j, n, ok := serializer.DecodeLength(p[offset:])
+	L_j, n, ok := serializer.DecodeGeneralNatural(p[offset:])
 	if !ok {
 		return nil, k, nil, false
 	}
@@ -135,7 +135,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	offset++
 
 	// 3. Decode E(|c|): the encoded length of c (and hence k's underlying byte slice).
-	L_c, n, ok := serializer.DecodeLength(p[offset:])
+	L_c, n, ok := serializer.DecodeGeneralNatural(p[offset:])
 	if !ok {
 		return nil, k, nil, false
 	}

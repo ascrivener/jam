@@ -70,9 +70,12 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 
 func MerklizeState(s State) [32]byte {
 	serializedState := StateSerializer(s)
-	bitSeqKeyMap := make(map[bitsequence.BitSeqKey][]byte)
+	bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
 	for k, v := range serializedState {
-		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = v
+		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
+			OriginalKey: k,
+			Value:       v,
+		}
 	}
 
 	return merklizer.MerklizeStateRecurser(bitSeqKeyMap)
@@ -260,6 +263,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 3. Beta -> RecentBlocks
+	state.RecentBlocks = []RecentBlock{}
 	if len(jsonState.Beta) > 0 && string(jsonState.Beta) != "null" {
 		return State{}, fmt.Errorf("recent blocks not implemented")
 	}
@@ -327,7 +331,12 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// If we get here, all arrays are empty, so we can safely use an empty Disputes
-	state.Disputes = types.Disputes{}
+	state.Disputes = types.Disputes{
+		WorkReportHashesGood:  make(map[[32]byte]struct{}),
+		WorkReportHashesBad:   make(map[[32]byte]struct{}),
+		WorkReportHashesWonky: make(map[[32]byte]struct{}),
+		ValidatorPunishes:     make(map[types.Ed25519PublicKey]struct{}),
+	}
 
 	// 6. Eta -> EntropyAccumulator
 	if len(jsonState.Eta) != 4 {
@@ -550,6 +559,14 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 				// Add to historical status map
 				serviceAcc.PreimageLookupHistoricalStatus[histKey] = timeslots
+			}
+
+			// Check if storage is not null and not empty
+			if account.Data.Storage != nil {
+				// Check if it's actually empty (could be JSON null but parsed as empty map)
+				if m, ok := account.Data.Storage.(map[string]interface{}); !ok || len(m) > 0 {
+					return State{}, fmt.Errorf("storage not implemented yet for account %d", account.ID)
+				}
 			}
 
 			// Add to service accounts map with service index as key

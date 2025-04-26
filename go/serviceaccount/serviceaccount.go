@@ -50,7 +50,7 @@ func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte) {
 	if preimage, ok := s.PreimageLookup[s.CodeHash]; ok {
 		offset := 0
-		L_m, n, ok := serializer.DecodeLength(preimage[offset:])
+		L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 		if !ok {
 			panic("failed to decode metadata length")
 		}
