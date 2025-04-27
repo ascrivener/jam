@@ -250,7 +250,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 	var posteriorValidatorKeysetsPending types.ValidatorKeysets
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
 	var posteriorSealingKeySequence sealingkeysequence.SealingKeySequence
-	var posteriorTicketAccumulator []ticket.Ticket
+	posteriorTicketAccumulator := make([]ticket.Ticket, 0)
 	// TODO: verify here if the tickets given are actually ordered by vrf output
 	for _, extrinsicTicket := range tickets {
 		vrfOutput, err := bandersnatch.BandersnatchRingVRFProofOutput(extrinsicTicket.ValidityProof)

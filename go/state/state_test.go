@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/test/asntypes"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
@@ -695,14 +697,23 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	}
 
 	stateRoot := MerklizeState(genesisState)
-	fmt.Println(hex.EncodeToString(stateRoot[:]))
-	fmt.Println(testVector.PreState.StateRoot)
+	if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
+		t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
+	}
 
-	// Extract the block from the test vector
-	// testBlock, err := BlockFromJSON(testVector.Block)
-	// if err != nil {
-	// 	t.Fatalf("Failed to parse block JSON: %v", err)
-	// }
+	testBlock, err := BlockFromJSON(testVector.Block)
+	if err != nil {
+		t.Fatalf("Failed to parse block JSON: %v", err)
+	}
+
+	postState := StateTransitionFunction(genesisState, testBlock)
+
+	// Calculate state root from our post state
+	stateRoot = MerklizeState(postState)
+	if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
+		t.Fatalf("State root does not match: %x vs %s",
+			stateRoot[:], testVector.PostState.StateRoot)
+	}
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics

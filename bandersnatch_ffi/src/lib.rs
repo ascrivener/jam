@@ -1,32 +1,17 @@
+use ark_vrf::reexports::ark_ec::AffineRepr;
+use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::suites::bandersnatch::{
     AffinePoint, BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
 };
-use ark_vrf::reexports::ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
-use ark_vrf::reexports::ark_ec::AffineRepr;
 use ark_vrf::Suite;
 use ark_vrf::{codec, Error, Output};
 use std::fs::File;
 use std::io::Read;
 use std::slice;
-use std::io::Write;
 
-// Function to log debug info to a file
-fn log_debug(message: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/bandersnatch_debug.log") {
-        let _ = writeln!(file, "{}", message);
-    }
-}
-
-// https://datatracker.ietf.org/doc/rfc9381/ 5.2 and 5.4.4 and 5.5
 pub fn vrf_output_ffi<S: Suite>(hash: &[u8; 784]) -> Result<[u8; 32], Error> {
-    // Decode the first 32 bytes into an affine point.
     let gamma = codec::point_decode::<S>(&hash[..32]).map_err(|_| Error::InvalidData)?;
-    // Multiply by the cofactor and wrap the result in an Output.
     let output = Output::<S>::from(gamma.mul_by_cofactor());
-    // Hash the output and truncate the result to 32 bytes.
     let truncated: [u8; 32] = output.hash().as_slice()[..32]
         .try_into()
         .map_err(|_| Error::InvalidData)?;
@@ -38,13 +23,10 @@ pub extern "C" fn bandersnatch_ring_vrf_proof_output(
     input_ptr: *const u8,
     out_ptr: *mut u8,
 ) -> i32 {
-    // Check that the pointers are non-null.
     if input_ptr.is_null() || out_ptr.is_null() {
         return -1;
     }
-    // Safety: caller must guarantee that input_ptr is valid for 784 bytes.
     let input_slice = unsafe { slice::from_raw_parts(input_ptr, 784) };
-    // Try to convert the slice to a fixed-size array.
     let input_array: &[u8; 784] = match input_slice.try_into() {
         Ok(arr) => arr,
         Err(_) => return -2,
@@ -52,7 +34,6 @@ pub extern "C" fn bandersnatch_ring_vrf_proof_output(
 
     match vrf_output_ffi::<BandersnatchSha512Ell2>(input_array) {
         Ok(result_array) => {
-            // Safety: caller must guarantee that out_ptr is valid for 32 bytes.
             unsafe {
                 std::ptr::copy_nonoverlapping(result_array.as_ptr(), out_ptr, 32);
             }
@@ -68,77 +49,49 @@ pub const PCS_SRS_FILE: &str = concat!(
 );
 
 pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> {
-    log_debug(&format!("Starting kzg_commitment_ffi with {} hashes", hashes.len()));
-    
-    // Log the first hash to see what's being passed
-    if !hashes.is_empty() {
-        let first_hash = hashes[0];
-        log_debug(&format!("First hash: {:?}", first_hash));
-        let all_zeros = first_hash.iter().all(|&b| b == 0);
-        log_debug(&format!("First hash is all zeros: {}", all_zeros));
-    }
-    
     let mut file = match File::open(PCS_SRS_FILE) {
         Ok(f) => f,
-        Err(e) => {
-            log_debug(&format!("Failed to open SRS file: {}", e));
+        Err(_) => {
             return Err(Error::InvalidData);
         }
     };
-    
+
     let mut buf = Vec::new();
-    if let Err(e) = file.read_to_end(&mut buf) {
-        log_debug(&format!("Failed to read SRS file: {}", e));
+    if let Err(_) = file.read_to_end(&mut buf) {
         return Err(Error::InvalidData);
     }
-    log_debug(&format!("Read {} bytes from SRS file", buf.len()));
 
     let pcs_params = match PcsParams::deserialize_uncompressed(&mut &buf[..]) {
         Ok(p) => p,
-        Err(e) => {
-            log_debug(&format!("Failed to deserialize PCS params: {:?}", e));
+        Err(_) => {
             return Err(Error::InvalidData);
         }
     };
-    log_debug("Successfully deserialized PCS params");
-    
-    // Use a ring size we know works for production
-    const RING_SIZE: usize = 8;
-    log_debug(&format!("Using ring size: {}", RING_SIZE));
-    
-    let ring_proof_params = match RingProofParams::from_pcs_params(RING_SIZE, pcs_params) {
-        Ok(p) => p,
-        Err(e) => {
-            log_debug(&format!("Failed to create ring proof params: {:?}", e));
-            return Err(Error::InvalidData);
-        }
-    };
-    log_debug("Successfully created ring proof params");
 
-    // Convert each hash to a point, but log failures
+    let ring_size: usize = hashes.len();
+
+    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params) {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(Error::InvalidData);
+        }
+    };
+
     let mut ring_pks = Vec::with_capacity(hashes.len());
-    for (i, hash) in hashes.iter().enumerate() {
-        match BandersnatchSha512Ell2::data_to_point(hash) {
-            Some(point) => {
+    for (_i, hash) in hashes.iter().enumerate() {
+        match AffinePoint::deserialize_compressed(&hash[..]) {
+            Ok(point) => {
                 ring_pks.push(point);
-                if i == 0 {
-                    log_debug("Successfully converted first hash to point");
-                }
-            },
-            None => {
-                log_debug(&format!("Failed to convert hash at index {} to point", i));
+            }
+            Err(_) => {
                 return Err(Error::InvalidData);
             }
         }
     }
-    log_debug(&format!("Successfully converted {} hashes to points", ring_pks.len()));
 
     let verifier_key = ring_proof_params.verifier_key(&ring_pks);
-    log_debug("Successfully created verifier key");
-
     let commitment = verifier_key.commitment();
-    log_debug("Successfully created commitment");
-    
+
     Ok(commitment)
 }
 
@@ -148,75 +101,90 @@ pub extern "C" fn kzg_commitment(
     num_hashes: usize,
     out_ptr: *mut u8,
 ) -> i32 {
-    log_debug(&format!("kzg_commitment called with {} hashes", num_hashes));
-    
-    // Check that the input pointers are non-null.
     if hashes_ptr.is_null() || out_ptr.is_null() {
-        log_debug("Null pointer error");
         return -1;
     }
 
-    // Calculate the total number of bytes expected for the input.
     let total_bytes = match num_hashes.checked_mul(32) {
         Some(n) => n,
         None => {
-            log_debug("Integer overflow in size calculation");
             return -2;
         }
     };
-    log_debug(&format!("Total bytes: {}", total_bytes));
 
-    // Create a slice from the raw pointer.
     let hashes_slice = unsafe { slice::from_raw_parts(hashes_ptr, total_bytes) };
 
-    // Convert the slice into a Vec<[u8; 32]>.
     let mut hashes_vec = Vec::with_capacity(num_hashes);
-    for (i, chunk) in hashes_slice.chunks(32).enumerate() {
+    for (_i, chunk) in hashes_slice.chunks(32).enumerate() {
         if chunk.len() != 32 {
-            log_debug(&format!("Chunk {} has invalid length: {}", i, chunk.len()));
             return -3;
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(chunk);
-        
-        // Log first and last hash details
-        if i == 0 || i == num_hashes - 1 {
-            let all_zeros = arr.iter().all(|&b| b == 0);
-            log_debug(&format!("Hash {} is all zeros: {}", i, all_zeros));
-        }
-        
+
         hashes_vec.push(arr);
     }
-    log_debug(&format!("Created Vec with {} hashes", hashes_vec.len()));
 
-    // Compute the ring commitment using your helper function.
     let commitment = match crate::kzg_commitment_ffi(&hashes_vec) {
         Ok(c) => c,
-        Err(e) => {
-            log_debug(&format!("kzg_commitment_ffi failed with error: {:?}", e));
+        Err(_) => {
             return -4;
         }
     };
-    log_debug("kzg_commitment_ffi succeeded");
 
-    // Serialize the commitment in compressed form.
     let mut out_bytes = Vec::new();
-    if let Err(e) = commitment.serialize_compressed(&mut out_bytes) {
-        log_debug(&format!("Failed to serialize commitment: {:?}", e));
+    if let Err(_) = commitment.serialize_compressed(&mut out_bytes) {
         return -5;
     }
-    // Verify that the serialized commitment is 144 bytes.
+
     if out_bytes.len() != 144 {
-        log_debug(&format!("Serialized commitment has wrong length: {}", out_bytes.len()));
         return -6;
     }
-    log_debug("Successfully serialized commitment");
 
-    // Copy the serialized bytes into the output buffer.
     unsafe {
         std::ptr::copy_nonoverlapping(out_bytes.as_ptr(), out_ptr, 144);
     }
-    log_debug("Successfully copied commitment to output buffer");
-    
+
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kzg_commitment_with_vector() {
+        let ring_pks_hex = "7b32d917d5aa771d493c47b0e096886827cd056c82dbdba19e60baa8b2c60313d3b1bdb321123449c6e89d310bc6b7f654315eb471c84778353ce08b951ad471561fdb0dcfb8bd443718b942f82fe717238cbcf8d12b8d22861c8a09a984a3c5a1b1da71cc4682e159b7da23050d8b6261eb11a3247c89b07ef56ccd002fd38b4fd11f89c2a1aaefe856bb1c5d4a1fad73f4de5e41804ca2c17ba26d6e10050c86d06ee2c70da6cf2da2a828d8a9d8ef755ad6e580e838359a10accb086ae437ad6fdeda0dde0a57c51d3226b87e3795e6474393772da46101fd597fbd456c1b3f9dc0c4f67f207974123830c2d66988fb3fb44becbbba5a64143f376edc51d9";
+
+        let expected_commitment_hex = "afd34e92148ec643fbb578f0e14a1ca9369d3e96b821fcc811c745c320fe2264172545ca9b6b1d8a196734bc864e171484f45ba5b95d9be39f03214b59520af3137ea80e302730a5df8e4155003414f6dcf0523d15c6ef5089806e1e8e5782be92e630ae2b14e758ab0960e372172203f4c9a41777dadd529971d7ab9d23ab29fe0e9c85ec450505dde7f5ac038274cf";
+
+        let ring_pks_bytes = hex::decode(ring_pks_hex).expect("Failed to decode hex string");
+
+        assert_eq!(ring_pks_bytes.len(), 256);
+
+        let mut hashes = Vec::new();
+        for chunk in ring_pks_bytes.chunks(32) {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(chunk);
+            hashes.push(arr);
+        }
+
+        let result = kzg_commitment_ffi(&hashes).expect("Failed to compute commitment");
+
+        let expected_bytes =
+            hex::decode(expected_commitment_hex).expect("Failed to decode hex string");
+        let expected_commitment = RingCommitment::deserialize_compressed(&mut &expected_bytes[..])
+            .expect("Failed to deserialize expected commitment");
+
+        let mut result_bytes = Vec::new();
+        result
+            .serialize_compressed(&mut result_bytes)
+            .expect("Failed to serialize result");
+
+        assert_eq!(expected_commitment, result, "Commitments don't match");
+        assert_eq!(
+            expected_bytes, result_bytes,
+            "Serialized commitment bytes don't match"
+        );
+    }
 }
