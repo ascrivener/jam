@@ -711,6 +711,26 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	// Calculate state root from our post state
 	stateRoot = MerklizeState(postState)
 	if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
+		t.Logf("State root does not match: %x vs %s",
+			stateRoot[:], testVector.PostState.StateRoot)
+
+		// Load the state snapshot for comparison
+		snapshotData, err := os.ReadFile("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots/1_000.json")
+		if err != nil {
+			t.Fatalf("Failed to read state snapshot file: %v", err)
+		}
+
+		snapshotState, err := StateFromGreekJSON(snapshotData)
+		if err != nil {
+			t.Fatalf("Failed to parse JSON: %v", err)
+		}
+
+		if diff := cmp.Diff(snapshotState, postState); diff != "" {
+			t.Logf("States don't match (-snapshot +post):\n%s", diff)
+		} else {
+			t.Logf("States match exactly but roots differ - possible serialization issue")
+		}
+
 		t.Fatalf("State root does not match: %x vs %s",
 			stateRoot[:], testVector.PostState.StateRoot)
 	}

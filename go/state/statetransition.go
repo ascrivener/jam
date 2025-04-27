@@ -361,7 +361,7 @@ func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentB
 
 func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) [4][32]byte {
 	posteriorEntropyAccumulator := [4][32]byte{}
-	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput((header.VRFSignature))
+	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(header.VRFSignature)
 	if err != nil {
 		panic(err)
 	}

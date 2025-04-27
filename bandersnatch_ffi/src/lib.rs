@@ -1,38 +1,50 @@
-use ark_vrf::reexports::ark_ec::AffineRepr;
+use ark_vrf::ietf::IetfSuite;
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::suites::bandersnatch::{
-    AffinePoint, BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
+    BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
 };
 use ark_vrf::Suite;
-use ark_vrf::{codec, Error, Output};
+use ark_vrf::{codec, Error};
 use std::fs::File;
 use std::io::Read;
 use std::slice;
 
-pub fn vrf_output_ffi<S: Suite>(hash: &[u8; 784]) -> Result<[u8; 32], Error> {
-    let gamma = codec::point_decode::<S>(&hash[..32]).map_err(|_| Error::InvalidData)?;
-    let output = Output::<S>::from(gamma.mul_by_cofactor());
-    let truncated: [u8; 32] = output.hash().as_slice()[..32]
+pub fn ietf_vrf_output_ffi<S: Suite + IetfSuite>(proof: &[u8; 96]) -> Result<[u8; 32], Error> {
+    // For Bandersnatch IETF proof, the format is:
+    // - gamma (32 bytes)
+    // - c (32 bytes)
+    // - s (32 bytes)
+
+    // Extract gamma from the first 32 bytes
+    let gamma_bytes = &proof[..32];
+
+    // Convert gamma bytes to a curve point
+    // This uses the Suite's point decoding mechanism
+    let pt: <S as Suite>::Affine =
+        codec::point_decode::<S>(gamma_bytes).map_err(|_| Error::InvalidData)?;
+
+    // Hash the point to get the VRF output
+    let output = <S>::point_to_hash(&pt);
+
+    let truncated: [u8; 32] = output.as_slice()[..32]
         .try_into()
         .map_err(|_| Error::InvalidData)?;
+
     Ok(truncated)
 }
 
 #[no_mangle]
-pub extern "C" fn bandersnatch_ring_vrf_proof_output(
-    input_ptr: *const u8,
-    out_ptr: *mut u8,
-) -> i32 {
+pub extern "C" fn ietf_vrf_output(input_ptr: *const u8, out_ptr: *mut u8) -> i32 {
     if input_ptr.is_null() || out_ptr.is_null() {
         return -1;
     }
-    let input_slice = unsafe { slice::from_raw_parts(input_ptr, 784) };
-    let input_array: &[u8; 784] = match input_slice.try_into() {
+    let input_slice = unsafe { slice::from_raw_parts(input_ptr, 96) };
+    let input_array: &[u8; 96] = match input_slice.try_into() {
         Ok(arr) => arr,
         Err(_) => return -2,
     };
 
-    match vrf_output_ffi::<BandersnatchSha512Ell2>(input_array) {
+    match ietf_vrf_output_ffi::<BandersnatchSha512Ell2>(input_array) {
         Ok(result_array) => {
             unsafe {
                 std::ptr::copy_nonoverlapping(result_array.as_ptr(), out_ptr, 32);
@@ -79,7 +91,7 @@ pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> 
 
     let mut ring_pks = Vec::with_capacity(hashes.len());
     for (_i, hash) in hashes.iter().enumerate() {
-        match AffinePoint::deserialize_compressed(&hash[..]) {
+        match codec::point_decode::<BandersnatchSha512Ell2>(&hash[..]) {
             Ok(point) => {
                 ring_pks.push(point);
             }

@@ -1,11 +1,11 @@
 package bandersnatch
 
 /*
-#cgo LDFLAGS: -L../../bandersnatch_ffi/target/release -lbandersnatch_ffi
-#include <stdlib.h>
+#cgo LDFLAGS: -L${SRCDIR}/../../bandersnatch_ffi/target/release -lbandersnatch_ffi
+#cgo darwin LDFLAGS: -framework Security
 
 // Declaration of the Rust functions.
-int bandersnatch_ring_vrf_proof_output(const unsigned char *input_ptr, unsigned char *out_ptr);
+int ietf_vrf_output(const unsigned char *input_ptr, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
 */
 import "C"
@@ -18,8 +18,14 @@ import (
 
 func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
 	var out [32]byte
+	return out, nil
+}
 
-	ret := C.bandersnatch_ring_vrf_proof_output(
+// TODO: implement
+func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]byte, error) {
+	var out [32]byte
+
+	ret := C.ietf_vrf_output(
 		(*C.uchar)(unsafe.Pointer(&proof)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
@@ -27,12 +33,6 @@ func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]b
 		return out, errors.New("vrf_output failed")
 	}
 
-	return out, nil
-}
-
-// TODO: implement
-func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]byte, error) {
-	var out [32]byte
 	return out, nil
 }
 

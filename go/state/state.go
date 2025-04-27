@@ -206,6 +206,19 @@ type AccountJSON struct {
 	Data AccountDataJSON `json:"data"`
 }
 
+// BlockMMR represents a Merkle Mountain Range for a block
+type BlockMMR struct {
+	Peaks []string `json:"peaks"`
+}
+
+// RecentBlock represents a single block in the RecentBlocks list
+type RecentBlockJSON struct {
+	HeaderHash string   `json:"header_hash"`
+	MMR        BlockMMR `json:"mmr"`
+	StateRoot  string   `json:"state_root"`
+	Reported   []string `json:"reported"`
+}
+
 // StateFromGreekJSON parses a JSON representation of a state (using Greek letter field names)
 // and returns a proper Go State struct
 func StateFromGreekJSON(jsonData []byte) (State, error) {
@@ -213,7 +226,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	type JSONState struct {
 		Alpha    [][]string             `json:"alpha"`    // AuthorizersPool
 		Varphi   [][]string             `json:"varphi"`   // AuthorizerQueue
-		Beta     json.RawMessage        `json:"beta"`     // RecentBlocks
+		Beta     []RecentBlockJSON      `json:"beta"`     // RecentBlocks
 		Gamma    Gamma                  `json:"gamma"`    // SafroleBasicState
 		Psi      DisputesJSON           `json:"psi"`      // Disputes
 		Eta      []string               `json:"eta"`      // EntropyAccumulator
@@ -263,9 +276,35 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 3. Beta -> RecentBlocks
-	state.RecentBlocks = []RecentBlock{}
-	if len(jsonState.Beta) > 0 && string(jsonState.Beta) != "null" {
-		return State{}, fmt.Errorf("recent blocks not implemented")
+	state.RecentBlocks = make([]RecentBlock, len(jsonState.Beta))
+	for i, blockJSON := range jsonState.Beta {
+		// Convert header hash
+		headerHash := hexToHashMust(blockJSON.HeaderHash)
+
+		// Convert state root
+		stateRoot := hexToHashMust(blockJSON.StateRoot)
+
+		// Convert MMR
+		mmrPeaks := make(merklizer.MMRRange, len(blockJSON.MMR.Peaks))
+		if len(blockJSON.MMR.Peaks) > 0 {
+			for j, peak := range blockJSON.MMR.Peaks {
+				hash := hexToHashMust(peak)
+				mmrPeaks[j] = &hash
+			}
+		}
+
+		// Convert reported hashes to work package hashes map
+		workPackageHashes := make(map[[32]byte][32]byte)
+		for _, _ = range blockJSON.Reported {
+			panic("not impelmented")
+		}
+
+		state.RecentBlocks[i] = RecentBlock{
+			HeaderHash:            headerHash,
+			AccumulationResultMMR: mmrPeaks,
+			StateRoot:             stateRoot,
+			WorkPackageHashes:     workPackageHashes,
+		}
 	}
 
 	// 4. Gamma -> SafroleBasicState
