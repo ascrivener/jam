@@ -95,7 +95,7 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 
 	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 
-	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, intermediateRecentBlocks, BEEFYCommitments)
+	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
 	computeServiceAccounts(block.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
@@ -170,9 +170,11 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 }
 
 func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []RecentBlock) []RecentBlock {
-	// Create a deep copy of the slice
+	// Create a deep copy of the slice and its contents
 	posteriorRecentBlocks := make([]RecentBlock, len(priorRecentBlocks))
-	copy(posteriorRecentBlocks, priorRecentBlocks)
+	for i, block := range priorRecentBlocks {
+		posteriorRecentBlocks[i] = block.DeepCopy()
+	}
 
 	// Now modify the copy, not the original
 	if len(posteriorRecentBlocks) > 0 {
@@ -183,12 +185,14 @@ func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []R
 
 func keccak256Hash(data []byte) [32]byte {
 	var result [32]byte
-	sum := sha3.NewLegacyKeccak256().Sum(data) // For Keccak-256
+	hash := sha3.NewLegacyKeccak256()
+	hash.Write(data)
+	sum := hash.Sum(nil)
 	copy(result[:], sum[:])
 	return result
 }
 
-func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []RecentBlock, C map[pvm.BEEFYCommitment]struct{}) []RecentBlock {
+func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, priorRecentBlocks []RecentBlock, intermediateRecentBlocks []RecentBlock, C map[pvm.BEEFYCommitment]struct{}) []RecentBlock {
 	// First, collect all commitments into a slice so we can sort them
 	commitments := make([]pvm.BEEFYCommitment, 0, len(C))
 	for commitment := range C {
@@ -210,13 +214,13 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 	}
 	r := merklizer.WellBalancedBinaryMerkle(blobs, keccak256Hash)
 	// Get the last MMR from the intermediate blocks (or create empty if none)
-	var lastMMR merklizer.MMRRange
-	if len(intermediateRecentBlocks) > 0 {
-		lastMMR = intermediateRecentBlocks[len(intermediateRecentBlocks)-1].AccumulationResultMMR
+	lastMMR := merklizer.MMRRange{}
+	if len(priorRecentBlocks) > 0 {
+		lastMMR = priorRecentBlocks[len(priorRecentBlocks)-1].AccumulationResultMMR.DeepCopy()
 	}
 
 	// Append the new root to the MMR
-	b := merklizer.Append(lastMMR, &r, keccak256Hash)
+	b := merklizer.Append(lastMMR, r, keccak256Hash)
 
 	// Create work package hashes map: p = {((gw)s)h ↦ ((gw)s)e | g ∈ EG}
 	workPackageHashes := make(map[[32]byte][32]byte)

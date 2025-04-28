@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ascrivener/jam/block"
@@ -55,7 +57,7 @@ type BlockHeader struct {
 	AuthorIndex     int           `json:"author_index"`
 	EntropySource   string        `json:"entropy_source"`
 	Seal            string        `json:"seal"`
-	EpochMark       EpochMark     `json:"epoch_mark"`
+	EpochMark       *EpochMark    `json:"epoch_mark"`
 	OffendersMark   []interface{} `json:"offenders_mark"`
 	TicketsMark     interface{}   `json:"tickets_mark"`
 }
@@ -669,70 +671,90 @@ func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.Work
 
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
-	t.Parallel()
-
 	// Load the test file
 	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/chainspecs/state_snapshots/genesis-tiny.json"
 	fileData, err := os.ReadFile(testFilePath)
 	if err != nil {
-		t.Fatalf("Failed to load test file: %v", err)
+		t.Fatalf("Failed to load genesis file: %v", err)
 	}
 
-	genesisState, err := StateFromGreekJSON(fileData)
+	preState, err := StateFromGreekJSON(fileData)
 	if err != nil {
 		t.Fatalf("Failed to parse JSON: %v", err)
 	}
 
-	// STEP 3: Load the test vector JSON from file
-	testVectorPath := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions/1_000.json"
-	testVectorData, err := os.ReadFile(testVectorPath)
+	// Get all state transition files
+	transitionsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions"
+	stateFiles, err := os.ReadDir(transitionsDir)
 	if err != nil {
-		t.Fatalf("Failed to load test vector file: %v", err)
+		t.Fatalf("Failed to read state transitions directory: %v", err)
 	}
 
-	// Parse the test vector JSON
-	var testVector TestVector
-	if err := json.Unmarshal(testVectorData, &testVector); err != nil {
-		t.Fatalf("Failed to parse test vector JSON: %v", err)
-	}
+	t.Logf("Processing %d state transition files", len(stateFiles))
 
-	stateRoot := MerklizeState(genesisState)
-	if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
-		t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
-	}
-
-	testBlock, err := BlockFromJSON(testVector.Block)
-	if err != nil {
-		t.Fatalf("Failed to parse block JSON: %v", err)
-	}
-
-	postState := StateTransitionFunction(genesisState, testBlock)
-
-	// Calculate state root from our post state
-	stateRoot = MerklizeState(postState)
-	if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
-		t.Logf("State root does not match: %x vs %s",
-			stateRoot[:], testVector.PostState.StateRoot)
-
-		// Load the state snapshot for comparison
-		snapshotData, err := os.ReadFile("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots/1_000.json")
-		if err != nil {
-			t.Fatalf("Failed to read state snapshot file: %v", err)
+	for _, fileInfo := range stateFiles {
+		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".json") {
+			continue
 		}
 
-		snapshotState, err := StateFromGreekJSON(snapshotData)
-		if err != nil {
-			t.Fatalf("Failed to parse JSON: %v", err)
-		}
+		testName := fileInfo.Name()
+		t.Run(testName, func(t *testing.T) {
+			// Do not use t.Parallel() here since we need sequential execution
 
-		if diff := cmp.Diff(snapshotState, postState); diff != "" {
-			t.Logf("States don't match (-snapshot +post):\n%s", diff)
-		} else {
-			t.Logf("States match exactly but roots differ - possible serialization issue")
-		}
+			// STEP 3: Load the test vector JSON from file
+			testVectorPath := filepath.Join(transitionsDir, testName)
+			testVectorData, err := os.ReadFile(testVectorPath)
+			if err != nil {
+				t.Fatalf("Failed to load test vector file: %v", err)
+			}
 
-		t.Fatalf("State root does not match: %x vs %s",
-			stateRoot[:], testVector.PostState.StateRoot)
+			// Parse the test vector JSON
+			var testVector TestVector
+			if err := json.Unmarshal(testVectorData, &testVector); err != nil {
+				t.Fatalf("Failed to parse test vector JSON: %v", err)
+			}
+
+			stateRoot := MerklizeState(preState)
+			if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
+				t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
+			}
+
+			testBlock, err := BlockFromJSON(testVector.Block)
+			if err != nil {
+				t.Fatalf("Failed to parse block JSON: %v", err)
+			}
+
+			postState := StateTransitionFunction(preState, testBlock)
+
+			// Calculate state root from our post state
+			stateRoot = MerklizeState(postState)
+			if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
+				t.Logf("State root does not match: %x vs %s",
+					stateRoot[:], testVector.PostState.StateRoot)
+
+				// Load the state snapshot with the same file name for comparison
+				snapshotPath := filepath.Join("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots", testName)
+				snapshotData, err := os.ReadFile(snapshotPath)
+				if err != nil {
+					t.Fatalf("Failed to read state snapshot file: %v", err)
+				}
+
+				snapshotState, err := StateFromGreekJSON(snapshotData)
+				if err != nil {
+					t.Fatalf("Failed to parse JSON: %v", err)
+				}
+
+				if diff := cmp.Diff(snapshotState, postState); diff != "" {
+					t.Logf("States don't match (-expected +actual):\n%s", diff)
+				} else {
+					t.Logf("States match exactly but roots differ - possible serialization issue")
+				}
+
+				t.Fatalf("State root does not match: %x vs %s",
+					stateRoot[:], testVector.PostState.StateRoot)
+			}
+			preState = postState
+		})
 	}
 }
 
@@ -792,29 +814,28 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		BlockSeal:                    types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
 	}
 
-	// Convert validators
-	var validatorKeys [constants.NumValidators]struct {
-		types.BandersnatchPublicKey
-		types.Ed25519PublicKey
-	}
-	for i, v := range blockJSON.Header.EpochMark.Validators {
-		if i >= constants.NumValidators {
-			break
-		}
-		validatorKeys[i] = struct {
+	if blockJSON.Header.EpochMark != nil {
+		// Convert validators
+		var validatorKeys [constants.NumValidators]struct {
 			types.BandersnatchPublicKey
 			types.Ed25519PublicKey
-		}{
-			types.BandersnatchPublicKey(hexToHashMust(v.Bandersnatch)),
-			types.Ed25519PublicKey(hexToHashMust(v.Ed25519)),
 		}
-	}
+		for i, v := range blockJSON.Header.EpochMark.Validators {
+			validatorKeys[i] = struct {
+				types.BandersnatchPublicKey
+				types.Ed25519PublicKey
+			}{
+				types.BandersnatchPublicKey(hexToHashMust(v.Bandersnatch)),
+				types.Ed25519PublicKey(hexToHashMust(v.Ed25519)),
+			}
+		}
 
-	// Set up epoch mark
-	blockHeader.EpochMarker = &header.EpochMarker{
-		CurrentEpochRandomness: hexToHashMust(blockJSON.Header.EpochMark.Entropy),
-		TicketsRandomness:      hexToHashMust(blockJSON.Header.EpochMark.TicketsEntropy),
-		ValidatorKeys:          validatorKeys,
+		// Set up epoch mark
+		blockHeader.EpochMarker = &header.EpochMarker{
+			CurrentEpochRandomness: hexToHashMust(blockJSON.Header.EpochMark.Entropy),
+			TicketsRandomness:      hexToHashMust(blockJSON.Header.EpochMark.TicketsEntropy),
+			ValidatorKeys:          validatorKeys,
+		}
 	}
 
 	// Handle OffendersMark if present
@@ -830,6 +851,8 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		}
 	}
 	blockHeader.OffendersMarker = offenders
+
+	blockHeader.WinningTicketsMarker = nil
 
 	// Handle WinningTicketsMarker if present
 	if blockJSON.Header.TicketsMark != nil {

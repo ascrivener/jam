@@ -208,7 +208,7 @@ type AccountJSON struct {
 
 // BlockMMR represents a Merkle Mountain Range for a block
 type BlockMMR struct {
-	Peaks []string `json:"peaks"`
+	Peaks []*string `json:"peaks"`
 }
 
 // RecentBlock represents a single block in the RecentBlocks list
@@ -288,8 +288,12 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		mmrPeaks := make(merklizer.MMRRange, len(blockJSON.MMR.Peaks))
 		if len(blockJSON.MMR.Peaks) > 0 {
 			for j, peak := range blockJSON.MMR.Peaks {
-				hash := hexToHashMust(peak)
-				mmrPeaks[j] = &hash
+				if peak == nil {
+					mmrPeaks[j] = nil
+				} else {
+					hash := hexToHashMust(*peak)
+					mmrPeaks[j] = &hash
+				}
 			}
 		}
 
