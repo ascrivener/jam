@@ -156,12 +156,34 @@ type CoreStatEntry struct {
 	Popularity     int `json:"popularity"`
 }
 
+// ServiceStatRecord represents a service statistics record
+type ServiceStatRecord struct {
+	ProvidedCount      int `json:"provided_count"`
+	ProvidedSize       int `json:"provided_size"`
+	RefinementCount    int `json:"refinement_count"`
+	RefinementGasUsed  int `json:"refinement_gas_used"`
+	Imports            int `json:"imports"`
+	Exports            int `json:"exports"`
+	ExtrinsicSize      int `json:"extrinsic_size"`
+	ExtrinsicCount     int `json:"extrinsic_count"`
+	AccumulateCount    int `json:"accumulate_count"`
+	AccumulateGasUsed  int `json:"accumulate_gas_used"`
+	OnTransfersCount   int `json:"on_transfers_count"`
+	OnTransfersGasUsed int `json:"on_transfers_gas_used"`
+}
+
+// ServiceStat represents a service statistics entry
+type ServiceStat struct {
+	ID     int               `json:"id"`
+	Record ServiceStatRecord `json:"record"`
+}
+
 // ValidatorStatisticsJSON represents the JSON structure of validator statistics
 type ValidatorStatisticsJSON struct {
 	ValsCurrent []ValidatorStatEntry `json:"vals_current"`
 	ValsLast    []ValidatorStatEntry `json:"vals_last"`
 	Cores       []CoreStatEntry      `json:"cores"`
-	Services    interface{}          `json:"services"` // Can be null in JSON
+	Services    []ServiceStat        `json:"services"`
 }
 
 // ServiceDataJSON represents the service data in an account
@@ -211,12 +233,24 @@ type BlockMMR struct {
 	Peaks []*string `json:"peaks"`
 }
 
-// RecentBlock represents a single block in the RecentBlocks list
+// ReportedEntry represents an entry in the "reported" array in the RecentBlocks JSON
+type ReportedEntry struct {
+	Hash        string `json:"hash"`
+	ExportsRoot string `json:"exports_root"`
+}
+
+// RecentBlockJSON represents a single block in the RecentBlocks list in JSON format
 type RecentBlockJSON struct {
-	HeaderHash string   `json:"header_hash"`
-	MMR        BlockMMR `json:"mmr"`
-	StateRoot  string   `json:"state_root"`
-	Reported   []string `json:"reported"`
+	HeaderHash string          `json:"header_hash"`
+	MMR        BlockMMR        `json:"mmr"`
+	StateRoot  string          `json:"state_root"`
+	Reported   []ReportedEntry `json:"reported"`
+}
+
+// PendingReportJSON represents a work report with timeout from the Greek JSON
+type PendingReportJSON struct {
+	Report  WorkReport `json:"report"`
+	Timeout uint64     `json:"timeout"`
 }
 
 // StateFromGreekJSON parses a JSON representation of a state (using Greek letter field names)
@@ -224,22 +258,22 @@ type RecentBlockJSON struct {
 func StateFromGreekJSON(jsonData []byte) (State, error) {
 	// Define a struct with JSON field names matching the Greek letters in the input
 	type JSONState struct {
-		Alpha    [][]string             `json:"alpha"`    // AuthorizersPool
-		Varphi   [][]string             `json:"varphi"`   // AuthorizerQueue
-		Beta     []RecentBlockJSON      `json:"beta"`     // RecentBlocks
-		Gamma    Gamma                  `json:"gamma"`    // SafroleBasicState
-		Psi      DisputesJSON           `json:"psi"`      // Disputes
-		Eta      []string               `json:"eta"`      // EntropyAccumulator
-		Iota     []ValidatorKeysetJSON  `json:"iota"`     // ValidatorKeysetsStaging
-		Kappa    []ValidatorKeysetJSON  `json:"kappa"`    // ValidatorKeysetsActive
-		Lambda   []ValidatorKeysetJSON  `json:"lambda"`   // ValidatorKeysetsPriorEpoch
-		Rho      []json.RawMessage      `json:"rho"`      // PendingReports
-		Tau      uint64                 `json:"tau"`      // MostRecentBlockTimeslot
-		Chi      PrivilegedServicesJSON `json:"chi"`      // PrivilegedServices
-		Pi       json.RawMessage        `json:"pi"`       // ValidatorStatistics
-		Theta    [][]json.RawMessage    `json:"theta"`    // AccumulationQueue
-		Xi       [][]json.RawMessage    `json:"xi"`       // AccumulationHistory
-		Accounts []AccountJSON          `json:"accounts"` // ServiceAccounts
+		Alpha    [][]string              `json:"alpha"`    // AuthorizersPool
+		Varphi   [][]string              `json:"varphi"`   // AuthorizerQueue
+		Beta     []RecentBlockJSON       `json:"beta"`     // RecentBlocks
+		Gamma    Gamma                   `json:"gamma"`    // SafroleBasicState
+		Psi      DisputesJSON            `json:"psi"`      // Disputes
+		Eta      []string                `json:"eta"`      // EntropyAccumulator
+		Iota     []ValidatorKeysetJSON   `json:"iota"`     // ValidatorKeysetsStaging
+		Kappa    []ValidatorKeysetJSON   `json:"kappa"`    // ValidatorKeysetsActive
+		Lambda   []ValidatorKeysetJSON   `json:"lambda"`   // ValidatorKeysetsPriorEpoch
+		Rho      []*PendingReportJSON    `json:"rho"`      // PendingReports
+		Tau      uint64                  `json:"tau"`      // MostRecentBlockTimeslot
+		Chi      PrivilegedServicesJSON  `json:"chi"`      // PrivilegedServices
+		Pi       ValidatorStatisticsJSON `json:"pi"`       // ValidatorStatistics
+		Theta    [][]json.RawMessage     `json:"theta"`    // AccumulationQueue
+		Xi       [][]json.RawMessage     `json:"xi"`       // AccumulationHistory
+		Accounts []AccountJSON           `json:"accounts"` // ServiceAccounts
 	}
 
 	// Parse the JSON into our intermediate struct
@@ -299,8 +333,10 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 		// Convert reported hashes to work package hashes map
 		workPackageHashes := make(map[[32]byte][32]byte)
-		for _, _ = range blockJSON.Reported {
-			panic("not impelmented")
+		for _, report := range blockJSON.Reported {
+			hash := hexToHashMust(report.Hash)
+			exportsRoot := hexToHashMust(report.ExportsRoot)
+			workPackageHashes[hash] = exportsRoot
 		}
 
 		state.RecentBlocks[i] = RecentBlock{
@@ -425,10 +461,14 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		return State{}, fmt.Errorf("invalid length of PendingReports")
 	}
 	for i, reportJSON := range jsonState.Rho {
-		if string(reportJSON) != "null" {
-			return State{}, fmt.Errorf("pending report not implemented yet")
+		if reportJSON != nil {
+			state.PendingReports[i] = &PendingReport{
+				WorkReport: convertJSONReportToImplReport(reportJSON.Report),
+				Timeslot:   types.Timeslot(reportJSON.Timeout),
+			}
+		} else {
+			state.PendingReports[i] = nil
 		}
-		state.PendingReports[i] = nil
 	}
 
 	// 11. Tau -> MostRecentBlockTimeslot
@@ -443,68 +483,99 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 13. Pi -> ValidatorStatistics
-	if len(jsonState.Pi) > 0 && string(jsonState.Pi) != "null" {
-		var stats ValidatorStatisticsJSON
-		if err := json.Unmarshal(jsonState.Pi, &stats); err != nil {
-			return State{}, fmt.Errorf("failed to parse validator statistics: %w", err)
+
+	// Initialize the validator statistics structure
+	state.ValidatorStatistics = validatorstatistics.ValidatorStatistics{
+		AccumulatorStatistics:   [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
+		PreviousEpochStatistics: [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
+		CoreStatistics:          [constants.NumCores]validatorstatistics.CoreStatistics{},
+		ServiceStatistics:       make(map[validatorstatistics.ValidatorStatisticsServiceIndex]validatorstatistics.ServiceStatistics),
+	}
+
+	stats := jsonState.Pi
+
+	// Copy vals_current -> AccumulatorStatistics
+	for i, valCurrent := range stats.ValsCurrent {
+		if i >= constants.NumValidators {
+			break
+		}
+		state.ValidatorStatistics.AccumulatorStatistics[i] = validatorstatistics.SingleValidatorStatistics{
+			BlocksProduced:         uint32(valCurrent.Blocks),
+			TicketsIntroduced:      uint32(valCurrent.Tickets),
+			PreimagesIntroduced:    uint32(valCurrent.PreImages),
+			OctetsIntroduced:       uint32(valCurrent.PreImagesSize),
+			ReportsGuaranteed:      uint32(valCurrent.Guarantees),
+			AvailabilityAssurances: uint32(valCurrent.Assurances),
+		}
+	}
+
+	// Copy vals_last -> PreviousEpochStatistics
+	for i, valLast := range stats.ValsLast {
+		if i >= constants.NumValidators {
+			break
+		}
+		state.ValidatorStatistics.PreviousEpochStatistics[i] = validatorstatistics.SingleValidatorStatistics{
+			BlocksProduced:         uint32(valLast.Blocks),
+			TicketsIntroduced:      uint32(valLast.Tickets),
+			PreimagesIntroduced:    uint32(valLast.PreImages),
+			OctetsIntroduced:       uint32(valLast.PreImagesSize),
+			ReportsGuaranteed:      uint32(valLast.Guarantees),
+			AvailabilityAssurances: uint32(valLast.Assurances),
+		}
+	}
+
+	// Copy cores -> CoreStatistics
+	for i, core := range stats.Cores {
+		if i >= constants.NumCores {
+			break
+		}
+		state.ValidatorStatistics.CoreStatistics[i] = validatorstatistics.CoreStatistics{
+			OctetsIntroduced: validatorstatistics.ValidatorStatisticsNum(core.DaLoad),
+			AvailabilityContributionsInAssurancesExtrinsic: validatorstatistics.ValidatorStatisticsNum(core.Popularity),
+			NumSegmentsImportedFrom:                        validatorstatistics.ValidatorStatisticsNum(core.Imports),
+			NumSegmentsExportedInto:                        validatorstatistics.ValidatorStatisticsNum(core.Exports),
+			SizeInOctetsOfExtrinsicsUsed:                   validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicSize),
+			NumExtrinsicsUsed:                              validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicCount),
+			WorkBundleLength:                               validatorstatistics.ValidatorStatisticsNum(core.BundleSize),
+			ActualRefinementGasUsed:                        validatorstatistics.ValidatorStatisticsGasValue(core.GasUsed),
+		}
+	}
+
+	// Copy services -> ServiceStatistics
+	for _, service := range stats.Services {
+		serviceIdx := types.ServiceIndex(service.ID)
+
+		// Create service statistics with proper field mapping
+		serviceStats := validatorstatistics.ServiceStatistics{
+			PreimageExtrinsicSize: struct {
+				ExtrinsicCount    validatorstatistics.ValidatorStatisticsNum
+				TotalSizeInOctets validatorstatistics.ValidatorStatisticsNum
+			}{
+				ExtrinsicCount:    validatorstatistics.ValidatorStatisticsNum(service.Record.ProvidedCount),
+				TotalSizeInOctets: validatorstatistics.ValidatorStatisticsNum(service.Record.ProvidedSize),
+			},
+			ActualRefinementGasUsed: struct {
+				WorkReportCount validatorstatistics.ValidatorStatisticsNum
+				Amount          validatorstatistics.ValidatorStatisticsGasValue
+			}{
+				WorkReportCount: validatorstatistics.ValidatorStatisticsNum(service.Record.RefinementCount),
+				Amount:          validatorstatistics.ValidatorStatisticsGasValue(service.Record.RefinementGasUsed),
+			},
+			NumSegmentsImportedFrom:      validatorstatistics.ValidatorStatisticsNum(service.Record.Imports),
+			NumSegmentsExportedInto:      validatorstatistics.ValidatorStatisticsNum(service.Record.Exports),
+			SizeInOctetsOfExtrinsicsUsed: validatorstatistics.ValidatorStatisticsNum(service.Record.ExtrinsicSize),
+			NumExtrinsicsUsed:            validatorstatistics.ValidatorStatisticsNum(service.Record.ExtrinsicCount),
+			AccumulationStatistics: validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: validatorstatistics.ValidatorStatisticsNum(service.Record.AccumulateCount),
+				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(service.Record.AccumulateGasUsed),
+			},
+			DeferredTransferStatistics: validatorstatistics.ServiceTransferStatistics{
+				NumberOfTransfers: validatorstatistics.ValidatorStatisticsNum(service.Record.OnTransfersCount),
+				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(service.Record.OnTransfersGasUsed),
+			},
 		}
 
-		// Initialize the validator statistics structure
-		state.ValidatorStatistics = validatorstatistics.ValidatorStatistics{
-			AccumulatorStatistics:   [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
-			PreviousEpochStatistics: [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
-			CoreStatistics:          [constants.NumCores]validatorstatistics.CoreStatistics{},
-			ServiceStatistics:       make(map[types.ServiceIndex]validatorstatistics.ServiceStatistics),
-		}
-
-		// Copy vals_current -> AccumulatorStatistics
-		for i, valCurrent := range stats.ValsCurrent {
-			if i >= constants.NumValidators {
-				break
-			}
-			state.ValidatorStatistics.AccumulatorStatistics[i] = validatorstatistics.SingleValidatorStatistics{
-				BlocksProduced:         uint32(valCurrent.Blocks),
-				TicketsIntroduced:      uint32(valCurrent.Tickets),
-				PreimagesIntroduced:    uint32(valCurrent.PreImages),
-				OctetsIntroduced:       uint32(valCurrent.PreImagesSize),
-				ReportsGuaranteed:      uint32(valCurrent.Guarantees),
-				AvailabilityAssurances: uint32(valCurrent.Assurances),
-			}
-		}
-
-		// Copy vals_last -> PreviousEpochStatistics
-		for i, valLast := range stats.ValsLast {
-			if i >= constants.NumValidators {
-				break
-			}
-			state.ValidatorStatistics.PreviousEpochStatistics[i] = validatorstatistics.SingleValidatorStatistics{
-				BlocksProduced:         uint32(valLast.Blocks),
-				TicketsIntroduced:      uint32(valLast.Tickets),
-				PreimagesIntroduced:    uint32(valLast.PreImages),
-				OctetsIntroduced:       uint32(valLast.PreImagesSize),
-				ReportsGuaranteed:      uint32(valLast.Guarantees),
-				AvailabilityAssurances: uint32(valLast.Assurances),
-			}
-		}
-
-		// Copy cores -> CoreStatistics
-		for i, core := range stats.Cores {
-			if i >= constants.NumCores {
-				break
-			}
-			state.ValidatorStatistics.CoreStatistics[i] = validatorstatistics.CoreStatistics{
-				OctetsIntroduced: validatorstatistics.ValidatorStatisticsNum(core.DaLoad),
-				AvailabilityContributionsInAssurancesExtrinsic: validatorstatistics.ValidatorStatisticsNum(core.Popularity),
-				NumSegmentsImportedFrom:                        validatorstatistics.ValidatorStatisticsNum(core.Imports),
-				NumSegmentsExportedInto:                        validatorstatistics.ValidatorStatisticsNum(core.Exports),
-				SizeInOctetsOfExtrinsicsUsed:                   validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicSize),
-				NumExtrinsicsUsed:                              validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicCount),
-				WorkBundleLength:                               validatorstatistics.ValidatorStatisticsNum(core.BundleSize),
-				ActualRefinementGasUsed:                        validatorstatistics.ValidatorStatisticsGasValue(core.GasUsed),
-			}
-		}
-
-		// Services is null in the example, so we leave the empty map initialized above
+		state.ValidatorStatistics.ServiceStatistics[validatorstatistics.ValidatorStatisticsServiceIndex(serviceIdx)] = serviceStats
 	}
 
 	// 14. Theta -> AccumulationQueue
@@ -668,3 +739,174 @@ func hexToBytesMust(hexStr string) []byte {
 
 	return bytes
 }
+
+// RefineContext represents a context for refinement
+type RefineContext struct {
+	Anchor           string   `json:"anchor"`
+	StateRoot        string   `json:"state_root"`
+	BeefyRoot        string   `json:"beefy_root"`
+	LookupAnchor     string   `json:"lookup_anchor"`
+	LookupAnchorSlot uint64   `json:"lookup_anchor_slot"`
+	Prerequisites    []string `json:"prerequisites"`
+}
+
+// WorkExecResult represents the result of work execution (OK or error)
+type WorkExecResult struct {
+	OK *string `json:"ok,omitempty"`
+}
+
+// Import specification
+type ImportSpec struct {
+	// Add fields if needed
+}
+
+// Extrinsic specification
+type ExtrinsicSpec struct {
+	// Add fields if needed
+}
+
+// Authorizer type
+type Authorizer string
+
+// WorkReport represents a work report
+type WorkReport struct {
+	PackageSpec       WorkPackageSpec   `json:"package_spec"`
+	Context           RefineContext     `json:"context"`
+	CoreIndex         uint64            `json:"core_index"`
+	AuthorizerHash    string            `json:"authorizer_hash"`
+	AuthOutput        string            `json:"auth_output"`
+	SegmentRootLookup SegmentRootLookup `json:"segment_root_lookup"`
+	Results           []WorkDigest      `json:"results"`
+	AuthGasUsed       uint64            `json:"auth_gas_used"`
+}
+
+// convertJSONReportToImplReport converts a workreport from the JSON to the implementation's WorkReport type
+func convertJSONReportToImplReport(workReportJSON WorkReport) workreport.WorkReport {
+	var report workreport.WorkReport
+
+	// Set CoreIndex
+	report.CoreIndex = types.CoreIndex(workReportJSON.CoreIndex)
+
+	// Convert results
+	for _, result := range workReportJSON.Results {
+		codeHash := hexToHashMust(string(result.CodeHash))
+		payloadHash := hexToHashMust(string(result.PayloadHash))
+
+		workDigest := workreport.WorkDigest{
+			ServiceIndex:                 types.ServiceIndex(result.ServiceId),
+			ServiceCodeHash:              codeHash,
+			PayloadHash:                  payloadHash,
+			AccumulateGasLimit:           types.GasValue(result.AccumulateGas),
+			WorkResult:                   types.ExecutionExitReason{},
+			ActualRefinementGasUsed:      types.GasValue(result.RefineLoad.GasUsed),
+			NumSegmentsImportedFrom:      uint32(result.RefineLoad.Imports),
+			NumExtrinsicsUsed:            uint32(result.RefineLoad.ExtrinsicCount),
+			SizeInOctetsOfExtrinsicsUsed: uint32(result.RefineLoad.ExtrinsicSize),
+			NumSegmentsExportedInto:      uint32(result.RefineLoad.Exports),
+		}
+
+		if result.Result.OK != nil {
+			// If OK is present, convert hex string to binary
+			workDigest.WorkResult = types.NewExecutionExitReasonBlob(hexToBytesMust(string(*result.Result.OK)))
+		}
+
+		report.WorkDigests = append(report.WorkDigests, workDigest)
+	}
+
+	// Set package spec
+	packageSpecHash := hexToHashMust(string(workReportJSON.PackageSpec.Hash))
+	erasureRoot := hexToHashMust(string(workReportJSON.PackageSpec.ErasureRoot))
+	exportsRoot := hexToHashMust(string(workReportJSON.PackageSpec.ExportsRoot))
+
+	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
+		WorkPackageHash:  packageSpecHash,                                     // h
+		WorkBundleLength: types.BlobLength(workReportJSON.PackageSpec.Length), // l
+		ErasureRoot:      erasureRoot,                                         // u
+		SegmentRoot:      exportsRoot,                                         // e - ExportsRoot maps to SegmentRoot
+		SegmentCount:     uint64(workReportJSON.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
+	}
+
+	// Set refinement context
+	anchorHash := hexToHashMust(string(workReportJSON.Context.Anchor))
+	stateRoot := hexToHashMust(string(workReportJSON.Context.StateRoot))
+	beefyRoot := hexToHashMust(string(workReportJSON.Context.BeefyRoot))
+	lookupAnchor := hexToHashMust(string(workReportJSON.Context.LookupAnchor))
+
+	// Convert prerequisites to map of [32]byte
+	prereqMap := make(map[[32]byte]struct{})
+	for _, prereq := range workReportJSON.Context.Prerequisites {
+		hash := hexToHashMust(string(prereq))
+		prereqMap[hash] = struct{}{}
+	}
+
+	report.RefinementContext = workreport.RefinementContext{
+		AnchorHeaderHash:              anchorHash,                                              // a
+		PosteriorStateRoot:            stateRoot,                                               // s
+		PosteriorBEEFYRoot:            beefyRoot,                                               // b
+		LookupAnchorHeaderHash:        lookupAnchor,                                            // l
+		Timeslot:                      types.Timeslot(workReportJSON.Context.LookupAnchorSlot), // t
+		PrerequisiteWorkPackageHashes: prereqMap,                                               // p
+	}
+
+	// Set AuthorizerHash (a)
+	authorizerHash := hexToHashMust(string(workReportJSON.AuthorizerHash))
+	report.AuthorizerHash = authorizerHash
+
+	// Set Output (o) - properly decode the hex string ByteSequence to bytes
+	if workReportJSON.AuthOutput != "" {
+		output := hexToBytesMust(string(workReportJSON.AuthOutput))
+		report.Output = output
+	} else {
+		report.Output = []byte{}
+	}
+
+	// Set SegmentRootLookup (l)
+	report.SegmentRootLookup = make(map[[32]byte][32]byte)
+	for _, item := range workReportJSON.SegmentRootLookup {
+		key := hexToHashMust(string(item.WorkPackageHash))
+		val := hexToHashMust(string(item.SegmentTreeRoot))
+		report.SegmentRootLookup[key] = val
+	}
+
+	// Set IsAuthorizedGasConsumption from AuthGasUsed
+	report.IsAuthorizedGasConsumption = types.GasValue(workReportJSON.AuthGasUsed)
+
+	return report
+}
+
+// RefineLoad represents the load statistics for refinement
+type RefineLoad struct {
+	GasUsed        uint64 `json:"gas_used"`
+	Imports        uint64 `json:"imports"`
+	ExtrinsicCount uint64 `json:"extrinsic_count"`
+	ExtrinsicSize  uint64 `json:"extrinsic_size"`
+	Exports        uint64 `json:"exports"`
+}
+
+// WorkDigest represents the result of work execution
+type WorkDigest struct {
+	ServiceId     uint64         `json:"service_id"`
+	CodeHash      string         `json:"code_hash"`
+	PayloadHash   string         `json:"payload_hash"`
+	AccumulateGas uint64         `json:"accumulate_gas"`
+	Result        WorkExecResult `json:"result"`
+	RefineLoad    RefineLoad     `json:"refine_load"`
+}
+
+// WorkPackageSpec represents a specification of a work package
+type WorkPackageSpec struct {
+	Hash         string `json:"hash"`
+	Length       uint64 `json:"length"`
+	ErasureRoot  string `json:"erasure_root"`
+	ExportsRoot  string `json:"exports_root"`
+	ExportsCount uint64 `json:"exports_count"`
+}
+
+// SegmentRootLookupItem represents a lookup item for segment roots
+type SegmentRootLookupItem struct {
+	WorkPackageHash string `json:"work_package_hash"`
+	SegmentTreeRoot string `json:"segment_tree_root"`
+}
+
+// SegmentRootLookup represents a collection of segment root lookup items
+type SegmentRootLookup []SegmentRootLookupItem

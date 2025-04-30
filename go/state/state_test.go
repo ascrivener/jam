@@ -14,11 +14,9 @@ import (
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
-	"github.com/ascrivener/jam/test/asntypes"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/workreport"
 )
 
 // // Disputes represents the disputes section in a test vector
@@ -68,12 +66,23 @@ type Disputes struct {
 	Faults   []interface{} `json:"faults"`
 }
 
+type GuaranteeSignatureJSON struct {
+	ValidatorIndex int    `json:"validator_index"`
+	Signature      string `json:"signature"`
+}
+
+type GuaranteeJSON struct {
+	Report     WorkReport               `json:"report"`
+	Slot       uint64                   `json:"slot"`
+	Signatures []GuaranteeSignatureJSON `json:"signatures"`
+}
+
 type Extrinsic struct {
-	Tickets    []interface{} `json:"tickets"`
-	Preimages  []interface{} `json:"preimages"`
-	Guarantees []interface{} `json:"guarantees"`
-	Assurances []interface{} `json:"assurances"`
-	Disputes   Disputes      `json:"disputes"`
+	Tickets    []interface{}   `json:"tickets"`
+	Preimages  []interface{}   `json:"preimages"`
+	Guarantees []GuaranteeJSON `json:"guarantees"`
+	Assurances []interface{}   `json:"assurances"`
+	Disputes   Disputes        `json:"disputes"`
 }
 
 type BlockJSON struct {
@@ -553,92 +562,6 @@ func hexToBytes(hexStr string) []byte {
 // 	return state
 // }
 
-// convertAsnReportToImplReport converts a workreport from the ASN types to the implementation's WorkReport type
-func convertAsnReportToImplReport(asnReport asntypes.WorkReport) workreport.WorkReport {
-	return workreport.WorkReport{}
-	// var report workreport.WorkReport
-
-	// // Set CoreIndex
-	// report.CoreIndex = types.CoreIndex(asnReport.CoreIndex)
-
-	// // Convert results
-	// for _, result := range asnReport.Results {
-	// 	codeHash := hexToHashMust(string(result.CodeHash))
-	// 	payloadHash := hexToHashMust(string(result.PayloadHash))
-
-	// 	workResult := workreport.WorkResult{
-	// 		ServiceIndex:           types.ServiceIndex(result.ServiceId),
-	// 		ServiceCodeHash:        codeHash,
-	// 		PayloadHash:            payloadHash,
-	// 		GasPrioritizationRatio: types.GasValue(result.AccumulateGas),
-	// 	}
-
-	// 	if result.Result.OK != nil {
-	// 		// If OK is present, convert hex string to binary
-	// 		workResult.WorkOutput = types.NewExecutionExitReasonBlob(hexToBytes(string(*result.Result.OK)))
-	// 	}
-
-	// 	report.WorkResults = append(report.WorkResults, workResult)
-	// }
-
-	// // Set package spec
-	// packageSpecHash := hexToHashMust(string(asnReport.PackageSpec.Hash))
-	// erasureRoot := hexToHashMust(string(asnReport.PackageSpec.ErasureRoot))
-	// exportsRoot := hexToHashMust(string(asnReport.PackageSpec.ExportsRoot))
-
-	// report.WorkPackageSpecification = workreport.AvailabilitySpecification{
-	// 	WorkPackageHash:  packageSpecHash,                                // h
-	// 	WorkBundleLength: types.BlobLength(asnReport.PackageSpec.Length), // l
-	// 	ErasureRoot:      erasureRoot,                                    // u
-	// 	SegmentRoot:      exportsRoot,                                    // e - ExportsRoot maps to SegmentRoot
-	// 	SegmentCount:     uint64(asnReport.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
-	// }
-
-	// // Set refinement context
-	// anchorHash := hexToHashMust(string(asnReport.Context.Anchor))
-	// stateRoot := hexToHashMust(string(asnReport.Context.StateRoot))
-	// beefyRoot := hexToHashMust(string(asnReport.Context.BeefyRoot))
-	// lookupAnchor := hexToHashMust(string(asnReport.Context.LookupAnchor))
-
-	// // Convert prerequisites to map of [32]byte
-	// prereqMap := make(map[[32]byte]struct{})
-	// for _, prereq := range asnReport.Context.Prerequisites {
-	// 	hash := hexToHashMust(string(prereq))
-	// 	prereqMap[hash] = struct{}{}
-	// }
-
-	// report.RefinementContext = workreport.RefinementContext{
-	// 	AnchorHeaderHash:              anchorHash,                                         // a
-	// 	PosteriorStateRoot:            stateRoot,                                          // s
-	// 	PosteriorBEEFYRoot:            beefyRoot,                                          // b
-	// 	LookupAnchorHeaderHash:        lookupAnchor,                                       // l
-	// 	Timeslot:                      types.Timeslot(asnReport.Context.LookupAnchorSlot), // t
-	// 	PrerequisiteWorkPackageHashes: prereqMap,                                          // p
-	// }
-
-	// // Set AuthorizerHash (a)
-	// authorizerHash := hexToHashMust(string(asnReport.AuthorizerHash))
-	// report.AuthorizerHash = authorizerHash
-
-	// // Set Output (o) - properly decode the hex string ByteSequence to bytes
-	// if asnReport.AuthOutput != "" {
-	// 	output := hexToBytes(string(asnReport.AuthOutput))
-	// 	report.Output = output
-	// } else {
-	// 	report.Output = []byte{}
-	// }
-
-	// // Set SegmentRootLookup (l)
-	// report.SegmentRootLookup = make(map[[32]byte][32]byte)
-	// for _, item := range asnReport.SegmentRootLookup {
-	// 	key := hexToHashMust(string(item.WorkPackageHash))
-	// 	val := hexToHashMust(string(item.SegmentTreeRoot))
-	// 	report.SegmentRootLookup[key] = val
-	// }
-
-	// return report
-}
-
 // compareStatesSelective compares specific fields between two State objects
 // If fields is nil or empty, all fields are compared
 // func compareStatesSelective(t *testing.T, expected, actual State, fields []string) {
@@ -698,64 +621,103 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		}
 
 		testName := fileInfo.Name()
-		t.Run(testName, func(t *testing.T) {
-			// Do not use t.Parallel() here since we need sequential execution
 
-			// STEP 3: Load the test vector JSON from file
-			testVectorPath := filepath.Join(transitionsDir, testName)
-			testVectorData, err := os.ReadFile(testVectorPath)
+		// STEP 3: Load the test vector JSON from file
+		testVectorPath := filepath.Join(transitionsDir, testName)
+		testVectorData, err := os.ReadFile(testVectorPath)
+		if err != nil {
+			t.Fatalf("Failed to load test vector file: %v", err)
+		}
+
+		// Parse the test vector JSON
+		var testVector TestVector
+		if err := json.Unmarshal(testVectorData, &testVector); err != nil {
+			t.Fatalf("Failed to parse test vector JSON: %v", err)
+		}
+
+		stateRoot := MerklizeState(preState)
+		if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
+			t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
+		}
+
+		testBlock, err := BlockFromJSON(testVector.Block)
+		if err != nil {
+			t.Fatalf("Failed to parse block JSON: %v", err)
+		}
+
+		postState := StateTransitionFunction(preState, testBlock)
+
+		// Calculate state root from our post state
+		stateRoot = MerklizeState(postState)
+		if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
+			t.Logf("Test failed for %s", testName)
+			t.Logf("State root does not match: %x vs %s",
+				stateRoot[:], testVector.PostState.StateRoot)
+
+			// Load the state snapshot with the same file name for comparison
+			snapshotPath := filepath.Join("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots", testName)
+			snapshotData, err := os.ReadFile(snapshotPath)
 			if err != nil {
-				t.Fatalf("Failed to load test vector file: %v", err)
+				t.Fatalf("Failed to read state snapshot file: %v", err)
 			}
 
-			// Parse the test vector JSON
-			var testVector TestVector
-			if err := json.Unmarshal(testVectorData, &testVector); err != nil {
-				t.Fatalf("Failed to parse test vector JSON: %v", err)
-			}
-
-			stateRoot := MerklizeState(preState)
-			if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
-				t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
-			}
-
-			testBlock, err := BlockFromJSON(testVector.Block)
+			snapshotState, err := StateFromGreekJSON(snapshotData)
 			if err != nil {
-				t.Fatalf("Failed to parse block JSON: %v", err)
+				t.Fatalf("Failed to parse JSON: %v", err)
 			}
 
-			postState := StateTransitionFunction(preState, testBlock)
+			if diff := cmp.Diff(snapshotState, postState); diff != "" {
+				t.Fatalf("States don't match (-expected +actual):\n%s", diff)
+			} else {
+				t.Logf("States match exactly but roots differ - possible serialization issue")
 
-			// Calculate state root from our post state
-			stateRoot = MerklizeState(postState)
-			if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
-				t.Logf("State root does not match: %x vs %s",
-					stateRoot[:], testVector.PostState.StateRoot)
+				// Compare the key-value pairs between test vector and serialized state
+				serializedPostState := StateSerializer(postState)
 
-				// Load the state snapshot with the same file name for comparison
-				snapshotPath := filepath.Join("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots", testName)
-				snapshotData, err := os.ReadFile(snapshotPath)
-				if err != nil {
-					t.Fatalf("Failed to read state snapshot file: %v", err)
+				// Create maps to easily compare key-value pairs
+				testVectorKV := make(map[string]string)
+				for _, kv := range testVector.PostState.KeyVals {
+					if len(kv) >= 2 {
+						testVectorKV[kv[0]] = kv[1]
+					}
 				}
 
-				snapshotState, err := StateFromGreekJSON(snapshotData)
-				if err != nil {
-					t.Fatalf("Failed to parse JSON: %v", err)
+				serializedKV := make(map[string]string)
+				for key, val := range serializedPostState {
+					keyStr := "0x" + hex.EncodeToString(key[:])
+					valStr := "0x" + hex.EncodeToString(val)
+					serializedKV[keyStr] = valStr
 				}
 
-				if diff := cmp.Diff(snapshotState, postState); diff != "" {
-					t.Logf("States don't match (-expected +actual):\n%s", diff)
-				} else {
-					t.Logf("States match exactly but roots differ - possible serialization issue")
+				// Find differences
+				t.Logf("Comparing key-value pairs between test vector and serialized state:")
+
+				// Keys in test vector but not in serialized state
+				for k, v := range testVectorKV {
+					if sv, ok := serializedKV[k]; !ok {
+						t.Logf("Key %s in test vector but missing in serialized state", k)
+					} else if sv != v {
+						t.Logf("Value mismatch for key %s:\n  Test vector: %s\n  Serialized: %s", k, v, sv)
+					}
+				}
+
+				// Keys in serialized state but not in test vector
+				for k, v := range serializedKV {
+					if _, ok := testVectorKV[k]; !ok {
+						t.Logf("Key %s in serialized state but missing in test vector: %s", k, v)
+					}
 				}
 
 				t.Fatalf("State root does not match: %x vs %s",
 					stateRoot[:], testVector.PostState.StateRoot)
 			}
-			preState = postState
-		})
+		}
+
+		preState = postState
+		t.Logf("Successfully processed %s", testName)
 	}
+
+	t.Logf("All tests passed successfully")
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics
@@ -863,7 +825,7 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 
 	// Convert extrinsic part (simplified for now)
 	extrinsics := extrinsics.Extrinsics{
-		Guarantees: extrinsics.Guarantees{},
+		Guarantees: convertGuarantees(blockJSON.Extrinsic.Guarantees),
 		Assurances: extrinsics.Assurances{},
 		Disputes: extrinsics.Disputes{
 			Verdicts: []extrinsics.Verdict{},
@@ -879,4 +841,42 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		Header:     blockHeader,
 		Extrinsics: extrinsics,
 	}, nil
+}
+
+// convertGuarantees converts JSON guarantees to extrinsics.Guarantees
+func convertGuarantees(guaranteesJSON []GuaranteeJSON) extrinsics.Guarantees {
+	guarantees := extrinsics.Guarantees{}
+
+	for _, g := range guaranteesJSON {
+		// Convert the work report
+		implReport := convertJSONReportToImplReport(g.Report)
+
+		// Convert signatures
+		signatures := make([]extrinsics.Credential, 0, len(g.Signatures))
+		for _, sig := range g.Signatures {
+			// Convert the signature string to byte array
+			sigBytes := hexToBytesMust(sig.Signature)
+
+			// Create the Ed25519Signature (which is [64]byte)
+			var ed25519Sig types.Ed25519Signature
+			copy(ed25519Sig[:], sigBytes)
+
+			// Create and append the guarantee signature
+			signatures = append(signatures, extrinsics.Credential{
+				ValidatorIndex: types.ValidatorIndex(sig.ValidatorIndex),
+				Signature:      ed25519Sig,
+			})
+		}
+
+		// Create and append the guarantee
+		guarantee := extrinsics.Guarantee{
+			WorkReport:  implReport,
+			Timeslot:    types.Timeslot(g.Slot),
+			Credentials: signatures,
+		}
+
+		guarantees = append(guarantees, guarantee)
+	}
+
+	return guarantees
 }

@@ -227,7 +227,7 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 	for _, guarantee := range guarantees {
 		// Calculate the work package hash ((gw)s)h
 		workPackageSpecification := guarantee.WorkReport.WorkPackageSpecification
-		workPackageHashes[workPackageSpecification.WorkPackageHash] = workPackageSpecification.ErasureRoot
+		workPackageHashes[workPackageSpecification.WorkPackageHash] = workPackageSpecification.SegmentRoot
 	}
 
 	// Create the new recent block
@@ -725,7 +725,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		if _, ok := deferredTransferStatistics[serviceIndex]; ok {
 			serviceStatistics.DeferredTransferStatistics = deferredTransferStatistics[serviceIndex]
 		}
-		posteriorValidatorStatistics.ServiceStatistics[serviceIndex] = serviceStatistics
+		posteriorValidatorStatistics.ServiceStatistics[validatorstatistics.ValidatorStatisticsServiceIndex(serviceIndex)] = serviceStatistics
 	}
 
 	return posteriorValidatorStatistics

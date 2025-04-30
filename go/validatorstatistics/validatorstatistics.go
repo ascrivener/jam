@@ -6,10 +6,10 @@ import (
 )
 
 type ValidatorStatistics struct {
-	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics // V
-	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics // L
-	CoreStatistics          [constants.NumCores]CoreStatistics                 // C
-	ServiceStatistics       map[types.ServiceIndex]ServiceStatistics           // S
+	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics    // V
+	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics    // L
+	CoreStatistics          [constants.NumCores]CoreStatistics                    // C
+	ServiceStatistics       map[ValidatorStatisticsServiceIndex]ServiceStatistics // S
 }
 
 type SingleValidatorStatistics struct {
@@ -24,6 +24,8 @@ type SingleValidatorStatistics struct {
 type ValidatorStatisticsNum uint64
 
 type ValidatorStatisticsGasValue types.GasValue
+
+type ValidatorStatisticsServiceIndex types.ServiceIndex
 
 type CoreStatistics struct {
 	OctetsIntroduced                               ValidatorStatisticsNum      // d

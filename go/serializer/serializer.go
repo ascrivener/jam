@@ -114,7 +114,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) {
+		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsServiceIndex(0)) {
 			buf.Write(EncodeGeneralNatural(v.Uint()))
 			return
 		}
