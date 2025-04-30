@@ -79,15 +79,12 @@ func NewEmptyRAM() *RAM {
 }
 
 // NewRAM creates a new RAM with the given data segments and access controls
-func NewRAM(readData, writeData []byte, arguments []byte, z, stackSize int) *RAM {
+func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	ram := NewEmptyRAM()
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
-	var beginningOfHeap *RamIndex
 	if len(writeData)+int(z) > 0 { // then we actually have a heap
-		beginningOfHeap = new(RamIndex)
-		*beginningOfHeap = heapStart
+		ram.BeginningOfHeap = &heapStart
 	}
-	ram.BeginningOfHeap = beginningOfHeap
 	// read-only section
 	ram.MutateRange(MajorZoneSize, readData, NoWrap, false)
 	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)

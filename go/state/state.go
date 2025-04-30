@@ -219,7 +219,7 @@ type AccountDataJSON struct {
 	Service    ServiceDataJSON       `json:"service"`
 	Preimages  []PreimageJSON        `json:"preimages"`
 	LookupMeta []LookupMetaEntryJSON `json:"lookup_meta"`
-	Storage    interface{}           `json:"storage"` // Can be null
+	Storage    map[string]string     `json:"storage"` // Can be null
 }
 
 // AccountJSON represents a single account
@@ -272,7 +272,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		Chi      PrivilegedServicesJSON  `json:"chi"`      // PrivilegedServices
 		Pi       ValidatorStatisticsJSON `json:"pi"`       // ValidatorStatistics
 		Theta    [][]json.RawMessage     `json:"theta"`    // AccumulationQueue
-		Xi       [][]json.RawMessage     `json:"xi"`       // AccumulationHistory
+		Xi       [][]string              `json:"xi"`       // AccumulationHistory
 		Accounts []AccountJSON           `json:"accounts"` // ServiceAccounts
 	}
 
@@ -607,9 +607,9 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// Check that all arrays are empty as expected
-	for _, historySlot := range jsonState.Xi {
-		if len(historySlot) > 0 {
-			return State{}, fmt.Errorf("non-empty accumulation history not supported yet")
+	for i, historySlot := range jsonState.Xi {
+		for _, hex := range historySlot {
+			state.AccumulationHistory[i][hexToHashMust(hex)] = struct{}{}
 		}
 	}
 
@@ -677,9 +677,8 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 			// Check if storage is not null and not empty
 			if account.Data.Storage != nil {
-				// Check if it's actually empty (could be JSON null but parsed as empty map)
-				if m, ok := account.Data.Storage.(map[string]interface{}); !ok || len(m) > 0 {
-					return State{}, fmt.Errorf("storage not implemented yet for account %d", account.ID)
+				for key, val := range account.Data.Storage {
+					serviceAcc.StorageDictionary[hexToHashMust(key)] = hexToBytesMust(val)
 				}
 			}
 

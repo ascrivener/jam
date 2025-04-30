@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
@@ -76,11 +78,18 @@ type GuaranteeJSON struct {
 	Signatures []GuaranteeSignatureJSON `json:"signatures"`
 }
 
+type Assurance struct {
+	Anchor         string `json:"anchor"`
+	Bitfield       string `json:"bitfield"`
+	ValidatorIndex uint64 `json:"validator_index"`
+	Signature      string `json:"signature"`
+}
+
 type Extrinsic struct {
 	Tickets    []interface{}   `json:"tickets"`
 	Preimages  []interface{}   `json:"preimages"`
 	Guarantees []GuaranteeJSON `json:"guarantees"`
-	Assurances []interface{}   `json:"assurances"`
+	Assurances []Assurance     `json:"assurances"`
 	Disputes   Disputes        `json:"disputes"`
 }
 
@@ -593,6 +602,9 @@ func hexToBytes(hexStr string) []byte {
 
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
+	defer func() {
+		runtime.GC()
+	}()
 	// Load the test file
 	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/chainspecs/state_snapshots/genesis-tiny.json"
 	fileData, err := os.ReadFile(testFilePath)
@@ -822,7 +834,7 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 	// Convert extrinsic part (simplified for now)
 	extrinsics := extrinsics.Extrinsics{
 		Guarantees: convertGuarantees(blockJSON.Extrinsic.Guarantees),
-		Assurances: extrinsics.Assurances{},
+		Assurances: convertAssurances(blockJSON.Extrinsic.Assurances),
 		Disputes: extrinsics.Disputes{
 			Verdicts: []extrinsics.Verdict{},
 			Culprits: []extrinsics.Culprit{},
@@ -875,4 +887,38 @@ func convertGuarantees(guaranteesJSON []GuaranteeJSON) extrinsics.Guarantees {
 	}
 
 	return guarantees
+}
+
+func convertAssurances(assurancesJSON []Assurance) extrinsics.Assurances {
+	assurances := extrinsics.Assurances{}
+
+	for _, a := range assurancesJSON {
+		// Convert anchor (parent hash) from hex string to [32]byte
+		parentHash := hexToHashMust(a.Anchor)
+
+		bytes := hexToBytesMust(a.Bitfield)
+
+		// Convert bitfield string to BitSequence
+		bitfield, err := bitsequence.FromBytesLSBWithLength(bytes, constants.NumCores)
+		if err != nil {
+			panic(err)
+		}
+
+		signature := hexToBytesMust(a.Signature)
+		if len(signature) != 64 {
+			panic("signature wrong length")
+		}
+
+		// Create and append the assurance
+		assurance := extrinsics.Assurance{
+			ParentHash:                    parentHash,
+			CoreAvailabilityContributions: *bitfield,
+			ValidatorIndex:                types.ValidatorIndex(a.ValidatorIndex),
+			Signature:                     types.Ed25519Signature(signature),
+		}
+
+		assurances = append(assurances, assurance)
+	}
+
+	return assurances
 }
