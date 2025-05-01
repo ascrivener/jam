@@ -63,7 +63,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 			if !er.IsError() {
 				// Tag 0 indicates valid data; then, recursively encode the Data field.
 				buf.WriteByte(0)
-				serializeValue(reflect.ValueOf(er.Blob), buf)
+				serializeValue(reflect.ValueOf(*er.Blob), buf)
 			} else {
 				// Write the error value as a single octet.
 				buf.WriteByte(byte(*er.ExecutionError))
@@ -398,23 +398,6 @@ func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
 // For slices (but not arrays), it encodes the length first.
 // Special case for []byte/[]uint8 to handle them as raw binary data (no length prefix).
 func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
-	// Special case for byte slices ([]uint8) - write raw bytes with no length prefix
-	if v.Type().Elem().Kind() == reflect.Uint8 {
-		// Handle both addressable slices and unaddressable arrays/slices
-		if v.CanAddr() {
-			buf.Write(v.Bytes()) // This only works for addressable slices
-		} else {
-			// Manual copy for unaddressable arrays/slices
-			length := v.Len()
-			bytes := make([]byte, length)
-			for i := 0; i < length; i++ {
-				bytes[i] = byte(v.Index(i).Uint())
-			}
-			buf.Write(bytes)
-		}
-		return
-	}
-
 	// Regular handling for non-byte slices/arrays
 	if v.Kind() == reflect.Slice {
 		buf.Write(EncodeLength(v))

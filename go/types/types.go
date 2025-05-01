@@ -120,7 +120,7 @@ func (d Disputes) PunishEd25519Key(key Ed25519PublicKey) bool {
 type ExecutionErrorType int
 
 const (
-	ExecutionErrorOutOfGas ExecutionErrorType = iota
+	ExecutionErrorOutOfGas ExecutionErrorType = iota + 1
 	ExecutionErrorPanic
 	ExecutionErrorInvalidNumExports
 	ExecutionErrorBAD

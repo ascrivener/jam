@@ -306,10 +306,10 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 			byte(pvm.State.Registers[ra]), ram.Wrap, true)
 	case 121: // store_ind_u16
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
-			serializer.EncodeLittleEndian(2, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
+			serializer.EncodeLittleEndian(2, uint64(uint16(pvm.State.Registers[ra]))), ram.Wrap, true)
 	case 122: // store_ind_u32
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
-			serializer.EncodeLittleEndian(4, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
+			serializer.EncodeLittleEndian(4, uint64(uint32(pvm.State.Registers[ra]))), ram.Wrap, true)
 	case 123: // store_ind_u64
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
 			serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
@@ -320,21 +320,21 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), ram.Wrap, true)))))
 	case 126: // load_ind_u16
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(2), ram.Wrap, true)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 2, ram.Wrap, true)))
 	case 127: // load_ind_i16
 		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(2, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(2), ram.Wrap, true)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 2, ram.Wrap, true)))))
 	case 128: // load_ind_u32
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(4), ram.Wrap, true)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 4, ram.Wrap, true)))
 	case 129: // load_ind_i32
 		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(4), ram.Wrap, true)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 4, ram.Wrap, true)))))
 	case 130: // load_ind_u64
 		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), uint64(8), ram.Wrap, true)))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 8, ram.Wrap, true)))
 	case 131: // add_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]+vx)))
 	case 132: // and_imm
