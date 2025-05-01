@@ -51,6 +51,18 @@
             },
             "showLog": true,
             "preLaunchTask": "select-constants-generator"
+        },
+        {
+            "name": "Test individual test vector",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go/pvm",
+            "args": [
+                "-test.v",
+                "-test.run=TestPVMWithDirectoryTestVectors/inst_load_i16"
+            ],
+            "showLog": true
         }
     ],
     "inputs": [
