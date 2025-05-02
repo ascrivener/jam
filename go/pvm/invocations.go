@@ -237,7 +237,7 @@ func AccumulationResultContextFromAccumulationStateComponents(accumulationStateC
 		Entropy:      posteriorEntropyAccumulator[0],
 		Timeslot:     timeslot,
 	}))
-	derivedServiceIndex := check(types.ServiceIndex(serializer.DecodeLittleEndian(hash[:])%((1<<32)-1<<9)+(1<<8)), accumulationStateComponents)
+	derivedServiceIndex := check(types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)), accumulationStateComponents)
 	return &AccumulationResultContext{
 		AccumulatingServiceIndex: serviceIndex,
 		StateComponents:          accumulationStateComponents.DeepCopy(),

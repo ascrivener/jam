@@ -486,7 +486,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		accumulatingServiceAccount.Balance = b
 
 		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
-		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + ((currentDerivedServiceIndex - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
+		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + ((uint64(currentDerivedServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
 
 		// Get current service accounts and update them
 		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[currentDerivedServiceIndex] = newAccount
@@ -1385,7 +1385,7 @@ func check(i types.ServiceIndex, stateComponents *AccumulationStateComponents) t
 		}
 
 		// Calculate the next index to try
-		// (i − 28 + 1) mod (232 − 29) + 28
-		currentIndex = types.ServiceIndex((1 << 8) + ((uint32(currentIndex) - (1 << 8) + 1) % (1<<32 - (1 << 9))) + (1 << 8))
+		// (i − 2^8 + 1) mod (2^32 − 2^9) + 2^8
+		currentIndex = types.ServiceIndex((1 << 8) + ((uint32(currentIndex) - (1 << 8) + 1) % (1<<32 - (1 << 9))))
 	}
 }

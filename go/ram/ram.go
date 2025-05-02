@@ -254,7 +254,9 @@ func (r *RAM) Rollback() {
 
 // ClearRollbackLog discards the rollback information
 func (r *RAM) ClearRollbackLog() {
-	r.rollbackLog = nil
+	for k := range r.rollbackLog {
+		delete(r.rollbackLog, k)
+	}
 }
 
 // ClearMemoryAccessExceptions clears the memory access exceptions

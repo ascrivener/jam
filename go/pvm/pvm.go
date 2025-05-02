@@ -207,7 +207,6 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 		pvm.State.RAM.ClearRollbackLog()
 
 		if *postHostCallExitReason.SimpleExitReason == ExitGo {
-			pvm.InstructionCounter = pvm.InstructionCounter + Register(1+skip(pvm.InstructionCounter, pvm.Opcodes))
 			continue
 		}
 
