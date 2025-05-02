@@ -336,7 +336,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		AccumulationResultContext:            *normalContext,
 		ExceptionalAccumulationResultContext: *exceptionalContext,
 	}
-	executionExitReason, posteriorGas := ΨM(*code, 5, gas, serializer.Serialize(struct {
+	executionExitReason, gasUsed := ΨM(*code, 5, gas, serializer.Serialize(struct {
 		Timeslot      types.Timeslot
 		ServiceIndex  types.ServiceIndex
 		OperandTuples []OperandTuple
@@ -345,7 +345,6 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		ServiceIndex:  serviceIndex,
 		OperandTuples: operandTuples,
 	}), hf, &ctx)
-	gasUsed := gas - types.GasValue(max(0, posteriorGas))
 	if executionExitReason.IsError() {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed
 	}

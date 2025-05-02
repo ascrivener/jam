@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -130,8 +130,11 @@ type TestVector struct {
 
 // StateKeyValues represents the key-value pairs in a state
 type StateKeyValues struct {
-	StateRoot string     `json:"state_root"`
-	KeyVals   [][]string `json:"keyvals"`
+	StateRoot string `json:"state_root"`
+	KeyVals   []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	} `json:"keyvals"`
 }
 
 // // TestStateTransitionAccumulation runs accumulation-specific tests with relevant fields
@@ -602,42 +605,58 @@ func hexToBytes(hexStr string) []byte {
 
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
-	defer func() {
-		runtime.GC()
-	}()
-	// Load the test file
-	testFilePath := "/Users/adamscrivener/Projects/Jam/jamtestnet/chainspecs/state_snapshots/genesis-tiny.json"
-	fileData, err := os.ReadFile(testFilePath)
-	if err != nil {
-		t.Fatalf("Failed to load genesis file: %v", err)
-	}
-
-	preState, err := StateFromGreekJSON(fileData)
-	if err != nil {
-		t.Fatalf("Failed to parse JSON: %v", err)
-	}
 
 	// Get all state transition files
 	transitionsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions"
+	snapshotsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots"
+
+	// Get and sort all state transition files
 	stateFiles, err := os.ReadDir(transitionsDir)
 	if err != nil {
 		t.Fatalf("Failed to read state transitions directory: %v", err)
 	}
 
-	t.Logf("Processing %d state transition files", len(stateFiles))
-
+	// Convert to slice and sort files by name to ensure proper sequence
+	var fileNames []string
 	for _, fileInfo := range stateFiles {
 		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".json") {
 			continue
 		}
+		fileNames = append(fileNames, fileInfo.Name())
+	}
+	sort.Strings(fileNames)
 
-		testName := fileInfo.Name()
+	t.Logf("Processing %d state transition files", len(fileNames))
 
-		// STEP 3: Load the test vector JSON from file
-		testVectorPath := filepath.Join(transitionsDir, testName)
+	// We need at least 2 files to test (current and next)
+	if len(fileNames) < 2 {
+		t.Fatalf("Need at least 2 state files to test sequential transitions")
+	}
+
+	// Process files in sequential pairs
+	for i := 0; i < len(fileNames)-1; i++ {
+		currentFileName := fileNames[i]
+		nextFileName := fileNames[i+1]
+
+		t.Logf("Testing transition: %s -> %s", currentFileName, nextFileName)
+
+		// STEP 1: Load the PRE state from current snapshot
+		preStateSnapshotPath := filepath.Join(snapshotsDir, currentFileName)
+		preStateData, err := os.ReadFile(preStateSnapshotPath)
+		if err != nil {
+			t.Fatalf("Failed to read pre-state snapshot file: %v", err)
+		}
+
+		preState, err := StateFromGreekJSON(preStateData)
+		if err != nil {
+			t.Fatalf("Failed to parse pre-state JSON: %v", err)
+		}
+
+		// STEP 2: Get test vector from the NEXT state file
+		testVectorPath := filepath.Join(transitionsDir, nextFileName)
 		testVectorData, err := os.ReadFile(testVectorPath)
 		if err != nil {
-			t.Fatalf("Failed to load test vector file: %v", err)
+			t.Fatalf("Failed to load next test vector file: %v", err)
 		}
 
 		// Parse the test vector JSON
@@ -646,86 +665,35 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			t.Fatalf("Failed to parse test vector JSON: %v", err)
 		}
 
-		// stateRoot := MerklizeState(preState)
-		// if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PreState.StateRoot))) {
-		// 	t.Fatalf("State root does not match (-expected +actual):\n%s", cmp.Diff(stateRoot[:], testVector.PreState.StateRoot))
-		// }
-
+		// Extract block from test vector
 		testBlock, err := BlockFromJSON(testVector.Block)
 		if err != nil {
 			t.Fatalf("Failed to parse block JSON: %v", err)
 		}
 
+		// Execute state transition
 		postState := StateTransitionFunction(preState, testBlock)
 
-		// Load the state snapshot with the same file name for comparison
-		snapshotPath := filepath.Join("/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots", testName)
-		snapshotData, err := os.ReadFile(snapshotPath)
+		// STEP 3: Load the POST state snapshot corresponding to the next file
+		postStateSnapshotPath := filepath.Join(snapshotsDir, nextFileName)
+		postStateData, err := os.ReadFile(postStateSnapshotPath)
 		if err != nil {
-			t.Fatalf("Failed to read state snapshot file: %v", err)
+			t.Fatalf("Failed to read post-state snapshot file: %v", err)
 		}
 
-		snapshotState, err := StateFromGreekJSON(snapshotData)
+		expectedPostState, err := StateFromGreekJSON(postStateData)
 		if err != nil {
-			t.Fatalf("Failed to parse JSON: %v", err)
+			t.Fatalf("Failed to parse post-state JSON: %v", err)
 		}
 
-		if diff := cmp.Diff(snapshotState, postState); diff != "" {
-			t.Logf("Test failed for %s", testName)
+		// Compare our computed post-state with the expected snapshot
+		if diff := cmp.Diff(expectedPostState, postState); diff != "" {
+			t.Logf("Test failed for transition %s -> %s", currentFileName, nextFileName)
 			t.Fatalf("States don't match (-expected +actual):\n%s", diff)
 		}
 
-		// // Calculate state root from our post state
-		// stateRoot = MerklizeState(postState)
-		// if !bytes.Equal(stateRoot[:], hexToBytesMust(string(testVector.PostState.StateRoot))) {
-		// 	t.Logf("States match exactly but roots differ - possible serialization issue")
-
-		// 	// Compare the key-value pairs between test vector and serialized state
-		// 	serializedPostState := StateSerializer(postState)
-
-		// 	// Create maps to easily compare key-value pairs
-		// 	testVectorKV := make(map[string]string)
-		// 	for _, kv := range testVector.PostState.KeyVals {
-		// 		if len(kv) >= 2 {
-		// 			testVectorKV[kv[0]] = kv[1]
-		// 		}
-		// 	}
-
-		// 	serializedKV := make(map[string]string)
-		// 	for key, val := range serializedPostState {
-		// 		keyStr := "0x" + hex.EncodeToString(key[:])
-		// 		valStr := "0x" + hex.EncodeToString(val)
-		// 		serializedKV[keyStr] = valStr
-		// 	}
-
-		// 	// Find differences
-		// 	t.Logf("Comparing key-value pairs between test vector and serialized state:")
-
-		// 	// Keys in test vector but not in serialized state
-		// 	for k, v := range testVectorKV {
-		// 		if sv, ok := serializedKV[k]; !ok {
-		// 			t.Logf("Key %s in test vector but missing in serialized state", k)
-		// 		} else if sv != v {
-		// 			t.Logf("Value mismatch for key %s:\n  Test vector: %s\n  Serialized: %s", k, v, sv)
-		// 		}
-		// 	}
-
-		// 	// Keys in serialized state but not in test vector
-		// 	for k, v := range serializedKV {
-		// 		if _, ok := testVectorKV[k]; !ok {
-		// 			t.Logf("Key %s in serialized state but missing in test vector: %s", k, v)
-		// 		}
-		// 	}
-
-		// 	t.Fatalf("State root does not match: %x vs %s",
-		// 		stateRoot[:], testVector.PostState.StateRoot)
-		// }
-
-		preState = postState
-		t.Logf("Successfully processed %s", testName)
+		t.Logf("Successfully verified transition %s -> %s", currentFileName, nextFileName)
 	}
-
-	t.Logf("All tests passed successfully")
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics

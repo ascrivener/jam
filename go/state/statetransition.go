@@ -517,7 +517,7 @@ func accumulateAndIntegrate(
 	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
 
 	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
-	for serviceIndex := range priorState.ServiceAccounts {
+	for serviceIndex := range o.ServiceAccounts {
 		N := make([]workreport.WorkDigest, 0)
 		for _, workReport := range accumulatableWorkReports[:n] {
 			for _, workDigest := range workReport.WorkDigests {
@@ -545,12 +545,12 @@ func accumulateAndIntegrate(
 	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}
 	var mutex sync.Mutex // Add mutex to protect map access
 
-	for serviceIndex := range priorState.ServiceAccounts {
+	for serviceIndex := range o.ServiceAccounts {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			_, gasUsed := pvm.OnTransfer(priorState.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
+			_, gasUsed := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, selectedTransfers)
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
 				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{
