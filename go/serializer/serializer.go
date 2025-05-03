@@ -45,6 +45,16 @@ func Deserialize(data []byte, target any) error {
 
 // serializeValue is the recursive helper that writes the serialized form of v into buf.
 func serializeValue(v reflect.Value, buf *bytes.Buffer) {
+	// Check for types.Blob first - special case to handle it as raw bytes
+	if v.Type().String() == "types.Blob" {
+		// For types.Blob (which is []byte), write the raw bytes directly
+		if !v.IsNil() {
+			blob := v.Interface().(types.Blob)
+			buf.Write(blob)
+		}
+		return
+	}
+
 	switch v.Kind() {
 	case reflect.Ptr:
 		if v.IsNil() {
@@ -130,6 +140,18 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 
 // deserializeValue is the recursive helper that reads from buf into value v
 func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
+	// Special case for types.Blob
+	if v.Type().String() == "types.Blob" {
+		// For types.Blob just read all remaining bytes
+		// This matches our serialization approach where we write raw bytes
+		blob := make([]byte, buf.Len())
+		if _, err := buf.Read(blob); err != nil {
+			return fmt.Errorf("failed to read types.Blob data: %w", err)
+		}
+		v.Set(reflect.ValueOf(types.Blob(blob)))
+		return nil
+	}
+
 	switch v.Kind() {
 	case reflect.Ptr:
 		// Check if pointer is nil
@@ -295,7 +317,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 // serializeMap handles map serialization.
 // For maps with value type struct{} (used as sets), it serializes the sorted keys.
-// Otherwise, it writes the length encoding, then each key/value pair in key order.
+// Otherwise, it writes the length encoding, then each key-value pair in key order.
 func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 	// Extract and sort the map keys.
 	keys := v.MapKeys()
@@ -316,15 +338,14 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 		}
 	})
 
+	buf.Write(EncodeLength(v))
+
 	// If the map is used as a set (value type is struct{}), simply serialize the keys.
 	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
-		buf.Write(EncodeLength(v))
 		for _, key := range keys {
 			serializeValue(key, buf)
 		}
 	} else {
-		// For a normal map, first append the length encoding.
-		buf.Write(EncodeLength(v))
 		// Then serialize each key followed by its associated value.
 		for _, key := range keys {
 			serializeValue(key, buf)
@@ -335,26 +356,6 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 
 // deserializeMap is a helper to deserialize maps
 func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
-	// Special handling for maps with value type struct{} (used as sets)
-	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
-		// Create a new map if the map is nil
-		if v.IsNil() {
-			v.Set(reflect.MakeMap(v.Type()))
-		}
-
-		// For sets, deserialize keys only
-		keyType := v.Type().Key()
-		for buf.Len() > 0 {
-			key := reflect.New(keyType).Elem()
-			if err := deserializeValue(key, buf); err != nil {
-				return fmt.Errorf("failed to deserialize set key: %w", err)
-			}
-			// Set key with empty struct{}{} value
-			v.SetMapIndex(key, reflect.ValueOf(struct{}{}))
-		}
-		return nil
-	}
-
 	// For regular maps, read length prefix
 	length, n, ok := DecodeGeneralNatural(buf.Bytes())
 	if !ok {
@@ -368,27 +369,38 @@ func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
 		v.Set(reflect.MakeMap(v.Type()))
 	}
 
-	// Deserialize each key-value pair
-	keyType := v.Type().Key()
-	valueType := v.Type().Elem()
-
-	for i := uint64(0); i < length; i++ {
-		// Create new key and value instances
-		key := reflect.New(keyType).Elem()
-		value := reflect.New(valueType).Elem()
-
-		// Deserialize key
-		if err := deserializeValue(key, buf); err != nil {
-			return fmt.Errorf("failed to deserialize map key %d: %w", i, err)
+	// Special handling for maps with value type struct{} (used as sets)
+	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
+		// For sets, deserialize keys only
+		keyType := v.Type().Key()
+		for i := uint64(0); i < length; i++ {
+			key := reflect.New(keyType).Elem()
+			if err := deserializeValue(key, buf); err != nil {
+				return fmt.Errorf("failed to deserialize set key: %w", err)
+			}
+			// Set key with empty struct{}{} value
+			v.SetMapIndex(key, reflect.ValueOf(struct{}{}))
 		}
+	} else {
+		// For normal maps, deserialize key-value pairs
+		keyType := v.Type().Key()
+		valueType := v.Type().Elem()
+		for i := uint64(0); i < length; i++ {
+			// Deserialize key
+			key := reflect.New(keyType).Elem()
+			if err := deserializeValue(key, buf); err != nil {
+				return fmt.Errorf("failed to deserialize map key: %w", err)
+			}
 
-		// Deserialize value
-		if err := deserializeValue(value, buf); err != nil {
-			return fmt.Errorf("failed to deserialize map value %d: %w", i, err)
+			// Deserialize value
+			value := reflect.New(valueType).Elem()
+			if err := deserializeValue(value, buf); err != nil {
+				return fmt.Errorf("failed to deserialize map value: %w", err)
+			}
+
+			// Set key-value pair in map
+			v.SetMapIndex(key, value)
 		}
-
-		// Set key-value pair in map
-		v.SetMapIndex(key, value)
 	}
 
 	return nil
@@ -428,22 +440,6 @@ func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 
 		// Allocate slice
 		v.Set(reflect.MakeSlice(v.Type(), length, length))
-	}
-
-	// Deserialize elements
-	elemType := v.Type().Elem()
-
-	// Special case for byte arrays/slices
-	if elemType.Kind() == reflect.Uint8 {
-		// Directly read bytes
-		bytes := make([]byte, length)
-		if _, err := buf.Read(bytes); err != nil {
-			return fmt.Errorf("failed to read byte slice: %w", err)
-		}
-
-		// Copy bytes to array/slice
-		reflect.Copy(v, reflect.ValueOf(bytes))
-		return nil
 	}
 
 	// General case

@@ -620,8 +620,8 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		for _, account := range jsonState.Accounts {
 			// Create a new service account
 			serviceAcc := &serviceaccount.ServiceAccount{
-				StorageDictionary:              make(map[[32]byte][]byte),
-				PreimageLookup:                 make(map[[32]byte][]byte),
+				StorageDictionary:              make(map[[32]byte]types.Blob),
+				PreimageLookup:                 make(map[[32]byte]types.Blob),
 				PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 			}
 

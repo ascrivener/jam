@@ -24,15 +24,18 @@ func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot ty
 		return nil
 	case 1:
 		if historicalStatus[0] <= timeslot {
-			return &p
+			byteSlice := []byte(p)
+			return &byteSlice
 		}
 	case 2:
 		if historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot {
-			return &p
+			byteSlice := []byte(p)
+			return &byteSlice
 		}
 	default:
 		if (historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot) || historicalStatus[2] <= timeslot {
-			return &p
+			byteSlice := []byte(p)
+			return &byteSlice
 		}
 	}
 

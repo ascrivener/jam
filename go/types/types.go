@@ -164,3 +164,5 @@ func (p PrivilegedServices) TotalAlwaysAccumulateGas() GasValue {
 	}
 	return sum
 }
+
+type Blob []byte

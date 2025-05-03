@@ -14,12 +14,12 @@ import (
 
 // --- Key Constructors ---
 
-func stateKeyConstructorFromStateComponentIndex(i uint8) [32]byte {
+func stateKeyConstructorFromStateComponentIndex(i uint8) [31]byte {
 	return stateKeyConstructor(i, types.ServiceIndex(0))
 }
 
-func stateKeyConstructor(i uint8, s types.ServiceIndex) [32]byte {
-	var key [32]byte
+func stateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
+	var key [31]byte
 
 	key[0] = i             // First byte is i.
 	key[1] = byte(s)       // Least-significant byte (n0).
@@ -33,7 +33,7 @@ func stateKeyConstructor(i uint8, s types.ServiceIndex) [32]byte {
 
 // invertStateKeyConstructor extracts the component ID and service index from a key
 // created with stateKeyConstructor, also returning if the key matches the expected pattern
-func invertStateKeyConstructor(key [32]byte) (uint8, types.ServiceIndex, bool) {
+func invertStateKeyConstructor(key [31]byte) (uint8, types.ServiceIndex, bool) {
 	i := key[0] // Component ID is first byte
 
 	// Extract the service index from bytes 1, 3, 5, 7
@@ -56,8 +56,8 @@ func invertStateKeyConstructor(key [32]byte) (uint8, types.ServiceIndex, bool) {
 	return i, types.ServiceIndex(s), valid
 }
 
-func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [32]byte {
-	var key [32]byte
+func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
+	var key [31]byte
 
 	// Extract little-endian bytes of the ServiceIndex (s)
 	n0 := byte(s)
@@ -83,7 +83,7 @@ func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [32]byte {
 
 // invertStateKeyConstructorFromHash extracts the service index and hash from a key
 // created with stateKeyConstructorFromHash
-func invertStateKeyConstructorFromHash(key [32]byte) (types.ServiceIndex, [32]byte) {
+func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]byte) {
 	// Extract service index from interleaved positions 0, 2, 4, 6
 	s := uint32(key[0]) |
 		(uint32(key[2]) << 8) |
@@ -115,31 +115,31 @@ func sliceToArray32(b []byte) [32]byte {
 
 // --- State Serializer ---
 
-func StateSerializer(state State) map[[32]byte][]byte {
-	serialized := make(map[[32]byte][]byte)
+func StateSerializer(state State) map[[31]byte][]byte {
+	serialized := make(map[[31]byte][]byte)
 
 	type StateComponent struct {
-		keyFunc func() [32]byte
+		keyFunc func() [31]byte
 		data    interface{}
 	}
 
 	// Define static state components.
 	stateComponents := []StateComponent{
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(1) }, state.AuthorizersPool},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(2) }, state.AuthorizerQueue},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(3) }, state.RecentBlocks},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(4) }, state.SafroleBasicState},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(5) }, state.Disputes},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(6) }, state.EntropyAccumulator},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(7) }, state.ValidatorKeysetsStaging},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(8) }, state.ValidatorKeysetsActive},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(9) }, state.ValidatorKeysetsPriorEpoch},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(10) }, state.PendingReports},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(11) }, state.MostRecentBlockTimeslot},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(12) }, state.PrivilegedServices},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(13) }, state.ValidatorStatistics},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(14) }, state.AccumulationQueue},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(15) }, state.AccumulationHistory},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(1) }, state.AuthorizersPool},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(2) }, state.AuthorizerQueue},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, state.RecentBlocks},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(4) }, state.SafroleBasicState},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(5) }, state.Disputes},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(6) }, state.EntropyAccumulator},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(7) }, state.ValidatorKeysetsStaging},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(8) }, state.ValidatorKeysetsActive},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(9) }, state.ValidatorKeysetsPriorEpoch},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(10) }, state.PendingReports},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(11) }, state.MostRecentBlockTimeslot},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(12) }, state.PrivilegedServices},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(13) }, state.ValidatorStatistics},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(14) }, state.AccumulationQueue},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(15) }, state.AccumulationHistory},
 	}
 
 	// Process ServiceAccounts
@@ -150,7 +150,7 @@ func StateSerializer(state State) map[[32]byte][]byte {
 
 		// Account state component.
 		stateComponents = append(stateComponents, StateComponent{
-			keyFunc: func() [32]byte {
+			keyFunc: func() [31]byte {
 				return stateKeyConstructor(255, sIndex)
 			},
 			data: struct {
@@ -178,8 +178,8 @@ func StateSerializer(state State) map[[32]byte][]byte {
 			valV := v
 
 			stateComponents = append(stateComponents, StateComponent{
-				keyFunc: func() [32]byte {
-					combined := append(ones, keyK[:28]...)
+				keyFunc: func() [31]byte {
+					combined := append(ones, keyK[:27]...)
 					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
 				},
 				data: valV,
@@ -194,8 +194,8 @@ func StateSerializer(state State) map[[32]byte][]byte {
 			preimageP := p
 
 			stateComponents = append(stateComponents, StateComponent{
-				keyFunc: func() [32]byte {
-					combined := append(onesMinusOne, hashH[1:29]...) // 4 + 28 = 32 bytes
+				keyFunc: func() [31]byte {
+					combined := append(onesMinusOne, hashH[1:28]...) // 4 + 28 = 32 bytes
 					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
 				},
 				data: preimageP,
@@ -211,8 +211,8 @@ func StateSerializer(state State) map[[32]byte][]byte {
 			blobLengthBytes := serializer.EncodeLittleEndian(4, uint64(lookupKey.BlobLength))
 			preimageHash := blake2b.Sum256(lookupKey.Preimage[:])
 			stateComponents = append(stateComponents, StateComponent{
-				keyFunc: func() [32]byte {
-					combined := append(blobLengthBytes, preimageHash[2:30]...)
+				keyFunc: func() [31]byte {
+					combined := append(blobLengthBytes, preimageHash[2:29]...)
 					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
 				},
 				data: timeslots,
@@ -230,8 +230,8 @@ func StateSerializer(state State) map[[32]byte][]byte {
 }
 
 // findStorageDictionaryEntries finds all storage dictionary entries for a specific service
-func findStorageDictionaryEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[32]byte]bool) (map[[32]byte][]byte, error) {
-	result := make(map[[32]byte][]byte)
+func findStorageDictionaryEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[31]byte]bool) (map[[31]byte][]byte, error) {
+	result := make(map[[31]byte][]byte)
 	ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
 
 	for key, data := range serialized {
@@ -241,7 +241,7 @@ func findStorageDictionaryEntries(serialized map[[32]byte][]byte, sIndex types.S
 		// Check if this matches our service and has the "ones" prefix
 		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], ones) {
 			// Extract the actual storage key (without the prefix)
-			var storageKey [32]byte
+			var storageKey [31]byte
 			copy(storageKey[:], hash[4:])
 
 			result[storageKey] = data
@@ -261,7 +261,7 @@ func findStorageDictionaryEntries(serialized map[[32]byte][]byte, sIndex types.S
 
 // findPreimageLookupEntries finds all preimage lookup entries for a specific service
 // Returns a map of hash keys to preimage bytes
-func findPreimageLookupEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[32]byte]bool) (map[[32]byte][]byte, error) {
+func findPreimageLookupEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[31]byte]bool) (map[[32]byte][]byte, error) {
 	result := make(map[[32]byte][]byte)
 	onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
 
@@ -281,7 +281,7 @@ func findPreimageLookupEntries(serialized map[[32]byte][]byte, sIndex types.Serv
 			// Validate that the stored hash portion matches our computed hash
 			// During serialization we used: combined := append(onesMinusOne, hashH[1:29]...)
 			// So hash[4:32] should match hashKey[1:25]
-			if bytes.Equal(hash[4:28], hashKey[1:25]) {
+			if bytes.Equal(hash[4:27], hashKey[1:24]) {
 				// Store the preimage with the reconstructed key
 				result[hashKey] = preimage
 
@@ -304,7 +304,7 @@ func findPreimageLookupEntries(serialized map[[32]byte][]byte, sIndex types.Serv
 // findPreimageHistoricalStatusEntries finds all preimage historical status entries for a specific service
 // It requires the already populated PreimageLookup to correctly identify the historical status entries
 // Returns a map of historical status keys to deserialized timeslots
-func findPreimageHistoricalStatusEntries(serialized map[[32]byte][]byte, sIndex types.ServiceIndex, account *serviceaccount.ServiceAccount, processedKeys map[[32]byte]bool) (map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot, error) {
+func findPreimageHistoricalStatusEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, account *serviceaccount.ServiceAccount, processedKeys map[[31]byte]bool) (map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot, error) {
 	result := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
 
 	// We need to identify keys that:
@@ -339,8 +339,8 @@ func findPreimageHistoricalStatusEntries(serialized map[[32]byte][]byte, sIndex 
 			// We need to take the Blake2b hash of preimageKey first
 			preimageKeyHash := blake2b.Sum256(preimageKey[:])
 
-			// Then compare hash[4:28] with preimageKeyHash[2:26]
-			if bytes.Equal(hash[4:28], preimageKeyHash[2:26]) {
+			// Then compare hash[4:27] with preimageKeyHash[2:25]
+			if bytes.Equal(hash[4:27], preimageKeyHash[2:25]) {
 				if blobLength != uint32(len(preimage)) {
 					return nil, fmt.Errorf("preimage historical status blob length mismatch for service %d", sIndex)
 				}
@@ -383,9 +383,9 @@ func findPreimageHistoricalStatusEntries(serialized map[[32]byte][]byte, sIndex 
 }
 
 // StateDeserializer reconstructs a State object from its serialized form
-func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
+func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 	// Create a map to track which keys have been processed
-	processedKeys := make(map[[32]byte]bool)
+	processedKeys := make(map[[31]byte]bool)
 
 	state := State{
 		ServiceAccounts: make(map[types.ServiceIndex]*serviceaccount.ServiceAccount),
@@ -395,30 +395,32 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 
 	// Deserialize static state components
 	components := []struct {
-		keyFunc func() [32]byte
+		keyFunc func() [31]byte
 		target  interface{}
 	}{
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(1) }, &state.AuthorizersPool},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(2) }, &state.AuthorizerQueue},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(3) }, &state.RecentBlocks},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(4) }, &state.SafroleBasicState},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(5) }, &state.Disputes},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(6) }, &state.EntropyAccumulator},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(7) }, &state.ValidatorKeysetsStaging},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(8) }, &state.ValidatorKeysetsActive},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(9) }, &state.ValidatorKeysetsPriorEpoch},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(10) }, &state.PendingReports},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(11) }, &state.MostRecentBlockTimeslot},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(12) }, &state.PrivilegedServices},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(13) }, &state.ValidatorStatistics},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(14) }, &state.AccumulationQueue},
-		{func() [32]byte { return stateKeyConstructorFromStateComponentIndex(15) }, &state.AccumulationHistory},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(1) }, &state.AuthorizersPool},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(2) }, &state.AuthorizerQueue},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, &state.RecentBlocks},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(4) }, &state.SafroleBasicState},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(5) }, &state.Disputes},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(6) }, &state.EntropyAccumulator},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(7) }, &state.ValidatorKeysetsStaging},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(8) }, &state.ValidatorKeysetsActive},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(9) }, &state.ValidatorKeysetsPriorEpoch},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(10) }, &state.PendingReports},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(11) }, &state.MostRecentBlockTimeslot},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(12) }, &state.PrivilegedServices},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(13) }, &state.ValidatorStatistics},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(14) }, &state.AccumulationQueue},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(15) }, &state.AccumulationHistory},
 	}
 
 	// Deserialize each basic component
 	for _, component := range components {
 		key := component.keyFunc()
-		if data, exists := serialized[key]; exists {
+		if data, exists := serialized[key]; !exists {
+			panic("missing key")
+		} else {
 			if err := serializer.Deserialize(data, component.target); err != nil {
 				return State{}, fmt.Errorf("failed to deserialize component with key %x: %w", key, err)
 			}
@@ -464,8 +466,8 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 			Balance:                        accountData.Balance,
 			MinimumGasForAccumulate:        accountData.MinimumGasForAccumulate,
 			MinimumGasForOnTransfer:        accountData.MinimumGasForOnTransfer,
-			StorageDictionary:              make(map[[32]byte][]byte),
-			PreimageLookup:                 make(map[[32]byte][]byte),
+			StorageDictionary:              make(map[[32]byte]types.Blob),
+			PreimageLookup:                 make(map[[32]byte]types.Blob),
 			PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 		}
 
@@ -516,7 +518,7 @@ func StateDeserializer(serialized map[[32]byte][]byte) (State, error) {
 	return state, nil
 }
 
-func extractServiceIndexFromKey(key [32]byte) (uint32, []byte, error) {
+func extractServiceIndexFromKey(key [31]byte) (uint32, []byte, error) {
 	// Only look for standard keys with component ID 255
 	i, sIndex, validStandard := invertStateKeyConstructor(key)
 

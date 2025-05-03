@@ -14,8 +14,8 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccount struct {
-	StorageDictionary              map[[32]byte][]byte                                    // s
-	PreimageLookup                 map[[32]byte][]byte                                    // p
+	StorageDictionary              map[[32]byte]types.Blob                                // s
+	PreimageLookup                 map[[32]byte]types.Blob                                // p
 	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot // l
 	CodeHash                       [32]byte                                               // c
 	Balance                        types.Balance                                          // b
@@ -58,7 +58,11 @@ func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte) {
 		m := preimage[offset : offset+int(L_m)]
 		offset += int(L_m)
 		c := preimage[offset:]
-		return &m, &c
+
+		// Convert types.Blob to []byte before taking address
+		mBytes := []byte(m)
+		cBytes := []byte(c)
+		return &mBytes, &cBytes
 	}
 	return nil, nil
 }

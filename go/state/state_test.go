@@ -605,20 +605,16 @@ func hexToBytes(hexStr string) []byte {
 
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
-
-	// Get all state transition files
-	transitionsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions"
-	snapshotsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_snapshots"
-
-	// Get and sort all state transition files
-	stateFiles, err := os.ReadDir(transitionsDir)
+	// Get all test vectors from the reports-l0 directory
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
+	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
-		t.Fatalf("Failed to read state transitions directory: %v", err)
+		t.Fatalf("Failed to read test vectors directory: %v", err)
 	}
 
-	// Convert to slice and sort files by name to ensure proper sequence
+	// Sort files by name to ensure proper sequence
 	var fileNames []string
-	for _, fileInfo := range stateFiles {
+	for _, fileInfo := range vectorFiles {
 		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".json") {
 			continue
 		}
@@ -626,74 +622,85 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	}
 	sort.Strings(fileNames)
 
-	t.Logf("Processing %d state transition files", len(fileNames))
+	t.Logf("Processing %d test vector files", len(fileNames))
 
-	// We need at least 2 files to test (current and next)
-	if len(fileNames) < 2 {
-		t.Fatalf("Need at least 2 state files to test sequential transitions")
-	}
-
-	// Process files in sequential pairs
-	for i := 0; i < len(fileNames)-1; i++ {
-		currentFileName := fileNames[i]
-		nextFileName := fileNames[i+1]
-
-		t.Logf("Testing transition: %s -> %s", currentFileName, nextFileName)
-
-		// STEP 1: Load the PRE state from current snapshot
-		preStateSnapshotPath := filepath.Join(snapshotsDir, currentFileName)
-		preStateData, err := os.ReadFile(preStateSnapshotPath)
-		if err != nil {
-			t.Fatalf("Failed to read pre-state snapshot file: %v", err)
+	for idx, fileName := range fileNames {
+		if idx == 0 {
+			continue
 		}
+		t.Logf("Processing test vector file: %s", fileName)
 
-		preState, err := StateFromGreekJSON(preStateData)
-		if err != nil {
-			t.Fatalf("Failed to parse pre-state JSON: %v", err)
-		}
-
-		// STEP 2: Get test vector from the NEXT state file
-		testVectorPath := filepath.Join(transitionsDir, nextFileName)
+		// Load and parse test vector
+		testVectorPath := filepath.Join(vectorsDir, fileName)
 		testVectorData, err := os.ReadFile(testVectorPath)
 		if err != nil {
-			t.Fatalf("Failed to load next test vector file: %v", err)
+			t.Fatalf("Failed to load test vector file: %v", err)
 		}
 
-		// Parse the test vector JSON
 		var testVector TestVector
 		if err := json.Unmarshal(testVectorData, &testVector); err != nil {
 			t.Fatalf("Failed to parse test vector JSON: %v", err)
 		}
 
-		// Extract block from test vector
+		// a. Deserialize pre-state from test vector
+		statemap := make(map[[31]byte][]byte)
+
+		for _, kv := range testVector.PreState.KeyVals {
+			key := hexToBytesMust(kv.Key)
+			if len(key) != 31 {
+				t.Fatalf("Invalid serialized state key length: %d", len(key))
+			}
+
+			var keyArray [31]byte
+			copy(keyArray[:], key)
+
+			value := hexToBytesMust(kv.Value)
+			statemap[keyArray] = value
+		}
+
+		preState, stateDeserializationErr := StateDeserializer(statemap)
+		if stateDeserializationErr != nil {
+			t.Fatalf("Failed to deserialize pre-state: %v", stateDeserializationErr)
+		}
+
+		// b. Convert block to implementation block and run state transition
 		testBlock, err := BlockFromJSON(testVector.Block)
 		if err != nil {
 			t.Fatalf("Failed to parse block JSON: %v", err)
 		}
 
-		// Execute state transition
+		// Run state transition function
 		postState := StateTransitionFunction(preState, testBlock)
 
-		// STEP 3: Load the POST state snapshot corresponding to the next file
-		postStateSnapshotPath := filepath.Join(snapshotsDir, nextFileName)
-		postStateData, err := os.ReadFile(postStateSnapshotPath)
-		if err != nil {
-			t.Fatalf("Failed to read post-state snapshot file: %v", err)
+		// Convert test vector's post-state key-values to the format expected by StateDeserializer
+		expectedSerializedState := make(map[[31]byte][]byte)
+		for _, kv := range testVector.PostState.KeyVals {
+			key := hexToBytesMust(kv.Key)
+			if len(key) != 31 {
+				t.Fatalf("Invalid serialized state key length: %d", len(key))
+			}
+
+			var keyArray [31]byte
+			copy(keyArray[:], key)
+
+			expectedSerializedState[keyArray] = hexToBytesMust(kv.Value)
 		}
 
-		expectedPostState, err := StateFromGreekJSON(postStateData)
+		// Deserialize the expected state
+		expectedPostState, err := StateDeserializer(expectedSerializedState)
 		if err != nil {
-			t.Fatalf("Failed to parse post-state JSON: %v", err)
+			t.Fatalf("Failed to deserialize expected post-state: %v", err)
 		}
 
-		// Compare our computed post-state with the expected snapshot
+		// Use cmp.Diff for a detailed comparison of the state objects
 		if diff := cmp.Diff(expectedPostState, postState); diff != "" {
-			t.Logf("Test failed for transition %s -> %s", currentFileName, nextFileName)
-			t.Fatalf("States don't match (-expected +actual):\n%s", diff)
+			t.Fatalf("Post-state mismatch (-expected +actual):\n%s", diff)
 		}
 
-		t.Logf("Successfully verified transition %s -> %s", currentFileName, nextFileName)
+		t.Logf("Successfully processed %s", fileName)
 	}
+
+	t.Logf("All tests passed successfully")
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics

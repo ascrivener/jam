@@ -8,7 +8,7 @@ import (
 )
 
 type StateKV struct {
-	OriginalKey [32]byte
+	OriginalKey [31]byte
 	Value       []byte
 }
 

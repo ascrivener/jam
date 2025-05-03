@@ -143,7 +143,8 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 
 			// Look up in state if available
 			if val, ok := a.StorageDictionary[keyArray]; ok {
-				preImage = &val
+				byteSlice := []byte(val)
+				preImage = &byteSlice
 			}
 		}
 
@@ -465,11 +466,11 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
 			CodeHash:                       codeHash,
-			StorageDictionary:              make(map[[32]byte][]byte),
+			StorageDictionary:              make(map[[32]byte]types.Blob),
 			PreimageLookupHistoricalStatus: preimageHistory,
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
-			PreimageLookup:                 make(map[[32]byte][]byte),
+			PreimageLookup:                 make(map[[32]byte]types.Blob),
 		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
@@ -1258,7 +1259,8 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 			if v, ok := a.PreimageLookup[keyArray]; ok {
-				preImage = &v
+				byteSlice := []byte(v)
+				preImage = &byteSlice
 			}
 		}
 
