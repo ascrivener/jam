@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -19,22 +20,6 @@ import (
 
 	"github.com/ascrivener/jam/types"
 )
-
-// // Disputes represents the disputes section in a test vector
-// type Disputes struct {
-// 	Verdicts []interface{} `json:"verdicts"`
-// 	Culprits []interface{} `json:"culprits"`
-// 	Faults   []interface{} `json:"faults"`
-// }
-
-// // Extrinsic represents the extrinsic section in a test vector
-// type Extrinsic struct {
-// 	Tickets    []interface{} `json:"tickets"`
-// 	Preimages  []interface{} `json:"preimages"`
-// 	Guarantees []interface{} `json:"guarantees"`
-// 	Assurances []interface{} `json:"assurances"`
-// 	Disputes   Disputes      `json:"disputes"`
-// }
 
 // Define a struct to match the JSON structure
 type ValidatorEntry struct {
@@ -672,6 +657,8 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		// Run state transition function
 		postState := StateTransitionFunction(preState, testBlock)
 
+		serializedPostState := StateSerializer(postState)
+
 		// Convert test vector's post-state key-values to the format expected by StateDeserializer
 		expectedSerializedState := make(map[[31]byte][]byte)
 		for _, kv := range testVector.PostState.KeyVals {
@@ -684,6 +671,34 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			copy(keyArray[:], key)
 
 			expectedSerializedState[keyArray] = hexToBytesMust(kv.Value)
+		}
+
+		// Compare serializedPostState with expectedSerializedState
+		if len(serializedPostState) != len(expectedSerializedState) {
+			t.Fatalf("Serialized state length mismatch: expected %d keys, got %d keys",
+				len(expectedSerializedState), len(serializedPostState))
+		}
+
+		// Check that all keys and values match
+		for key, expectedValue := range expectedSerializedState {
+			actualValue, exists := serializedPostState[key]
+			if !exists {
+				t.Fatalf("Key missing in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+			}
+
+			if !bytes.Equal(expectedValue, actualValue) {
+				t.Fatalf("Value mismatch for key %s: expected %s, got %s",
+					"0x"+hex.EncodeToString(key[:]),
+					"0x"+hex.EncodeToString(expectedValue),
+					"0x"+hex.EncodeToString(actualValue))
+			}
+		}
+
+		// Also check in reverse to ensure there are no extra keys in serializedPostState
+		for key := range serializedPostState {
+			if _, exists := expectedSerializedState[key]; !exists {
+				t.Fatalf("Extra key in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+			}
 		}
 
 		// Deserialize the expected state
