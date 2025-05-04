@@ -37,7 +37,7 @@ func Deserialize(data []byte, target any) error {
 
 	// Check if there are leftover bytes
 	if buf.Len() > 0 {
-		return fmt.Errorf("extra %d bytes left after deserialization", buf.Len())
+		return fmt.Errorf("extra %d bytes left after deserialization (data: %x)", buf.Len(), data)
 	}
 
 	return nil
@@ -185,12 +185,13 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			er := types.ExecutionExitReason{}
 			if tag == 0 {
 				// Valid data
-				blob := reflect.New(reflect.TypeOf(er.Blob)).Elem()
+				blobType := reflect.TypeOf([]byte(nil))
+				blob := reflect.New(blobType).Elem()
 				if err := deserializeValue(blob, buf); err != nil {
 					return err
 				}
-				if blobPtr, ok := blob.Interface().(*[]byte); ok {
-					er.Blob = blobPtr
+				if blobPtr, ok := blob.Interface().([]byte); ok {
+					er.Blob = &blobPtr
 				} else {
 					return fmt.Errorf("expected *[]byte but got %T", blob.Interface())
 				}
