@@ -16,6 +16,7 @@ import (
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/merklizer"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/ascrivener/jam/types"
@@ -113,13 +114,34 @@ type TestVector struct {
 // 	Extrinsic Extrinsic `json:"extrinsic"`
 // }
 
+type KeyVals []struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 // StateKeyValues represents the key-value pairs in a state
 type StateKeyValues struct {
-	StateRoot string `json:"state_root"`
-	KeyVals   []struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	} `json:"keyvals"`
+	StateRoot string  `json:"state_root"`
+	KeyVals   KeyVals `json:"keyvals"`
+}
+
+func (k KeyVals) toMap() map[[31]byte][]byte {
+	statemap := make(map[[31]byte][]byte)
+
+	for _, kv := range k {
+		key := hexToBytesMust(kv.Key)
+		if len(key) != 31 {
+			panic("Invalid serialized state key length:")
+		}
+
+		var keyArray [31]byte
+		copy(keyArray[:], key)
+
+		value := hexToBytesMust(kv.Value)
+		statemap[keyArray] = value
+	}
+
+	return statemap
 }
 
 // // TestStateTransitionAccumulation runs accumulation-specific tests with relevant fields
@@ -626,96 +648,165 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		if err := json.Unmarshal(testVectorData, &testVector); err != nil {
 			t.Fatalf("Failed to parse test vector JSON: %v", err)
 		}
+		t.Logf("Stage 1: Successfully loaded and parsed test vector from %s", fileName)
 
 		// a. Deserialize pre-state from test vector
-		statemap := make(map[[31]byte][]byte)
+		preStateSerialized := testVector.PreState.KeyVals.toMap()
+		t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(preStateSerialized))
 
-		for _, kv := range testVector.PreState.KeyVals {
-			key := hexToBytesMust(kv.Key)
-			if len(key) != 31 {
-				t.Fatalf("Invalid serialized state key length: %d", len(key))
+		bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
+		for k, v := range preStateSerialized {
+			bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
+				OriginalKey: k,
+				Value:       v,
 			}
-
-			var keyArray [31]byte
-			copy(keyArray[:], key)
-
-			value := hexToBytesMust(kv.Value)
-			statemap[keyArray] = value
 		}
+		t.Logf("Stage 3: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
 
-		preState, stateDeserializationErr := StateDeserializer(statemap)
+		// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
+
+		// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
+		// 	t.Fatalf("State root mismatch: expected %s, got %s", testVector.PreState.StateRoot, hex.EncodeToString(merklizedPreState[:]))
+		// }
+
+		preState, stateDeserializationErr := StateDeserializer(preStateSerialized)
 		if stateDeserializationErr != nil {
 			t.Fatalf("Failed to deserialize pre-state: %v", stateDeserializationErr)
 		}
+		t.Logf("Stage 4: Successfully deserialized pre-state")
+
+		preStateReserialized := StateSerializer(preState)
+		t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
+
+		compareSerializedStates(preStateSerialized, preStateReserialized, t)
+		t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
 
 		// b. Convert block to implementation block and run state transition
 		testBlock, err := BlockFromJSON(testVector.Block)
 		if err != nil {
 			t.Fatalf("Failed to parse block JSON: %v", err)
 		}
+		t.Logf("Stage 7: Successfully converted JSON block to implementation block")
 
 		// Run state transition function
+		t.Logf("Stage 8: Running state transition function...")
 		postState := StateTransitionFunction(preState, testBlock)
+		t.Logf("Stage 9: State transition completed")
 
 		serializedPostState := StateSerializer(postState)
+		t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
+
+		merklizedPostState := MerklizeState(postState)
+		expectedStateRoot := testVector.PostState.StateRoot
+		actualStateRoot := hex.EncodeToString(merklizedPostState[:])
+		stateRootMatch := expectedStateRoot == actualStateRoot
+		t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
+
+		if !stateRootMatch {
+			t.Logf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
+			// t.Fatalf("State root mismatch: expected %s, got %s", testVector.PostState.StateRoot, hex.EncodeToString(merklizedPostState[:]))
+		}
 
 		// Convert test vector's post-state key-values to the format expected by StateDeserializer
-		expectedSerializedState := make(map[[31]byte][]byte)
-		for _, kv := range testVector.PostState.KeyVals {
-			key := hexToBytesMust(kv.Key)
-			if len(key) != 31 {
-				t.Fatalf("Invalid serialized state key length: %d", len(key))
-			}
+		expectedSerializedState := testVector.PostState.KeyVals.toMap()
+		t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
-			var keyArray [31]byte
-			copy(keyArray[:], key)
-
-			expectedSerializedState[keyArray] = hexToBytesMust(kv.Value)
-		}
-
-		// Compare serializedPostState with expectedSerializedState
-		if len(serializedPostState) != len(expectedSerializedState) {
-			t.Fatalf("Serialized state length mismatch: expected %d keys, got %d keys",
-				len(expectedSerializedState), len(serializedPostState))
-		}
-
-		// Check that all keys and values match
-		for key, expectedValue := range expectedSerializedState {
-			actualValue, exists := serializedPostState[key]
-			if !exists {
-				t.Fatalf("Key missing in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
-			}
-
-			if !bytes.Equal(expectedValue, actualValue) {
-				t.Fatalf("Value mismatch for key %s: expected %s, got %s",
-					"0x"+hex.EncodeToString(key[:]),
-					"0x"+hex.EncodeToString(expectedValue),
-					"0x"+hex.EncodeToString(actualValue))
-			}
-		}
-
-		// Also check in reverse to ensure there are no extra keys in serializedPostState
-		for key := range serializedPostState {
-			if _, exists := expectedSerializedState[key]; !exists {
-				t.Fatalf("Extra key in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
-			}
-		}
+		t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
+		compareSerializedStates(expectedSerializedState, serializedPostState, t)
+		t.Logf("Stage 14: Serialized states match")
 
 		// Deserialize the expected state
 		expectedPostState, err := StateDeserializer(expectedSerializedState)
 		if err != nil {
 			t.Fatalf("Failed to deserialize expected post-state: %v", err)
 		}
+		t.Logf("Stage 15: Successfully deserialized expected post-state")
 
 		// Use cmp.Diff for a detailed comparison of the state objects
+		t.Logf("Stage 16: Performing detailed comparison of state objects...")
 		if diff := cmp.Diff(expectedPostState, postState); diff != "" {
 			t.Fatalf("Post-state mismatch (-expected +actual):\n%s", diff)
 		}
+		t.Logf("Stage 17: State objects match")
 
 		t.Logf("Successfully processed %s", fileName)
 	}
 
 	t.Logf("All tests passed successfully")
+}
+
+func compareSerializedStates(expected, actual map[[31]byte][]byte, t *testing.T) {
+	// Compare serializedPostState with expectedSerializedState
+	if len(actual) != len(expected) {
+		t.Fatalf("Serialized state length mismatch: expected %d keys, got %d keys",
+			len(expected), len(actual))
+	}
+
+	// Check that all keys and values match
+	for key, expectedValue := range expected {
+		actualValue, exists := actual[key]
+		if !exists {
+			t.Fatalf("Key missing in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+		}
+
+		if !bytes.Equal(expectedValue, actualValue) {
+			t.Fatalf("Value mismatch for key %s: expected %s, got %s\n%s",
+				"0x"+hex.EncodeToString(key[:]),
+				"0x"+hex.EncodeToString(expectedValue),
+				"0x"+hex.EncodeToString(actualValue),
+				highlightByteDifferences(expectedValue, actualValue))
+		}
+	}
+
+	// Also check in reverse to ensure there are no extra keys in serializedPostState
+	for key := range actual {
+		if _, exists := expected[key]; !exists {
+			t.Fatalf("Extra key in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+		}
+	}
+}
+
+func highlightByteDifferences(expected, actual []byte) string {
+	var b strings.Builder
+	b.WriteString("Differences:\n")
+
+	// Determine the length to compare
+	minLen := len(expected)
+	if len(actual) < minLen {
+		minLen = len(actual)
+	}
+
+	// Compare bytes and highlight differences
+	for i := 0; i < minLen; i++ {
+		if expected[i] != actual[i] {
+			b.WriteString(fmt.Sprintf("  Position %d: expected 0x%02x, got 0x%02x\n", i, expected[i], actual[i]))
+		}
+	}
+
+	// Report if lengths are different
+	if len(expected) != len(actual) {
+		b.WriteString(fmt.Sprintf("  Length mismatch: expected %d bytes, got %d bytes\n", len(expected), len(actual)))
+
+		// Show extra bytes in expected
+		if len(expected) > len(actual) {
+			b.WriteString("  Extra bytes in expected:\n  ")
+			for i := minLen; i < len(expected); i++ {
+				b.WriteString(fmt.Sprintf(" 0x%02x", expected[i]))
+			}
+			b.WriteString("\n")
+		}
+
+		// Show extra bytes in actual
+		if len(actual) > len(expected) {
+			b.WriteString("  Extra bytes in actual:\n  ")
+			for i := minLen; i < len(actual); i++ {
+				b.WriteString(fmt.Sprintf(" 0x%02x", actual[i]))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
 }
 
 // convertExtrinsics converts the test vector extrinsic to block.Extrinsics

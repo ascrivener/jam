@@ -10,6 +10,7 @@ import (
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/util"
 )
 
 // --- Key Constructors ---
@@ -56,31 +57,6 @@ func invertStateKeyConstructor(key [31]byte) (uint8, types.ServiceIndex, bool) {
 	return i, types.ServiceIndex(s), valid
 }
 
-func stateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
-	var key [31]byte
-
-	// Extract little-endian bytes of the ServiceIndex (s)
-	n0 := byte(s)
-	n1 := byte(s >> 8)
-	n2 := byte(s >> 16)
-	n3 := byte(s >> 24)
-
-	// Interleave n0, n1, n2, n3 with the first 4 bytes of h
-	key[0] = n0
-	key[1] = h[0]
-	key[2] = n1
-	key[3] = h[1]
-	key[4] = n2
-	key[5] = h[2]
-	key[6] = n3
-	key[7] = h[3]
-
-	// Copy the remaining bytes of h from index 4 onward
-	copy(key[8:], h[4:])
-
-	return key
-}
-
 // invertStateKeyConstructorFromHash extracts the service index and hash from a key
 // created with stateKeyConstructorFromHash
 func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]byte) {
@@ -103,14 +79,6 @@ func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]by
 	copy(h[4:], key[8:])
 
 	return types.ServiceIndex(s), h
-}
-
-// --- Helper: Convert []byte to [32]byte ---
-
-func sliceToArray32(b []byte) [32]byte {
-	var arr [32]byte
-	copy(arr[:], b)
-	return arr
 }
 
 // --- State Serializer ---
@@ -171,18 +139,12 @@ func StateSerializer(state State) map[[31]byte][]byte {
 		})
 
 		// Process StorageDictionary.
-		ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
 		for k, v := range sAccount.StorageDictionary {
-			// Capture k and v.
-			keyK := k
-			valV := v
-
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [31]byte {
-					combined := append(ones, keyK[:27]...)
-					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
+					return k
 				},
-				data: valV,
+				data: v,
 			})
 		}
 
@@ -196,7 +158,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [31]byte {
 					combined := append(onesMinusOne, hashH[1:28]...) // 4 + 28 = 32 bytes
-					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
+					return serializer.StateKeyConstructorFromHash(sIndex, util.SliceToArray32(combined))
 				},
 				data: preimageP,
 			})
@@ -213,7 +175,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [31]byte {
 					combined := append(blobLengthBytes, preimageHash[2:29]...)
-					return stateKeyConstructorFromHash(sIndex, sliceToArray32(combined))
+					return serializer.StateKeyConstructorFromHash(sIndex, util.SliceToArray32(combined))
 				},
 				data: timeslots,
 			})
@@ -466,7 +428,7 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 			Balance:                        accountData.Balance,
 			MinimumGasForAccumulate:        accountData.MinimumGasForAccumulate,
 			MinimumGasForOnTransfer:        accountData.MinimumGasForOnTransfer,
-			StorageDictionary:              make(map[[32]byte]types.Blob),
+			StorageDictionary:              make(map[[31]byte]types.Blob),
 			PreimageLookup:                 make(map[[32]byte]types.Blob),
 			PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 		}
@@ -478,8 +440,8 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 		}
 
 		// Return an error if any storage dictionary entries are found
-		if len(storageEntries) > 0 {
-			return State{}, fmt.Errorf("deserialization doesn't support storage dictionary entries for service %d", sIndex)
+		for k, v := range storageEntries {
+			account.StorageDictionary[k] = v
 		}
 
 		// Look for preimage lookup entries - already deserialized

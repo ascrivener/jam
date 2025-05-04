@@ -142,7 +142,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			copy(keyArray[:], h[:])
 
 			// Look up in state if available
-			if val, ok := a.StorageDictionary[keyArray]; ok {
+			if val, ok := a.StorageDictionary[serializer.StorageKeyConstructorFromFullKey(serviceIndex, keyArray)]; ok {
 				byteSlice := []byte(val)
 				preImage = &byteSlice
 			}
@@ -198,10 +198,11 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		h := blake2b.Sum256(combinedBytes)
 		copy(keyArray[:], h[:])
 
+		key := serializer.StorageKeyConstructorFromFullKey(serviceIndex, keyArray)
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			delete(serviceAccount.StorageDictionary, keyArray)
+			delete(serviceAccount.StorageDictionary, key)
 		} else {
 			// Check if value memory range is accessible
 			if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
@@ -210,12 +211,12 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			serviceAccount.StorageDictionary[keyArray] = valueBytes
+			serviceAccount.StorageDictionary[key] = valueBytes
 		}
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l Register
-		if val, ok := serviceAccount.StorageDictionary[keyArray]; ok {
+		if val, ok := serviceAccount.StorageDictionary[key]; ok {
 			l = Register(len(val))
 		} else {
 			l = Register(HostCallNone)
@@ -466,7 +467,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
 			CodeHash:                       codeHash,
-			StorageDictionary:              make(map[[32]byte]types.Blob),
+			StorageDictionary:              make(map[[31]byte]types.Blob),
 			PreimageLookupHistoricalStatus: preimageHistory,
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),

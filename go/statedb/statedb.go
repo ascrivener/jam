@@ -83,7 +83,7 @@ func (db *StateDatabase) CleanupOldStates(oldestNeededTimeslot types.Timeslot) {
 func deepCopyAccount(account *serviceaccount.ServiceAccount) *serviceaccount.ServiceAccount {
 	// Create a new account
 	newAccount := &serviceaccount.ServiceAccount{
-		StorageDictionary:              make(map[[32]byte]types.Blob),
+		StorageDictionary:              make(map[[31]byte]types.Blob),
 		PreimageLookup:                 make(map[[32]byte]types.Blob),
 		PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 		CodeHash:                       account.CodeHash,

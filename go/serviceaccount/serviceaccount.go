@@ -14,7 +14,7 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccount struct {
-	StorageDictionary              map[[32]byte]types.Blob                                // s
+	StorageDictionary              map[[31]byte]types.Blob                                // s
 	PreimageLookup                 map[[32]byte]types.Blob                                // p
 	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot // l
 	CodeHash                       [32]byte                                               // c

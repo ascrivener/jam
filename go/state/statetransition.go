@@ -535,8 +535,8 @@ func accumulateAndIntegrate(
 				gasUsed += serviceAndGasUsage.GasUsed
 			}
 			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
-				NumberOfWorkItems: validatorstatistics.ValidatorStatisticsNum(len(N)),
-				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(gasUsed),
+				NumberOfWorkItems: types.GenericNum(len(N)),
+				GasUsed:           types.GenericGasValue(gasUsed),
 			}
 		}
 	}
@@ -554,8 +554,8 @@ func accumulateAndIntegrate(
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
 				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{
-					NumberOfTransfers: validatorstatistics.ValidatorStatisticsNum(len(selectedTransfers)),
-					GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(gasUsed),
+					NumberOfTransfers: types.GenericNum(len(selectedTransfers)),
+					GasUsed:           types.GenericGasValue(gasUsed),
 				}
 				mutex.Unlock() // Don't forget to unlock
 			}
@@ -661,12 +661,12 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 
 			// Sum statistics from each work digest in the work report
 			for _, digest := range workReport.WorkDigests {
-				coreStats.NumSegmentsImportedFrom += validatorstatistics.ValidatorStatisticsNum(digest.NumSegmentsImportedFrom)
-				coreStats.NumExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(digest.NumExtrinsicsUsed)
-				coreStats.SizeInOctetsOfExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(digest.SizeInOctetsOfExtrinsicsUsed)
-				coreStats.NumSegmentsExportedInto += validatorstatistics.ValidatorStatisticsNum(digest.NumSegmentsExportedInto)
-				coreStats.ActualRefinementGasUsed += validatorstatistics.ValidatorStatisticsGasValue(digest.ActualRefinementGasUsed)
-				coreStats.WorkBundleLength += validatorstatistics.ValidatorStatisticsNum(workReport.WorkPackageSpecification.WorkBundleLength)
+				coreStats.NumSegmentsImportedFrom += types.GenericNum(digest.NumSegmentsImportedFrom)
+				coreStats.NumExtrinsicsUsed += types.GenericNum(digest.NumExtrinsicsUsed)
+				coreStats.SizeInOctetsOfExtrinsicsUsed += types.GenericNum(digest.SizeInOctetsOfExtrinsicsUsed)
+				coreStats.NumSegmentsExportedInto += types.GenericNum(digest.NumSegmentsExportedInto)
+				coreStats.ActualRefinementGasUsed += types.GenericGasValue(digest.ActualRefinementGasUsed)
+				coreStats.WorkBundleLength += types.GenericNum(workReport.WorkPackageSpecification.WorkBundleLength)
 			}
 		}
 
@@ -675,10 +675,10 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 				continue
 			}
 
-			coreStats.OctetsIntroduced += validatorstatistics.ValidatorStatisticsNum(uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0))))
+			coreStats.OctetsIntroduced += types.GenericNum(uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0))))
 		}
 
-		coreStats.AvailabilityContributionsInAssurancesExtrinsic = validatorstatistics.ValidatorStatisticsNum(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))
+		coreStats.AvailabilityContributionsInAssurancesExtrinsic = types.GenericNum(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))
 
 		// Set the new statistics in the return value
 		posteriorValidatorStatistics.CoreStatistics[cIndex] = coreStats
@@ -704,19 +704,19 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		for _, guarantee := range guarantees {
 			for _, workDigest := range guarantee.WorkReport.WorkDigests {
 				if workDigest.ServiceIndex == serviceIndex {
-					serviceStatistics.NumSegmentsImportedFrom += validatorstatistics.ValidatorStatisticsNum(workDigest.NumSegmentsImportedFrom)
-					serviceStatistics.NumExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(workDigest.NumExtrinsicsUsed)
-					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += validatorstatistics.ValidatorStatisticsNum(workDigest.SizeInOctetsOfExtrinsicsUsed)
-					serviceStatistics.NumSegmentsExportedInto += validatorstatistics.ValidatorStatisticsNum(workDigest.NumSegmentsExportedInto)
+					serviceStatistics.NumSegmentsImportedFrom += types.GenericNum(workDigest.NumSegmentsImportedFrom)
+					serviceStatistics.NumExtrinsicsUsed += types.GenericNum(workDigest.NumExtrinsicsUsed)
+					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += types.GenericNum(workDigest.SizeInOctetsOfExtrinsicsUsed)
+					serviceStatistics.NumSegmentsExportedInto += types.GenericNum(workDigest.NumSegmentsExportedInto)
 					serviceStatistics.ActualRefinementGasUsed.WorkReportCount++
-					serviceStatistics.ActualRefinementGasUsed.Amount += validatorstatistics.ValidatorStatisticsGasValue(workDigest.ActualRefinementGasUsed)
+					serviceStatistics.ActualRefinementGasUsed.Amount += types.GenericGasValue(workDigest.ActualRefinementGasUsed)
 				}
 			}
 		}
 		for _, preimage := range preimages {
 			if preimage.ServiceIndex == serviceIndex {
 				serviceStatistics.PreimageExtrinsicSize.ExtrinsicCount++
-				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += validatorstatistics.ValidatorStatisticsNum(len(preimage.Data))
+				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += types.GenericNum(len(preimage.Data))
 			}
 		}
 		if _, ok := accumulationStatistics[serviceIndex]; ok {
@@ -725,7 +725,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		if _, ok := deferredTransferStatistics[serviceIndex]; ok {
 			serviceStatistics.DeferredTransferStatistics = deferredTransferStatistics[serviceIndex]
 		}
-		posteriorValidatorStatistics.ServiceStatistics[validatorstatistics.ValidatorStatisticsServiceIndex(serviceIndex)] = serviceStatistics
+		posteriorValidatorStatistics.ServiceStatistics[types.ServiceIndex(serviceIndex)] = serviceStatistics
 	}
 
 	return posteriorValidatorStatistics

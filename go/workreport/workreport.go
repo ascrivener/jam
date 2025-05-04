@@ -10,7 +10,7 @@ type WorkReport struct {
 	Output                     []byte                    // o
 	SegmentRootLookup          map[[32]byte][32]byte     // l
 	WorkDigests                []WorkDigest              // r
-	IsAuthorizedGasConsumption types.GasValue            // g
+	IsAuthorizedGasConsumption types.GenericGasValue     // g
 }
 
 type AvailabilitySpecification struct {
@@ -18,7 +18,7 @@ type AvailabilitySpecification struct {
 	WorkBundleLength types.BlobLength // l
 	ErasureRoot      [32]byte         // u
 	SegmentRoot      [32]byte         // e
-	SegmentCount     uint64           // n
+	SegmentCount     uint16           // n
 }
 
 type RefinementContext struct {
@@ -36,11 +36,11 @@ type WorkDigest struct {
 	PayloadHash                  [32]byte                  // y
 	AccumulateGasLimit           types.GasValue            // g
 	WorkResult                   types.ExecutionExitReason // d
-	ActualRefinementGasUsed      types.GasValue            // u
-	NumSegmentsImportedFrom      uint32                    // i
-	NumExtrinsicsUsed            uint32                    // x
-	SizeInOctetsOfExtrinsicsUsed uint32                    // z
-	NumSegmentsExportedInto      uint32                    // e
+	ActualRefinementGasUsed      types.GenericGasValue     // u
+	NumSegmentsImportedFrom      types.GenericNum          // i
+	NumExtrinsicsUsed            types.GenericNum          // x
+	SizeInOctetsOfExtrinsicsUsed types.GenericNum          // z
+	NumSegmentsExportedInto      types.GenericNum          // e
 }
 
 type WorkReportWithWorkPackageHashes struct {

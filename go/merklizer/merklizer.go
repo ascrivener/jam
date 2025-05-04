@@ -23,7 +23,7 @@ func MerklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 				serializedEmbeddedValueSize := serializer.Serialize(uint8(len(stateKV.Value)))
 				bs.AppendBits([]bool{true, false})
 				bs.Concat(bitsequence.FromBytes(serializedEmbeddedValueSize).SubsequenceFrom(2))
-				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]).SubsequenceTo(248))
+				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]))
 				bs.Concat(bitsequence.FromBytes(stateKV.Value))
 				for bs.Len() < 64*8 {
 					bs.AppendBit(false)
@@ -31,7 +31,7 @@ func MerklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 			} else {
 				valueHash := blake2b.Sum256(stateKV.Value)
 				bs.AppendBits([]bool{true, true, false, false, false, false, false, false})
-				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]).SubsequenceTo(248))
+				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]))
 				bs.Concat(bitsequence.FromBytes(valueHash[:]))
 			}
 			break
@@ -54,7 +54,7 @@ func MerklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 		newKeyBS := bs.SubsequenceFrom(1)
 
 		// Insert into the appropriate map.
-		if firstBit == false {
+		if !firstBit {
 			leftMap[newKeyBS.Key()] = stateKV
 		} else {
 			rightMap[newKeyBS.Key()] = stateKV

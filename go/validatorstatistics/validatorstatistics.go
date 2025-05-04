@@ -6,10 +6,10 @@ import (
 )
 
 type ValidatorStatistics struct {
-	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics    // V
-	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics    // L
-	CoreStatistics          [constants.NumCores]CoreStatistics                    // C
-	ServiceStatistics       map[ValidatorStatisticsServiceIndex]ServiceStatistics // S
+	AccumulatorStatistics   [constants.NumValidators]SingleValidatorStatistics // V
+	PreviousEpochStatistics [constants.NumValidators]SingleValidatorStatistics // L
+	CoreStatistics          [constants.NumCores]CoreStatistics                 // C
+	ServiceStatistics       map[types.ServiceIndex]ServiceStatistics           // S
 }
 
 type SingleValidatorStatistics struct {
@@ -21,21 +21,15 @@ type SingleValidatorStatistics struct {
 	AvailabilityAssurances uint32 // a
 }
 
-type ValidatorStatisticsNum uint64
-
-type ValidatorStatisticsGasValue types.GasValue
-
-type ValidatorStatisticsServiceIndex types.ServiceIndex
-
 type CoreStatistics struct {
-	OctetsIntroduced                               ValidatorStatisticsNum      // d
-	AvailabilityContributionsInAssurancesExtrinsic ValidatorStatisticsNum      // p
-	NumSegmentsImportedFrom                        ValidatorStatisticsNum      // i
-	NumSegmentsExportedInto                        ValidatorStatisticsNum      // e
-	SizeInOctetsOfExtrinsicsUsed                   ValidatorStatisticsNum      // z
-	NumExtrinsicsUsed                              ValidatorStatisticsNum      // x
-	WorkBundleLength                               ValidatorStatisticsNum      // b
-	ActualRefinementGasUsed                        ValidatorStatisticsGasValue // u
+	OctetsIntroduced                               types.GenericNum      // d
+	AvailabilityContributionsInAssurancesExtrinsic types.GenericNum      // p
+	NumSegmentsImportedFrom                        types.GenericNum      // i
+	NumSegmentsExportedInto                        types.GenericNum      // e
+	SizeInOctetsOfExtrinsicsUsed                   types.GenericNum      // z
+	NumExtrinsicsUsed                              types.GenericNum      // x
+	WorkBundleLength                               types.GenericNum      // b
+	ActualRefinementGasUsed                        types.GenericGasValue // u
 }
 
 type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
@@ -43,28 +37,28 @@ type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
 type TransferStatistics map[types.ServiceIndex]ServiceTransferStatistics
 
 type ServiceAccumulationStatistics struct {
-	NumberOfWorkItems ValidatorStatisticsNum
-	GasUsed           ValidatorStatisticsGasValue
+	NumberOfWorkItems types.GenericNum
+	GasUsed           types.GenericGasValue
 }
 
 type ServiceTransferStatistics struct {
-	NumberOfTransfers ValidatorStatisticsNum
-	GasUsed           ValidatorStatisticsGasValue
+	NumberOfTransfers types.GenericNum
+	GasUsed           types.GenericGasValue
 }
 
 type ServiceStatistics struct {
 	PreimageExtrinsicSize struct {
-		ExtrinsicCount    ValidatorStatisticsNum
-		TotalSizeInOctets ValidatorStatisticsNum
+		ExtrinsicCount    types.GenericNum
+		TotalSizeInOctets types.GenericNum
 	} // p
 	ActualRefinementGasUsed struct {
-		WorkReportCount ValidatorStatisticsNum
-		Amount          ValidatorStatisticsGasValue
+		WorkReportCount types.GenericNum
+		Amount          types.GenericGasValue
 	} // r
-	NumSegmentsImportedFrom      ValidatorStatisticsNum // i
-	NumSegmentsExportedInto      ValidatorStatisticsNum // e
-	SizeInOctetsOfExtrinsicsUsed ValidatorStatisticsNum // z
-	NumExtrinsicsUsed            ValidatorStatisticsNum // x
-	AccumulationStatistics       ServiceAccumulationStatistics
-	DeferredTransferStatistics   ServiceTransferStatistics
+	NumSegmentsImportedFrom      types.GenericNum              // i
+	NumSegmentsExportedInto      types.GenericNum              // e
+	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
+	NumExtrinsicsUsed            types.GenericNum              // x
+	AccumulationStatistics       ServiceAccumulationStatistics // a
+	DeferredTransferStatistics   ServiceTransferStatistics     // t
 }

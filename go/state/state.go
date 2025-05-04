@@ -10,6 +10,7 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/sealingkeysequence"
+	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
@@ -489,7 +490,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		AccumulatorStatistics:   [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
 		PreviousEpochStatistics: [constants.NumValidators]validatorstatistics.SingleValidatorStatistics{},
 		CoreStatistics:          [constants.NumCores]validatorstatistics.CoreStatistics{},
-		ServiceStatistics:       make(map[validatorstatistics.ValidatorStatisticsServiceIndex]validatorstatistics.ServiceStatistics),
+		ServiceStatistics:       make(map[types.ServiceIndex]validatorstatistics.ServiceStatistics),
 	}
 
 	stats := jsonState.Pi
@@ -530,14 +531,14 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 			break
 		}
 		state.ValidatorStatistics.CoreStatistics[i] = validatorstatistics.CoreStatistics{
-			OctetsIntroduced: validatorstatistics.ValidatorStatisticsNum(core.DaLoad),
-			AvailabilityContributionsInAssurancesExtrinsic: validatorstatistics.ValidatorStatisticsNum(core.Popularity),
-			NumSegmentsImportedFrom:                        validatorstatistics.ValidatorStatisticsNum(core.Imports),
-			NumSegmentsExportedInto:                        validatorstatistics.ValidatorStatisticsNum(core.Exports),
-			SizeInOctetsOfExtrinsicsUsed:                   validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicSize),
-			NumExtrinsicsUsed:                              validatorstatistics.ValidatorStatisticsNum(core.ExtrinsicCount),
-			WorkBundleLength:                               validatorstatistics.ValidatorStatisticsNum(core.BundleSize),
-			ActualRefinementGasUsed:                        validatorstatistics.ValidatorStatisticsGasValue(core.GasUsed),
+			OctetsIntroduced: types.GenericNum(core.DaLoad),
+			AvailabilityContributionsInAssurancesExtrinsic: types.GenericNum(core.Popularity),
+			NumSegmentsImportedFrom:                        types.GenericNum(core.Imports),
+			NumSegmentsExportedInto:                        types.GenericNum(core.Exports),
+			SizeInOctetsOfExtrinsicsUsed:                   types.GenericNum(core.ExtrinsicSize),
+			NumExtrinsicsUsed:                              types.GenericNum(core.ExtrinsicCount),
+			WorkBundleLength:                               types.GenericNum(core.BundleSize),
+			ActualRefinementGasUsed:                        types.GenericGasValue(core.GasUsed),
 		}
 	}
 
@@ -548,34 +549,34 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		// Create service statistics with proper field mapping
 		serviceStats := validatorstatistics.ServiceStatistics{
 			PreimageExtrinsicSize: struct {
-				ExtrinsicCount    validatorstatistics.ValidatorStatisticsNum
-				TotalSizeInOctets validatorstatistics.ValidatorStatisticsNum
+				ExtrinsicCount    types.GenericNum
+				TotalSizeInOctets types.GenericNum
 			}{
-				ExtrinsicCount:    validatorstatistics.ValidatorStatisticsNum(service.Record.ProvidedCount),
-				TotalSizeInOctets: validatorstatistics.ValidatorStatisticsNum(service.Record.ProvidedSize),
+				ExtrinsicCount:    types.GenericNum(service.Record.ProvidedCount),
+				TotalSizeInOctets: types.GenericNum(service.Record.ProvidedSize),
 			},
 			ActualRefinementGasUsed: struct {
-				WorkReportCount validatorstatistics.ValidatorStatisticsNum
-				Amount          validatorstatistics.ValidatorStatisticsGasValue
+				WorkReportCount types.GenericNum
+				Amount          types.GenericGasValue
 			}{
-				WorkReportCount: validatorstatistics.ValidatorStatisticsNum(service.Record.RefinementCount),
-				Amount:          validatorstatistics.ValidatorStatisticsGasValue(service.Record.RefinementGasUsed),
+				WorkReportCount: types.GenericNum(service.Record.RefinementCount),
+				Amount:          types.GenericGasValue(service.Record.RefinementGasUsed),
 			},
-			NumSegmentsImportedFrom:      validatorstatistics.ValidatorStatisticsNum(service.Record.Imports),
-			NumSegmentsExportedInto:      validatorstatistics.ValidatorStatisticsNum(service.Record.Exports),
-			SizeInOctetsOfExtrinsicsUsed: validatorstatistics.ValidatorStatisticsNum(service.Record.ExtrinsicSize),
-			NumExtrinsicsUsed:            validatorstatistics.ValidatorStatisticsNum(service.Record.ExtrinsicCount),
+			NumSegmentsImportedFrom:      types.GenericNum(service.Record.Imports),
+			NumSegmentsExportedInto:      types.GenericNum(service.Record.Exports),
+			SizeInOctetsOfExtrinsicsUsed: types.GenericNum(service.Record.ExtrinsicSize),
+			NumExtrinsicsUsed:            types.GenericNum(service.Record.ExtrinsicCount),
 			AccumulationStatistics: validatorstatistics.ServiceAccumulationStatistics{
-				NumberOfWorkItems: validatorstatistics.ValidatorStatisticsNum(service.Record.AccumulateCount),
-				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(service.Record.AccumulateGasUsed),
+				NumberOfWorkItems: types.GenericNum(service.Record.AccumulateCount),
+				GasUsed:           types.GenericGasValue(service.Record.AccumulateGasUsed),
 			},
 			DeferredTransferStatistics: validatorstatistics.ServiceTransferStatistics{
-				NumberOfTransfers: validatorstatistics.ValidatorStatisticsNum(service.Record.OnTransfersCount),
-				GasUsed:           validatorstatistics.ValidatorStatisticsGasValue(service.Record.OnTransfersGasUsed),
+				NumberOfTransfers: types.GenericNum(service.Record.OnTransfersCount),
+				GasUsed:           types.GenericGasValue(service.Record.OnTransfersGasUsed),
 			},
 		}
 
-		state.ValidatorStatistics.ServiceStatistics[validatorstatistics.ValidatorStatisticsServiceIndex(serviceIdx)] = serviceStats
+		state.ValidatorStatistics.ServiceStatistics[types.ServiceIndex(serviceIdx)] = serviceStats
 	}
 
 	// 14. Theta -> AccumulationQueue
@@ -620,7 +621,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		for _, account := range jsonState.Accounts {
 			// Create a new service account
 			serviceAcc := &serviceaccount.ServiceAccount{
-				StorageDictionary:              make(map[[32]byte]types.Blob),
+				StorageDictionary:              make(map[[31]byte]types.Blob),
 				PreimageLookup:                 make(map[[32]byte]types.Blob),
 				PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 			}
@@ -678,7 +679,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 			// Check if storage is not null and not empty
 			if account.Data.Storage != nil {
 				for key, val := range account.Data.Storage {
-					serviceAcc.StorageDictionary[hexToHashMust(key)] = hexToBytesMust(val)
+					serviceAcc.StorageDictionary[serializer.StorageKeyConstructorFromFullKey(types.ServiceIndex(account.ID), hexToHashMust(key))] = hexToBytesMust(val)
 				}
 			}
 
@@ -797,11 +798,11 @@ func convertJSONReportToImplReport(workReportJSON WorkReport) workreport.WorkRep
 			PayloadHash:                  payloadHash,
 			AccumulateGasLimit:           types.GasValue(result.AccumulateGas),
 			WorkResult:                   types.ExecutionExitReason{},
-			ActualRefinementGasUsed:      types.GasValue(result.RefineLoad.GasUsed),
-			NumSegmentsImportedFrom:      uint32(result.RefineLoad.Imports),
-			NumExtrinsicsUsed:            uint32(result.RefineLoad.ExtrinsicCount),
-			SizeInOctetsOfExtrinsicsUsed: uint32(result.RefineLoad.ExtrinsicSize),
-			NumSegmentsExportedInto:      uint32(result.RefineLoad.Exports),
+			ActualRefinementGasUsed:      types.GenericGasValue(result.RefineLoad.GasUsed),
+			NumSegmentsImportedFrom:      types.GenericNum(result.RefineLoad.Imports),
+			NumExtrinsicsUsed:            types.GenericNum(result.RefineLoad.ExtrinsicCount),
+			SizeInOctetsOfExtrinsicsUsed: types.GenericNum(result.RefineLoad.ExtrinsicSize),
+			NumSegmentsExportedInto:      types.GenericNum(result.RefineLoad.Exports),
 		}
 
 		if result.Result.OK != nil {
@@ -822,7 +823,7 @@ func convertJSONReportToImplReport(workReportJSON WorkReport) workreport.WorkRep
 		WorkBundleLength: types.BlobLength(workReportJSON.PackageSpec.Length), // l
 		ErasureRoot:      erasureRoot,                                         // u
 		SegmentRoot:      exportsRoot,                                         // e - ExportsRoot maps to SegmentRoot
-		SegmentCount:     uint64(workReportJSON.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
+		SegmentCount:     uint16(workReportJSON.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
 	}
 
 	// Set refinement context
@@ -868,7 +869,7 @@ func convertJSONReportToImplReport(workReportJSON WorkReport) workreport.WorkRep
 	}
 
 	// Set IsAuthorizedGasConsumption from AuthGasUsed
-	report.IsAuthorizedGasConsumption = types.GasValue(workReportJSON.AuthGasUsed)
+	report.IsAuthorizedGasConsumption = types.GenericGasValue(workReportJSON.AuthGasUsed)
 
 	return report
 }

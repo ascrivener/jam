@@ -12,7 +12,7 @@ import (
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/validatorstatistics"
+	"github.com/ascrivener/jam/util"
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -124,7 +124,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsServiceIndex(0)) {
+		if v.Type() == reflect.TypeOf(types.GenericNum(0)) || v.Type() == reflect.TypeOf(types.GenericGasValue(0)) {
 			buf.Write(EncodeGeneralNatural(v.Uint()))
 			return
 		}
@@ -285,11 +285,11 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		return nil
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsNum(0)) || v.Type() == reflect.TypeOf(validatorstatistics.ValidatorStatisticsGasValue(0)) {
+		if v.Type() == reflect.TypeOf(types.GenericNum(0)) || v.Type() == reflect.TypeOf(types.GenericGasValue(0)) {
 			// For regular maps, read length prefix
 			length, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {
-				return fmt.Errorf("failed to decode ValidatorStatisticsNum length")
+				return fmt.Errorf("failed to decode GenericNum length")
 			}
 			// Consume the bytes used for length
 			buf.Next(n)
@@ -662,4 +662,35 @@ func BitSequenceToUintBE(bs *bitsequence.BitSequence) uint64 {
 		}
 	}
 	return x
+}
+
+func StorageKeyConstructorFromFullKey(s types.ServiceIndex, h [32]byte) [31]byte {
+	ones := EncodeLittleEndian(4, uint64(1<<32-1))
+	combined := append(ones, h[:27]...)
+	return StateKeyConstructorFromHash(s, util.SliceToArray32(combined))
+}
+
+func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
+	var key [31]byte
+
+	// Extract little-endian bytes of the ServiceIndex (s)
+	n0 := byte(s)
+	n1 := byte(s >> 8)
+	n2 := byte(s >> 16)
+	n3 := byte(s >> 24)
+
+	// Interleave n0, n1, n2, n3 with the first 4 bytes of h
+	key[0] = n0
+	key[1] = h[0]
+	key[2] = n1
+	key[3] = h[1]
+	key[4] = n2
+	key[5] = h[2]
+	key[6] = n3
+	key[7] = h[3]
+
+	// Copy the remaining bytes of h from index 4 onward
+	copy(key[8:], h[4:])
+
+	return key
 }

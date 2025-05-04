@@ -46,3 +46,11 @@ func GetWrappedValues[T any](slice []T, startIdx, endIdx int) []T {
 
 	return result
 }
+
+// --- Helper: Convert []byte to [32]byte ---
+
+func SliceToArray32(b []byte) [32]byte {
+	var arr [32]byte
+	copy(arr[:], b)
+	return arr
+}
