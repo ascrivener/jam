@@ -42,7 +42,7 @@ func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
 
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
-	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*int(s.TotalItemsUsedInStorage()) + constants.ServiceMinimumBalancePerOctet*int(s.TotalOctetsUsedInStorage()))
+	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage()) + constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage()))
 }
 
 // bold m, bold c

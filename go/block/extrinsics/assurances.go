@@ -26,7 +26,7 @@ func (a Assurances) HasValidatorIndex(vIndex types.ValidatorIndex) bool {
 }
 
 func (a Assurances) AvailabilityContributionsForCoreSupermajority(coreIndex types.CoreIndex) bool {
-	return a.AvailabilityContributionsForCore(coreIndex) > constants.TwoThirdsNumValidators
+	return a.AvailabilityContributionsForCore(coreIndex) > int(constants.TwoThirdsNumValidators)
 }
 
 func (a Assurances) AvailabilityContributionsForCore(coreIndex types.CoreIndex) int {

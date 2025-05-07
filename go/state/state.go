@@ -431,7 +431,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 7. Iota -> ValidatorKeysetsStaging
-	if len(jsonState.Iota) != constants.NumValidators {
+	if len(jsonState.Iota) != int(constants.NumValidators) {
 		return State{}, fmt.Errorf("invalid length of ValidatorKeysetsStaging")
 	}
 	state.ValidatorKeysetsStaging = types.ValidatorKeysets{}
@@ -440,7 +440,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 8. Kappa -> ValidatorKeysetsActive
-	if len(jsonState.Kappa) != constants.NumValidators {
+	if len(jsonState.Kappa) != int(constants.NumValidators) {
 		return State{}, fmt.Errorf("invalid length of ValidatorKeysetsActive")
 	}
 	state.ValidatorKeysetsActive = types.ValidatorKeysets{}
@@ -449,7 +449,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 9. Lambda -> ValidatorKeysetsPriorEpoch
-	if len(jsonState.Lambda) != constants.NumValidators {
+	if len(jsonState.Lambda) != int(constants.NumValidators) {
 		return State{}, fmt.Errorf("invalid length of ValidatorKeysetsPriorEpoch")
 	}
 	state.ValidatorKeysetsPriorEpoch = types.ValidatorKeysets{}
@@ -458,7 +458,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 10. Rho -> PendingReports
-	if len(jsonState.Rho) != constants.NumCores {
+	if len(jsonState.Rho) != int(constants.NumCores) {
 		return State{}, fmt.Errorf("invalid length of PendingReports")
 	}
 	for i, reportJSON := range jsonState.Rho {
@@ -497,7 +497,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 	// Copy vals_current -> AccumulatorStatistics
 	for i, valCurrent := range stats.ValsCurrent {
-		if i >= constants.NumValidators {
+		if i >= int(constants.NumValidators) {
 			break
 		}
 		state.ValidatorStatistics.AccumulatorStatistics[i] = validatorstatistics.SingleValidatorStatistics{
@@ -512,7 +512,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 	// Copy vals_last -> PreviousEpochStatistics
 	for i, valLast := range stats.ValsLast {
-		if i >= constants.NumValidators {
+		if i >= int(constants.NumValidators) {
 			break
 		}
 		state.ValidatorStatistics.PreviousEpochStatistics[i] = validatorstatistics.SingleValidatorStatistics{
@@ -527,7 +527,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 
 	// Copy cores -> CoreStatistics
 	for i, core := range stats.Cores {
-		if i >= constants.NumCores {
+		if i >= int(constants.NumCores) {
 			break
 		}
 		state.ValidatorStatistics.CoreStatistics[i] = validatorstatistics.CoreStatistics{
@@ -580,12 +580,12 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 14. Theta -> AccumulationQueue
-	if len(jsonState.Theta) != constants.NumTimeslotsPerEpoch {
+	if len(jsonState.Theta) != int(constants.NumTimeslotsPerEpoch) {
 		return State{}, fmt.Errorf("invalid length of AccumulationQueue")
 	}
 
 	// Initialize with empty arrays
-	for i := 0; i < constants.NumTimeslotsPerEpoch; i++ {
+	for i := 0; i < int(constants.NumTimeslotsPerEpoch); i++ {
 		state.AccumulationQueue[i] = []workreport.WorkReportWithWorkPackageHashes{}
 	}
 
@@ -597,13 +597,13 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 	}
 
 	// 15. Xi -> AccumulationHistory
-	if len(jsonState.Xi) != constants.NumTimeslotsPerEpoch {
+	if len(jsonState.Xi) != int(constants.NumTimeslotsPerEpoch) {
 		return State{}, fmt.Errorf("invalid length of AccumulationHistory")
 	}
 
 	// Initialize AccumulationHistory with empty maps
 	state.AccumulationHistory = AccumulationHistory{}
-	for i := 0; i < constants.NumTimeslotsPerEpoch; i++ {
+	for i := 0; i < int(constants.NumTimeslotsPerEpoch); i++ {
 		state.AccumulationHistory[i] = map[[32]byte]struct{}{}
 	}
 

@@ -695,3 +695,41 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 
 	return key
 }
+
+func SerializeChainParameters() []byte {
+	return Serialize([]any{
+		constants.ServiceMinimumBalancePerItem,
+		constants.ServiceMinimumBalancePerOctet,
+		constants.ServiceMinimumBalance,
+		constants.NumCores,
+		constants.UnreferencePreimageExpungeTimeslots,
+		constants.NumTimeslotsPerEpoch,
+		constants.SingleAccumulationAllocatedGas,
+		constants.IsAuthorizedGasAllocation,
+		constants.RefineGasAllocation,
+		constants.AllAccumulationTotalGasAllocation,
+		constants.RecentHistorySizeBlocks,
+		constants.MaxWorkItemsInPackage,
+		constants.MaxSumDependencyItemsInReport,
+		constants.LookupAnchorMaxAgeTimeslots,
+		constants.MaxItemsInAuthorizationsPool,
+		constants.SlotPeriodInSeconds,
+		constants.AuthorizerQueueLength,
+		constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots,
+		constants.AccumulationQueueMaxEntries,
+		constants.MaxExtrinsicsInWorkPackage,
+		constants.UnavailableWorkTimeoutTimeslots,
+		constants.NumValidators,
+		constants.IsAuthorizedCodeMaxSizeOctets,
+		constants.MaxSizeEncodedWorkPackage,
+		constants.ServiceCodeMaxSize,
+		constants.ErasureCodedPiecesSize,
+		constants.SegmentSize,
+		constants.MaxImportsInWorkPackage,
+		constants.ErasureCodedPiecesInSegment,
+		constants.MaxTotalSizeWorkReportBlobs,
+		constants.TransferMemoSize,
+		constants.MaxExportsInWorkPackage,
+		constants.TicketSubmissionEndingSlotPhaseNumber,
+	})
+}

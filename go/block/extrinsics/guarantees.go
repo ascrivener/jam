@@ -14,12 +14,12 @@ func (g Guarantees) ReporterValidatorKeysets(posteriorTimeSlot types.Timeslot, p
 	reportersKeysets := make([]types.ValidatorKeyset, 0)
 	for _, guarantee := range g {
 		var k types.ValidatorKeysets
-		if int(posteriorTimeSlot)/constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots == int(guarantee.Timeslot)/constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots {
+		if int(posteriorTimeSlot)/int(constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots) == int(guarantee.Timeslot)/int(constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots) {
 			//TODO: get G here instead, use second component
 			k = posteriorValidatorKeysetsActive
 		} else {
 			//TODO: get G* here instead, use second component
-			if (int(posteriorTimeSlot)-constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots)/constants.NumTimeslotsPerEpoch == int(posteriorTimeSlot)/constants.NumTimeslotsPerEpoch {
+			if (int(posteriorTimeSlot)-int(constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots))/int(constants.NumTimeslotsPerEpoch) == int(posteriorTimeSlot)/int(constants.NumTimeslotsPerEpoch) {
 				k = posteriorValidatorKeysetsActive
 			} else {
 				k = posteriorValidatorKeysetsPriorEpoch

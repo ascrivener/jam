@@ -1,6 +1,6 @@
 package pvm
 
-type Register uint64
+import "github.com/ascrivener/jam/types"
 
 type SimpleExitReasonType int
 
@@ -20,7 +20,7 @@ const (
 
 type ComplexExitReason struct {
 	Type      ComplexExitReasonType
-	Parameter Register
+	Parameter types.Register
 }
 
 type ExitReason struct {
@@ -39,7 +39,7 @@ func NewSimpleExitReason(reason SimpleExitReasonType) ExitReason {
 
 // NewComplexExitReason creates an ExitReason representing a complex exit.
 // It sets only the ComplexExitReason field.
-func NewComplexExitReason(reasonType ComplexExitReasonType, parameter Register) ExitReason {
+func NewComplexExitReason(reasonType ComplexExitReasonType, parameter types.Register) ExitReason {
 	return ExitReason{
 		SimpleExitReason: nil,
 		ComplexExitReason: &ComplexExitReason{

@@ -6,13 +6,14 @@ import (
 	"math/bits"
 
 	"github.com/ascrivener/jam/bitsequence"
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/types"
 )
 
 type State struct {
 	Gas       types.SignedGasValue
-	Registers [13]Register
+	Registers [13]types.Register
 	RAM       *ram.RAM
 }
 
@@ -54,7 +55,7 @@ func (pvm *PVM) SingleStep() ExitReason {
 
 	// default instruction counter increment
 	if priorIC == pvm.InstructionCounter {
-		pvm.InstructionCounter += 1 + Register(ctx.SkipLength)
+		pvm.InstructionCounter += 1 + types.Register(ctx.SkipLength)
 		log.Printf("SingleStep: Default IC increment applied, new IC=%d", pvm.InstructionCounter)
 	}
 
@@ -63,14 +64,14 @@ func (pvm *PVM) SingleStep() ExitReason {
 		if *minRamIndex < ram.MinValidRamIndex {
 			return NewSimpleExitReason(ExitPanic)
 		} else {
-			return NewComplexExitReason(ExitPageFault, Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
+			return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
 		}
 	}
 	return exitReason
 }
 
-func getInstruction(instructions []byte, instructionCounter Register) byte {
-	if instructionCounter >= Register(len(instructions)) {
+func getInstruction(instructions []byte, instructionCounter types.Register) byte {
+	if instructionCounter >= types.Register(len(instructions)) {
 		log.Printf("getInstruction: IC=%d is beyond instructions length=%d, returning trap (0)",
 			instructionCounter, len(instructions))
 		return 0
@@ -80,7 +81,7 @@ func getInstruction(instructions []byte, instructionCounter Register) byte {
 	return instr
 }
 
-func getInstructionRange(instructions []byte, instructionCounter Register, count int) []byte {
+func getInstructionRange(instructions []byte, instructionCounter types.Register, count int) []byte {
 	start := int(instructionCounter)
 	if start >= len(instructions) {
 		return []byte{}
@@ -89,11 +90,11 @@ func getInstructionRange(instructions []byte, instructionCounter Register, count
 	return instructions[start:end]
 }
 
-func skip(instructionCounter Register, opcodes bitsequence.BitSequence) int {
+func skip(instructionCounter types.Register, opcodes bitsequence.BitSequence) int {
 	j := 0
 	for j < 24 {
-		idx := instructionCounter + Register(1+j)
-		if idx >= Register(opcodes.Len()) || opcodes.BitAt(int(idx)) {
+		idx := instructionCounter + types.Register(1+j)
+		if idx >= types.Register(opcodes.Len()) || opcodes.BitAt(int(idx)) {
 			break
 		}
 		j++
@@ -101,10 +102,10 @@ func skip(instructionCounter Register, opcodes bitsequence.BitSequence) int {
 	return j
 }
 
-func signExtendImmediate(n int, x uint64) Register {
+func signExtendImmediate(n int, x uint64) types.Register {
 	// Special case for n=0: no sign extension needed
 	if n == 0 {
-		return Register(x)
+		return types.Register(x)
 	}
 
 	// Check that n is one of the allowed sizes.
@@ -132,10 +133,10 @@ func signExtendImmediate(n int, x uint64) Register {
 	offset := ^mask
 
 	// The sign extension function is then:
-	return Register(x + sign*offset)
+	return types.Register(x + sign*offset)
 }
 
-func branch(b Register, C bool, instructionCounter Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, Register) {
+func branch(b types.Register, C bool, instructionCounter types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
 	if !C {
 		return NewSimpleExitReason(ExitGo), instructionCounter
 	}
@@ -145,15 +146,15 @@ func branch(b Register, C bool, instructionCounter Register, basicBlockBeginning
 	return NewSimpleExitReason(ExitGo), b
 }
 
-func djump(a uint32, instructionCounter Register, dynamicJumpTable []Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, Register) {
+func djump(a uint32, instructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
 	if a == (1<<32)-(1<<16) { // ??
 		return NewSimpleExitReason(ExitHalt), instructionCounter
 	}
 
-	if a == 0 || a > uint32(len(dynamicJumpTable)*DynamicAddressAlignmentFactor) || a%DynamicAddressAlignmentFactor != 0 {
+	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%constants.DynamicAddressAlignmentFactor != 0 {
 		return NewSimpleExitReason(ExitPanic), instructionCounter
 	}
-	nextInstructionCounter := dynamicJumpTable[a/DynamicAddressAlignmentFactor-1]
+	nextInstructionCounter := dynamicJumpTable[a/constants.DynamicAddressAlignmentFactor-1]
 	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
 	if !exists {
 		return NewSimpleExitReason(ExitPanic), instructionCounter

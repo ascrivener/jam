@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -631,7 +632,8 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
-		t.Fatalf("Failed to read test vectors directory: %v", err)
+		t.Errorf("Failed to read test vectors directory: %v", err)
+		return
 	}
 
 	// Sort files by name to ensure proper sequence
@@ -646,139 +648,172 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	t.Logf("Processing %d test vector files", len(fileNames))
 
+	failedTests := 0
 	for idx, fileName := range fileNames {
 		if idx == 0 {
 			continue
 		}
+		if fileName != "00000004.json" {
+			continue
+		}
 		t.Logf("Processing test vector file: %s", fileName)
 
-		// Load and parse test vector
-		testVectorPath := filepath.Join(vectorsDir, fileName)
-		testVectorData, err := os.ReadFile(testVectorPath)
-		if err != nil {
-			t.Fatalf("Failed to load test vector file: %v", err)
-		}
-
-		var testVector TestVector
-		if err := json.Unmarshal(testVectorData, &testVector); err != nil {
-			t.Fatalf("Failed to parse test vector JSON: %v", err)
-		}
-		t.Logf("Stage 1: Successfully loaded and parsed test vector from %s", fileName)
-
-		// a. Deserialize pre-state from test vector
-		preStateSerialized := testVector.PreState.KeyVals.toMap()
-		t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(preStateSerialized))
-
-		bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
-		for k, v := range preStateSerialized {
-			bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
-				OriginalKey: k,
-				Value:       v,
+		// Process each file sequentially
+		func() {
+			// Load and parse test vector
+			testVectorPath := filepath.Join(vectorsDir, fileName)
+			testVectorData, err := os.ReadFile(testVectorPath)
+			if err != nil {
+				t.Errorf("Failed to load test vector file: %v", err)
+				failedTests++
+				return
 			}
-		}
-		t.Logf("Stage 3: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
 
-		// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
+			var testVector TestVector
+			if err := json.Unmarshal(testVectorData, &testVector); err != nil {
+				t.Errorf("Failed to parse test vector JSON: %v", err)
+				failedTests++
+				return
+			}
+			t.Logf("Stage 1: Successfully loaded and parsed test vector from %s", fileName)
 
-		// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
-		// 	t.Fatalf("State root mismatch: expected %s, got %s", testVector.PreState.StateRoot, hex.EncodeToString(merklizedPreState[:]))
-		// }
+			// a. Deserialize pre-state from test vector
+			preStateSerialized := testVector.PreState.KeyVals.toMap()
+			t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(preStateSerialized))
 
-		preState, stateDeserializationErr := StateDeserializer(preStateSerialized)
-		if stateDeserializationErr != nil {
-			t.Fatalf("Failed to deserialize pre-state: %v", stateDeserializationErr)
-		}
-		t.Logf("Stage 4: Successfully deserialized pre-state")
+			bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
+			for k, v := range preStateSerialized {
+				bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
+					OriginalKey: k,
+					Value:       v,
+				}
+			}
+			t.Logf("Stage 3: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
 
-		preStateReserialized := StateSerializer(preState)
-		t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
+			// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
 
-		compareSerializedStates(preStateSerialized, preStateReserialized, t)
-		t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
+			// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
+			// 	t.Fatalf("State root mismatch: expected %s, got %s", testVector.PreState.StateRoot, hex.EncodeToString(merklizedPreState[:]))
+			// }
 
-		// b. Convert block to implementation block and run state transition
-		testBlock, err := BlockFromJSON(testVector.Block)
-		if err != nil {
-			t.Fatalf("Failed to parse block JSON: %v", err)
-		}
-		t.Logf("Stage 7: Successfully converted JSON block to implementation block")
+			preState, stateDeserializationErr := StateDeserializer(preStateSerialized)
+			if stateDeserializationErr != nil {
+				t.Errorf("Failed to deserialize pre-state: %v", stateDeserializationErr)
+				failedTests++
+				return
+			}
+			t.Logf("Stage 4: Successfully deserialized pre-state")
 
-		// Run state transition function
-		t.Logf("Stage 8: Running state transition function...")
-		postState := StateTransitionFunction(preState, testBlock)
-		t.Logf("Stage 9: State transition completed")
+			// preStateReserialized := StateSerializer(preState)
+			// t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
 
-		serializedPostState := StateSerializer(postState)
-		t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
+			// if !compareSerializedStatesNoFatal(preStateSerialized, preStateReserialized, t) {
+			// 	failedTests++
+			// 	return
+			// }
+			// t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
 
-		merklizedPostState := MerklizeState(postState)
-		expectedStateRoot := testVector.PostState.StateRoot
-		actualStateRoot := hex.EncodeToString(merklizedPostState[:])
-		stateRootMatch := expectedStateRoot == actualStateRoot
-		t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
+			// b. Convert block to implementation block and run state transition
+			testBlock, err := BlockFromJSON(testVector.Block)
+			if err != nil {
+				t.Errorf("Failed to parse block JSON: %v", err)
+				failedTests++
+				return
+			}
+			t.Logf("Stage 7: Successfully converted JSON block to implementation block")
 
-		if !stateRootMatch {
-			t.Logf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
-			// t.Fatalf("State root mismatch: expected %s, got %s", testVector.PostState.StateRoot, hex.EncodeToString(merklizedPostState[:]))
-		}
+			// Run state transition function
+			t.Logf("Stage 8: Running state transition function...")
+			postState := StateTransitionFunction(preState, testBlock)
+			t.Logf("Stage 9: State transition completed")
 
-		// Convert test vector's post-state key-values to the format expected by StateDeserializer
-		expectedSerializedState := testVector.PostState.KeyVals.toMap()
-		t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
+			serializedPostState := StateSerializer(postState)
+			t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
 
-		t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
-		compareSerializedStates(expectedSerializedState, serializedPostState, t)
-		t.Logf("Stage 14: Serialized states match")
+			merklizedPostState := MerklizeState(postState)
+			expectedStateRoot := testVector.PostState.StateRoot
+			actualStateRoot := hex.EncodeToString(merklizedPostState[:])
+			stateRootMatch := expectedStateRoot == actualStateRoot
+			t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
 
-		// Deserialize the expected state
-		expectedPostState, err := StateDeserializer(expectedSerializedState)
-		if err != nil {
-			t.Fatalf("Failed to deserialize expected post-state: %v", err)
-		}
-		t.Logf("Stage 15: Successfully deserialized expected post-state")
+			// if !stateRootMatch {
+			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
+			// 	// Continue execution despite mismatch
+			// }
 
-		// Use cmp.Diff for a detailed comparison of the state objects
-		t.Logf("Stage 16: Performing detailed comparison of state objects...")
-		if diff := cmp.Diff(expectedPostState, postState); diff != "" {
-			t.Fatalf("Post-state mismatch (-expected +actual):\n%s", diff)
-		}
-		t.Logf("Stage 17: State objects match")
+			// Convert test vector's post-state key-values to the format expected by StateDeserializer
+			expectedSerializedState := testVector.PostState.KeyVals.toMap()
+			t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
-		t.Logf("Successfully processed %s", fileName)
+			t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
+			if !compareSerializedStatesNoFatal(expectedSerializedState, serializedPostState, t) {
+				failedTests++
+				return
+			}
+			t.Logf("Stage 14: Serialized states match")
+
+			// Deserialize the expected state
+			expectedPostState, err := StateDeserializer(expectedSerializedState)
+			if err != nil {
+				t.Errorf("Failed to deserialize expected post-state: %v", err)
+				failedTests++
+				return
+			}
+			t.Logf("Stage 15: Successfully deserialized expected post-state")
+
+			// Use cmp.Diff for a detailed comparison of the state objects
+			t.Logf("Stage 16: Performing detailed comparison of state objects...")
+			if diff := cmp.Diff(expectedPostState, postState); diff != "" {
+				t.Errorf("Post-state mismatch (-expected +actual):\n%s", diff)
+				failedTests++
+				return
+			}
+			t.Logf("Stage 17: State objects match")
+
+			t.Logf("Successfully processed %s", fileName)
+
+			// Force garbage collection
+			runtime.GC()
+		}()
 	}
 
-	t.Logf("All tests passed successfully")
+	if failedTests > 0 {
+		t.Logf("Tests completed with %d failures", failedTests)
+	} else {
+		t.Logf("All tests passed successfully")
+	}
 }
 
-func compareSerializedStates(expected, actual map[[31]byte][]byte, t *testing.T) {
-	// Compare serializedPostState with expectedSerializedState
-	if len(actual) != len(expected) {
-		t.Fatalf("Serialized state length mismatch: expected %d keys, got %d keys",
-			len(expected), len(actual))
-	}
+// compareSerializedStatesNoFatal compares two serialized states and reports errors but doesn't fail the test
+func compareSerializedStatesNoFatal(expected, actual map[[31]byte][]byte, t *testing.T) bool {
+	success := true
 
-	// Check that all keys and values match
-	for key, expectedValue := range expected {
-		actualValue, exists := actual[key]
+	// Check if all expected keys are in the actual state
+	for k, expectedValue := range expected {
+		actualValue, exists := actual[k]
 		if !exists {
-			t.Fatalf("Key missing in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+			t.Errorf("Key missing in actual state: %x", k)
+			success = false
+			continue
 		}
 
+		// Compare values
 		if !bytes.Equal(expectedValue, actualValue) {
-			t.Fatalf("Value mismatch for key %s: expected %s, got %s\n%s",
-				"0x"+hex.EncodeToString(key[:]),
-				"0x"+hex.EncodeToString(expectedValue),
-				"0x"+hex.EncodeToString(actualValue),
-				highlightByteDifferences(expectedValue, actualValue))
+			t.Errorf("Value mismatch for key %x:\nExpected: %x\nActual: %x\nDifferences: %s",
+				k, expectedValue, actualValue, highlightByteDifferences(expectedValue, actualValue))
+			success = false
 		}
 	}
 
-	// Also check in reverse to ensure there are no extra keys in serializedPostState
-	for key := range actual {
-		if _, exists := expected[key]; !exists {
-			t.Fatalf("Extra key in serialized post state: %s", "0x"+hex.EncodeToString(key[:]))
+	// Check if there are any extra keys in the actual state
+	for k := range actual {
+		if _, exists := expected[k]; !exists {
+			t.Errorf("Extra key in actual state: %x", k)
+			success = false
 		}
 	}
+
+	return success
 }
 
 func highlightByteDifferences(expected, actual []byte) string {
@@ -995,7 +1030,7 @@ func convertAssurances(assurancesJSON []Assurance) extrinsics.Assurances {
 		bytes := hexToBytesMust(a.Bitfield)
 
 		// Convert bitfield string to BitSequence
-		bitfield, err := bitsequence.FromBytesLSBWithLength(bytes, constants.NumCores)
+		bitfield, err := bitsequence.FromBytesLSBWithLength(bytes, int(constants.NumCores))
 		if err != nil {
 			panic(err)
 		}

@@ -21,12 +21,12 @@ type Ed25519Signature [64]byte
 type Timeslot uint32
 
 func (t Timeslot) EpochIndex() int {
-	return int(t) / constants.NumTimeslotsPerEpoch
+	return int(t) / int(constants.NumTimeslotsPerEpoch)
 }
 
 // m
 func (t Timeslot) SlotPhaseIndex() int {
-	return int(t) % constants.NumTimeslotsPerEpoch
+	return int(t) % int(constants.NumTimeslotsPerEpoch)
 }
 
 type ValidatorIndex uint16
@@ -123,6 +123,7 @@ const (
 	ExecutionErrorOutOfGas ExecutionErrorType = iota + 1
 	ExecutionErrorPanic
 	ExecutionErrorInvalidNumExports
+	ExecutionErrorOversize
 	ExecutionErrorBAD
 	ExecutionErrorBIG
 )
@@ -170,3 +171,7 @@ type Blob []byte
 type GenericNum uint64
 
 type GenericGasValue uint64
+
+type Register uint64
+
+const MaxRegister Register = (1 << 64) - 1

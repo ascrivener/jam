@@ -160,10 +160,10 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 		}
 		posteriorAuthorizerQueueForCore := posteriorAuthorizerQueue[coreIndex]
 		priorAuthorizersPoolForCore = append(priorAuthorizersPoolForCore, posteriorAuthorizerQueueForCore[int(uint32(header.TimeSlot)%uint32(len(posteriorAuthorizerQueueForCore)))])
-		if len(priorAuthorizersPoolForCore) < constants.MaxItemsInAuthorizationsPool {
+		if len(priorAuthorizersPoolForCore) < int(constants.MaxItemsInAuthorizationsPool) {
 			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore
 		} else {
-			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore[len(priorAuthorizersPoolForCore)-constants.MaxItemsInAuthorizationsPool:]
+			posteriorAuthorizersPool[coreIndex] = priorAuthorizersPoolForCore[len(priorAuthorizersPoolForCore)-int(constants.MaxItemsInAuthorizationsPool):]
 		}
 	}
 	return posteriorAuthorizersPool
@@ -242,9 +242,9 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 
 	// Keep only the most recent H blocks
 	// β′ ≡ β† n where H is RecentHistorySizeBlocks
-	if len(updatedRecentBlocks) > constants.RecentHistorySizeBlocks {
+	if len(updatedRecentBlocks) > int(constants.RecentHistorySizeBlocks) {
 		// Trim the list to keep only the most recent H blocks
-		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-constants.RecentHistorySizeBlocks:]
+		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-int(constants.RecentHistorySizeBlocks):]
 	}
 
 	return updatedRecentBlocks
@@ -278,11 +278,11 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		posteriorEpochTicketSubmissionsRoot = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:])
 
 		// posteriorSealingKeySequence
-		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= constants.TicketSubmissionEndingSlotPhaseNumber && len(priorSafroleBasicState.TicketAccumulator) == constants.NumTimeslotsPerEpoch {
+		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= int(constants.TicketSubmissionEndingSlotPhaseNumber) && len(priorSafroleBasicState.TicketAccumulator) == int(constants.NumTimeslotsPerEpoch) {
 			var reorderedTickets [constants.NumTimeslotsPerEpoch]ticket.Ticket
 			index := 0
 			// outside-in
-			for i, j := 0, constants.NumTimeslotsPerEpoch-1; i <= j; i, j = i+1, j-1 {
+			for i, j := 0, int(constants.NumTimeslotsPerEpoch)-1; i <= j; i, j = i+1, j-1 {
 				if i == j {
 					// When both indices meet, assign the middle element only once.
 					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[i]
@@ -407,7 +407,7 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 		serializedWorkReport := serializer.Serialize(value.WorkReport)
 		workReportHash := blake2b.Sum256(serializedWorkReport)
 		if validJudgementsSum, exists := validJudgementsMap[workReportHash]; exists {
-			if validJudgementsSum < constants.TwoThirdsNumValidators {
+			if validJudgementsSum < int(constants.TwoThirdsNumValidators) {
 				posteriorPendingReports[c] = nil
 			}
 		}
@@ -425,7 +425,7 @@ func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Head
 			continue
 		}
 		nowAvailable := assurances.AvailabilityContributionsForCoreSupermajority(types.CoreIndex(coreIndex))
-		timedOut := int(header.TimeSlot) >= int(pendingReport.Timeslot)+constants.UnavailableWorkTimeoutTimeslots
+		timedOut := int(header.TimeSlot) >= int(pendingReport.Timeslot)+int(constants.UnavailableWorkTimeoutTimeslots)
 		if nowAvailable || timedOut {
 			posteriorPendingReports[coreIndex] = nil
 		}
@@ -487,7 +487,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 	queuedExecutionWorkReports = FilterWorkReportsByWorkPackageHashes(queuedExecutionWorkReports, priorAccumulationHistory.ToUnionSet())
 
 	// 3. combine everything
-	m := int(header.TimeSlot) % constants.NumTimeslotsPerEpoch
+	m := int(header.TimeSlot) % int(constants.NumTimeslotsPerEpoch)
 	var flattenedAfterM []workreport.WorkReportWithWorkPackageHashes
 	for _, inner := range priorAccumulationQueue[m:] {
 		flattenedAfterM = append(flattenedAfterM, inner...)
@@ -508,7 +508,7 @@ func accumulateAndIntegrate(
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
 ) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics) {
-	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*constants.NumCores)+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
+	gas := max(types.GasValue(constants.TotalAccumulationAllocatedGas), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
@@ -578,12 +578,12 @@ func accumulateAndIntegrate(
 	timeslotDiff := int(posteriorMostRecentBlockTimeslot) - int(priorState.MostRecentBlockTimeslot)
 
 	for i := range constants.NumTimeslotsPerEpoch {
-		queueIndex := (m + constants.NumTimeslotsPerEpoch - i) % constants.NumTimeslotsPerEpoch
+		queueIndex := (m + int(constants.NumTimeslotsPerEpoch) - int(i)) % int(constants.NumTimeslotsPerEpoch)
 		if i == 0 {
 			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(
 				queuedExecutionWorkReports,
 				posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
-		} else if i < timeslotDiff {
+		} else if int(i) < timeslotDiff {
 		} else {
 			posteriorAccumulationQueue[queueIndex] = FilterWorkReportsByWorkPackageHashes(priorState.AccumulationQueue[queueIndex], posteriorAccumulationHistory[len(posteriorAccumulationHistory)-1])
 		}
@@ -600,11 +600,11 @@ func computeMostRecentBlockTimeslot(blockHeader header.Header) types.Timeslot {
 func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.Disputes) types.Disputes {
 	sumOfValidJudgementsMap := disputesExtrinsic.ToSumOfValidJudgementsMap()
 	for r, validCount := range sumOfValidJudgementsMap {
-		if validCount == constants.NumValidatorSafetyThreshold {
+		if validCount == int(constants.NumValidatorSafetyThreshold) {
 			priorDisputes.WorkReportHashesGood[r] = struct{}{}
 		} else if validCount == 0 {
 			priorDisputes.WorkReportHashesBad[r] = struct{}{}
-		} else if validCount == constants.OneThirdNumValidators {
+		} else if validCount == int(constants.OneThirdNumValidators) {
 			priorDisputes.WorkReportHashesWonky[r] = struct{}{}
 		}
 	}
@@ -675,7 +675,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 				continue
 			}
 
-			coreStats.OctetsIntroduced += types.GenericNum(uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(pvm.SegmentSize*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0))))
+			coreStats.OctetsIntroduced += types.GenericNum(uint64(availableReport.WorkPackageSpecification.WorkBundleLength) + uint64(int(constants.SegmentSize)*int(math.Ceil(float64(availableReport.WorkPackageSpecification.SegmentCount)*65.0/64.0))))
 		}
 
 		coreStats.AvailabilityContributionsInAssurancesExtrinsic = types.GenericNum(assurances.AvailabilityContributionsForCore(types.CoreIndex(cIndex)))

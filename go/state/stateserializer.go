@@ -202,11 +202,8 @@ func findStorageDictionaryEntries(serialized map[[31]byte][]byte, sIndex types.S
 
 		// Check if this matches our service and has the "ones" prefix
 		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], ones) {
-			// Extract the actual storage key (without the prefix)
-			var storageKey [31]byte
-			copy(storageKey[:], hash[4:])
 
-			result[storageKey] = data
+			result[key] = data
 
 			// Check if key already processed
 			if alreadyProcessed := processedKeys[key]; alreadyProcessed {

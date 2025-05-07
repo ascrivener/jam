@@ -144,14 +144,14 @@ func pvmFromTestVector(testVector *PVMTestVector) (*PVM, error) {
 	ramInstance := ram.NewEmptyRAM()
 
 	// Create registers array from initial values
-	var registers [13]Register
+	var registers [13]types.Register
 	for i, val := range testVector.InitialRegs {
 		if i < len(registers) {
-			registers[i] = Register(val)
+			registers[i] = types.Register(val)
 		}
 	}
 
-	return NewPVM(programBytes, registers, ramInstance, Register(testVector.InitialPC), types.GasValue(testVector.InitialGas)), nil
+	return NewPVM(programBytes, registers, ramInstance, types.Register(testVector.InitialPC), types.GasValue(testVector.InitialGas)), nil
 }
 
 // TestPVMWithDirectoryTestVectors runs all test vectors from a specific directory
@@ -243,7 +243,7 @@ func TestPVMWithDirectoryTestVectors(t *testing.T) {
 
 			// Check registers
 			for i, expected := range testVector.ExpectedRegs {
-				if i < len(pvm.State.Registers) && pvm.State.Registers[i] != Register(expected) {
+				if i < len(pvm.State.Registers) && pvm.State.Registers[i] != types.Register(expected) {
 					t.Errorf("Register %d mismatch: got %d, want %d", i, pvm.State.Registers[i], expected)
 				}
 			}

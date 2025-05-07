@@ -11,12 +11,12 @@ type PVM struct {
 	Instructions               []byte
 	Opcodes                    bitsequence.BitSequence
 	BasicBlockBeginningOpcodes map[int]struct{} // Precomputed basic block beginning opcodes.
-	DynamicJumpTable           []Register
-	InstructionCounter         Register
+	DynamicJumpTable           []types.Register
+	InstructionCounter         types.Register
 	State                      *State
 }
 
-func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructionCounter Register, gas types.GasValue) *PVM {
+func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
 	instructions, opcodes, dynamicJumpTable, ok := Deblob(programBlob)
 	if !ok {
 		return nil
@@ -24,7 +24,7 @@ func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructio
 	basicBlockBeginningOpcodes := map[int]struct{}{0: {}} // Start with index 0 as it's always a basic block beginning
 	for n, instruction := range instructions {
 		if opcodes.BitAt(n) && terminationOpcodes[instruction] {
-			basicBlockBeginningOpcodes[n+1+skip(Register(n), opcodes)] = struct{}{}
+			basicBlockBeginningOpcodes[n+1+skip(types.Register(n), opcodes)] = struct{}{}
 		}
 	}
 	return &PVM{
@@ -41,7 +41,7 @@ func NewPVM(programBlob []byte, registers [13]Register, ram *ram.RAM, instructio
 	}
 }
 
-func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter Register, gas types.GasValue) *PVM {
+func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) *PVM {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
 		return nil
@@ -49,7 +49,7 @@ func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructio
 	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
 
-func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]Register, r *ram.RAM, ok bool) {
+func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]types.Register, r *ram.RAM, ok bool) {
 	offset := 0
 
 	// 1. Decode E3(|o|): the encoded number of elements in o.
@@ -110,14 +110,14 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	regs[0] = ram.RamSize - ram.MajorZoneSize
 	regs[1] = ram.RamSize - 2*ram.MajorZoneSize - ram.ArgumentsZoneSize
 	regs[7] = ram.RamSize - ram.MajorZoneSize - ram.ArgumentsZoneSize
-	regs[8] = Register(len(arguments))
+	regs[8] = types.Register(len(arguments))
 
 	return c, regs, ram.NewRAM(o, w, arguments, z, s), true
 }
 
 // deblob attempts to decompose p into three parts: c, k, and j.
 // It returns ok==false if p does not follow the expected structure.
-func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok bool) {
+func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, ok bool) {
 	offset := 0
 
 	// 1. Decode E(|j|): the encoded number of elements in j.
@@ -146,10 +146,10 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []Register, ok boo
 	if offset+totalJBytes > len(p) {
 		return nil, k, nil, false
 	}
-	jArr := make([]Register, 0, L_j)
+	jArr := make([]types.Register, 0, L_j)
 	for range int(L_j) {
 		elem := serializer.DecodeLittleEndian(p[offset : offset+int(z)])
-		jArr = append(jArr, Register(elem))
+		jArr = append(jArr, types.Register(elem))
 		offset += int(z)
 	}
 
@@ -214,7 +214,7 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue) {
+func ΨM[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0

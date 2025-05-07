@@ -7,6 +7,7 @@ import (
 
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/types"
 )
 
 func handleTrap(_ *PVM, _ *InstructionContext) ExitReason {
@@ -26,7 +27,7 @@ func handleEcalli(pvm *PVM, ctx *InstructionContext) ExitReason {
 func handleLoadImm64(pvm *PVM, ctx *InstructionContext) ExitReason {
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%16))
 	vx := serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2, 8))
-	pvm.State.Registers[ra] = Register(vx)
+	pvm.State.Registers[ra] = types.Register(vx)
 	return NewSimpleExitReason(ExitGo)
 }
 
@@ -35,7 +36,7 @@ func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) ExitReason {
 	lx := min(4, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%8))
 	ly := min(4, max(0, ctx.SkipLength-lx-1))
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2, lx)))
-	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+Register(lx), ly)))
+	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+types.Register(lx), ly)))
 
 	// Use the opcode from the context (assuming it's been set)
 	switch ctx.Instruction {
@@ -58,7 +59,7 @@ func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) ExitReason {
 
 func handleJump(pvm *PVM, ctx *InstructionContext) ExitReason {
 	lx := min(4, ctx.SkipLength)
-	vx := pvm.InstructionCounter + Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+1, lx))))
+	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+1, lx))))
 	var exitReason ExitReason
 	exitReason, pvm.InstructionCounter = branch(vx, true, pvm.InstructionCounter, pvm.BasicBlockBeginningOpcodes)
 	return exitReason
@@ -77,31 +78,31 @@ func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[ra] + vx)
-		var nextIC Register
+		var nextIC types.Register
 		exitReason, nextIC = djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
 		pvm.InstructionCounter = nextIC
 	case 51: // load_imm
 		pvm.State.Registers[ra] = vx
 	case 52: // load_u8
-		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(vx), ram.Wrap, true))
+		pvm.State.Registers[ra] = types.Register(pvm.State.RAM.Inspect(uint64(vx), ram.Wrap, true))
 	case 53: // load_i8
 		val := pvm.State.RAM.Inspect(uint64(vx), ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(1, uint64(val))
 	case 54: // load_u16
 		data := pvm.State.RAM.InspectRange(uint64(vx), 2, ram.Wrap, true)
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(data))
 	case 55: // load_i16
 		data := pvm.State.RAM.InspectRange(uint64(vx), 2, ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(2, serializer.DecodeLittleEndian(data))
 	case 56: // load_u32
 		data := pvm.State.RAM.InspectRange(uint64(vx), 4, ram.Wrap, true)
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(data))
 	case 57: // load_i32
 		data := pvm.State.RAM.InspectRange(uint64(vx), 4, ram.Wrap, true)
 		pvm.State.Registers[ra] = signExtendImmediate(4, serializer.DecodeLittleEndian(data))
 	case 58: // load_u64
 		data := pvm.State.RAM.InspectRange(uint64(vx), 8, ram.Wrap, true)
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(data))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(data))
 	case 59: // store_u8
 		pvm.State.RAM.Mutate(uint64(vx), uint8(pvm.State.Registers[ra]), ram.Wrap, true)
 	case 60: // store_u16
@@ -130,7 +131,7 @@ func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	// Determine ly based on the remaining skip length.
 	ly := min(4, max(0, ctx.SkipLength-lx-1))
 	// Compute vy from the following ly bytes.
-	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+Register(lx), ly)))
+	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+types.Register(lx), ly)))
 
 	// Calculate the effective memory address.
 	addr := pvm.State.Registers[ra] + vx
@@ -165,8 +166,8 @@ func handleOneRegOneImmOneOff(pvm *PVM, ctx *InstructionContext) ExitReason {
 	// For branch instructions the second immediate is an offset,
 	// so add it to the current instruction counter.
 	branchOffset := serializer.UnsignedToSigned(ly, serializer.DecodeLittleEndian(
-		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+Register(lx), ly)))
-	vy := pvm.InstructionCounter + Register(branchOffset)
+		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2+types.Register(lx), ly)))
+	vy := pvm.InstructionCounter + types.Register(branchOffset)
 
 	var cond bool
 	switch ctx.Instruction {
@@ -219,11 +220,11 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 
 	case 101: // sbrk
 		// Allocate memory from the heap.
-		h := Register(0)
+		h := types.Register(0)
 		if pvm.State.RAM.BeginningOfHeap != nil {
-			h = Register(*pvm.State.RAM.BeginningOfHeap)
+			h = types.Register(*pvm.State.RAM.BeginningOfHeap)
 		}
-		for ; h < MaxRegister; h++ {
+		for ; h < types.MaxRegister; h++ {
 			// Check that the region of size registers[ra] starting at h is free.
 			if !pvm.State.RAM.RangeUniform(ram.Inaccessible, uint64(h), uint64(pvm.State.Registers[ra]), ram.NoWrap) {
 				continue
@@ -236,52 +237,52 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		}
 
 	case 102: // count_set_bits_64
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).SumBits(),
 		)
 
 	case 103: // count_set_bits_32
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).SumBits(),
 		)
 
 	case 104: // leading_zero_bits_64
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).LeadingZeros(),
 		)
 
 	case 105: // leading_zero_bits_32
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).LeadingZeros(),
 		)
 
 	case 106: // trailing_zero_bits_64
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).TrailingZeros(),
 		)
 
 	case 107: // trailing_zero_bits_32
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).TrailingZeros(),
 		)
 
 	case 108: // sign_extend_8
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(1, uint64(uint8(pvm.State.Registers[ra])))),
 		)
 
 	case 109: // sign_extend_16
-		pvm.State.Registers[rd] = Register(
+		pvm.State.Registers[rd] = types.Register(
 			serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(2, uint64(uint16(pvm.State.Registers[ra])))),
 		)
 
 	case 110: // zero_extend_16
-		pvm.State.Registers[rd] = Register(uint16(pvm.State.Registers[ra]))
+		pvm.State.Registers[rd] = types.Register(uint16(pvm.State.Registers[ra]))
 
 	case 111: // reverse_bytes
 		bytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra]))
 		slices.Reverse(bytes)
-		pvm.State.Registers[rd] = Register(serializer.DecodeLittleEndian(bytes))
+		pvm.State.Registers[rd] = types.Register(serializer.DecodeLittleEndian(bytes))
 
 	default:
 		panic(fmt.Sprintf("handleTwoReg: unexpected opcode %d", ctx.Instruction))
@@ -302,51 +303,51 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 
 	switch ctx.Instruction {
 	case 120: // store_ind_u8
-		pvm.State.RAM.Mutate(uint64(pvm.State.Registers[rb]+Register(vx)),
+		pvm.State.RAM.Mutate(uint64(pvm.State.Registers[rb]+types.Register(vx)),
 			byte(pvm.State.Registers[ra]), ram.Wrap, true)
 	case 121: // store_ind_u16
-		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
+		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)),
 			serializer.EncodeLittleEndian(2, uint64(uint16(pvm.State.Registers[ra]))), ram.Wrap, true)
 	case 122: // store_ind_u32
-		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
+		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)),
 			serializer.EncodeLittleEndian(4, uint64(uint32(pvm.State.Registers[ra]))), ram.Wrap, true)
 	case 123: // store_ind_u64
-		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+Register(vx)),
+		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)),
 			serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
 	case 124: // load_ind_u8
-		pvm.State.Registers[ra] = Register(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), ram.Wrap, true))
+		pvm.State.Registers[ra] = types.Register(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+types.Register(vx)), ram.Wrap, true))
 	case 125: // load_ind_i8
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
-			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+Register(vx)), ram.Wrap, true)))))
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
+			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+types.Register(vx)), ram.Wrap, true)))))
 	case 126: // load_ind_u16
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 2, ram.Wrap, true)))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 2, ram.Wrap, true)))
 	case 127: // load_ind_i16
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(2, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 2, ram.Wrap, true)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 2, ram.Wrap, true)))))
 	case 128: // load_ind_u32
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 4, ram.Wrap, true)))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true)))
 	case 129: // load_ind_i32
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, serializer.DecodeLittleEndian(
-				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 4, ram.Wrap, true)))))
+				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true)))))
 	case 130: // load_ind_u64
-		pvm.State.Registers[ra] = Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+Register(vx)), 8, ram.Wrap, true)))
+		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 8, ram.Wrap, true)))
 	case 131: // add_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]+vx)))
 	case 132: // and_imm
-		pvm.State.Registers[ra] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])).
 				And(serializer.UintToBitSequenceLE(8, uint64(vx)))))
 	case 133: // xor_imm
-		pvm.State.Registers[ra] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])).
 				Xor(serializer.UintToBitSequenceLE(8, uint64(vx)))))
 	case 134: // or_imm
-		pvm.State.Registers[ra] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])).
 				Or(serializer.UintToBitSequenceLE(8, uint64(vx)))))
 	case 135: // mul_imm_32
@@ -368,7 +369,7 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 139: // shlo_r_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb])>>(vx%32)))
 	case 140: // shar_r_imm_32
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[rb])))>>(vx%32)))
 	case 141: // neg_add_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(vx-pvm.State.Registers[rb])))
@@ -389,7 +390,7 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 145: // shlo_r_imm_alt_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(vx)>>(pvm.State.Registers[rb]%32)))
 	case 146: // shar_r_imm_alt_32
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, uint64(uint32(vx)))>>(pvm.State.Registers[rb]%32)))
 	case 147: // cmov_iz_imm
 		if pvm.State.Registers[rb] == 0 {
@@ -408,7 +409,7 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 152: // shlo_r_imm_64
 		pvm.State.Registers[ra] = signExtendImmediate(8, uint64(pvm.State.Registers[rb]>>(vx%64)))
 	case 153: // shar_r_imm_64
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))>>(vx%64)))
 	case 154: // neg_add_imm_64
 		pvm.State.Registers[ra] = vx - pvm.State.Registers[rb]
@@ -417,13 +418,13 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 156: // shlo_r_imm_alt_64
 		pvm.State.Registers[ra] = vx >> (pvm.State.Registers[rb] % 64)
 	case 157: // shar_r_imm_alt_64
-		pvm.State.Registers[ra] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(8, uint64(vx))>>(pvm.State.Registers[rb]%64)))
 	case 158: // rot_r_64_imm
-		pvm.State.Registers[ra] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])).Rotate(int(vx))))
 	case 159: // rot_r_64_imm_alt
-		pvm.State.Registers[ra] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(vx)).Rotate(int(pvm.State.Registers[rb]))))
 	case 160: // rot_r_32_imm
 		pvm.State.Registers[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
@@ -445,7 +446,7 @@ func handleTwoRegOneOffset(pvm *PVM, ctx *InstructionContext) ExitReason {
 
 	// Compute the immediate branch offset.
 	lx := min(4, max(0, ctx.SkipLength-1))
-	vx := pvm.InstructionCounter + Register(serializer.UnsignedToSigned(lx,
+	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx,
 		serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2, lx))))
 
 	var cond bool
@@ -488,7 +489,7 @@ func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) ExitReason {
 		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+3, lx)))
 	// Decode the second immediate value.
 	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(
-		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+3+Register(lx), ly)))
+		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+3+types.Register(lx), ly)))
 
 	// Perform a dynamic jump based on the computed offset (rb + vy).
 	var exitReason ExitReason
@@ -531,9 +532,9 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		if b == 0 {
 			pvm.State.Registers[rd] = (1 << 64) - 1
 		} else if a == -(1<<31) && b == -1 {
-			pvm.State.Registers[rd] = Register(a)
+			pvm.State.Registers[rd] = types.Register(a)
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, a/b))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, a/b))
 		}
 	case 195: // rem_u_32
 		if uint32(pvm.State.Registers[rb]) == 0 {
@@ -547,14 +548,14 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		if a == -(1<<31) && b == -1 {
 			pvm.State.Registers[rd] = 0
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, smod(a, b)))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, smod(a, b)))
 		}
 	case 197: // shlo_l_32
 		pvm.State.Registers[rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[ra]<<(pvm.State.Registers[rb]%32))))
 	case 198: // shlo_r_32
 		pvm.State.Registers[rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[ra])>>(pvm.State.Registers[rb]%32)))
 	case 199: // shar_r_32
-		pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[ra])))>>(pvm.State.Registers[rb]%32)))
 	case 200: // add_64
 		pvm.State.Registers[rd] = pvm.State.Registers[ra] + pvm.State.Registers[rb]
@@ -575,7 +576,7 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])) == -1 {
 			pvm.State.Registers[rd] = pvm.State.Registers[ra]
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8,
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8,
 				serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra]))/
 					serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))))
 		}
@@ -590,7 +591,7 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])) == -1 {
 			pvm.State.Registers[rd] = 0
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8,
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8,
 				smod(serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra])),
 					serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])))))
 		}
@@ -599,29 +600,29 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 208: // shlo_r_64
 		pvm.State.Registers[rd] = pvm.State.Registers[ra] >> (pvm.State.Registers[rb] % 64)
 	case 209: // shar_r_64
-		pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8,
+		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra]))>>(pvm.State.Registers[rb]%64)))
 	case 210: // and
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).And(
 				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
 	case 211: // xor
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Xor(
 				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
 	case 212: // or
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Or(
 				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
 	case 213: // mul_upper_s_s
-		pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(
+		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra])),
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])))))
 	case 214: // mul_upper_u_u
 		hi, _ := bits.Mul64(uint64(pvm.State.Registers[ra]), uint64(pvm.State.Registers[rb]))
-		pvm.State.Registers[rd] = Register(hi)
+		pvm.State.Registers[rd] = types.Register(hi)
 	case 215: // mul_upper_s_u
-		pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, mulDiv2Pow64(
+		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, mulDiv2Pow64(
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra])),
 			uint64(pvm.State.Registers[rb]))))
 	case 216: // set_lt_u
@@ -645,36 +646,36 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 			pvm.State.Registers[rd] = pvm.State.Registers[ra]
 		}
 	case 220: // rot_l_64
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Rotate(-int(pvm.State.Registers[rb]))))
 	case 221: // rot_l_32
 		pvm.State.Registers[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(4, uint64(pvm.State.Registers[ra])).Rotate(-int(pvm.State.Registers[rb]))))
 	case 222: // rot_r_64
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintLE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Rotate(int(pvm.State.Registers[rb]))))
 	case 223: // rot_r_32
 		pvm.State.Registers[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
 			serializer.UintToBitSequenceLE(4, uint64(pvm.State.Registers[ra])).Rotate(int(pvm.State.Registers[rb]))))
 	case 224: // and_inv
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintBE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).And(
 				serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[rb])).Invert())))
 	case 225: // or_inv
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintBE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).Or(
 				serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[rb])).Invert())))
 	case 226: // xnor
-		pvm.State.Registers[rd] = Register(serializer.BitSequenceToUintBE(
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
 			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).Xor(
 				serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[rb]))).Invert()))
 	case 227: // max
 		l := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra]))
 		r := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))
 		if l > r {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, l))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, l))
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, r))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, r))
 		}
 	case 228: // max_u
 		pvm.State.Registers[rd] = max(pvm.State.Registers[ra], pvm.State.Registers[rb])
@@ -682,9 +683,9 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		l := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra]))
 		r := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))
 		if l < r {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, l))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, l))
 		} else {
-			pvm.State.Registers[rd] = Register(serializer.SignedToUnsigned(8, r))
+			pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, r))
 		}
 	case 230: // min_u
 		pvm.State.Registers[rd] = min(pvm.State.Registers[ra], pvm.State.Registers[rb])

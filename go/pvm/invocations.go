@@ -20,7 +20,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) types.Execut
 		if n == GasID {
 			return Gas(ctx.State, struct{}{})
 		}
-		ctx.State.Registers[7] = Register(HostCallWhat)
+		ctx.State.Registers[7] = types.Register(HostCallWhat)
 		return NewSimpleExitReason(ExitGo)
 	}
 	args := serializer.Serialize(struct {
@@ -30,14 +30,14 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) types.Execut
 		WorkPackage: workpackage,
 		Core:        core,
 	})
-	exitReason, _ := ΨM(workpackage.AuthorizationCode(), 0, types.GasValue(IsAuthorizedGasAllocation), args, hf, &struct{}{})
+	exitReason, _ := ΨM(workpackage.AuthorizationCode(), 0, types.GasValue(constants.IsAuthorizedGasAllocation), args, hf, &struct{}{})
 	return exitReason
 }
 
 type IntegratedPVM struct {
 	ProgramCode        []byte
 	RAM                *ram.RAM
-	InstructionCounter Register
+	InstructionCounter types.Register
 }
 
 type IntegratedPVMsAndExportSequence struct {
@@ -52,7 +52,7 @@ type HostFunctionContext[T any] struct {
 
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
-func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
+func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
@@ -81,7 +81,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		case ExpungeID:
 			return Expunge(ctx)
 		default:
-			ctx.State.Registers[7] = Register(HostCallWhat)
+			ctx.State.Registers[7] = types.Register(HostCallWhat)
 			return NewSimpleExitReason(ExitGo)
 		}
 	}
@@ -93,7 +93,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	if preimage == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
-	if len(*preimage) > constants.ServiceCodeMaxSize {
+	if len(*preimage) > int(constants.ServiceCodeMaxSize) {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), [][]byte{}
 	}
 
@@ -153,11 +153,11 @@ func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
 }
 
 type DeferredTransfer struct { // T
-	SenderServiceIndex   types.ServiceIndex     // s
-	ReceiverServiceIndex types.ServiceIndex     // d
-	BalanceTransfer      types.Balance          // a
-	Memo                 [TransferMemoSize]byte // m
-	GasLimit             types.GasValue         // g
+	SenderServiceIndex   types.ServiceIndex               // s
+	ReceiverServiceIndex types.ServiceIndex               // d
+	BalanceTransfer      types.Balance                    // a
+	Memo                 [constants.TransferMemoSize]byte // m
+	GasLimit             types.GasValue                   // g
 }
 
 // DeepCopy creates a deep copy of DeferredTransfer
@@ -317,7 +317,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case YieldID:
 			return Yield(ctx)
 		default:
-			ctx.State.Registers[7] = Register(HostCallWhat)
+			ctx.State.Registers[7] = types.Register(HostCallWhat)
 			return NewSimpleExitReason(ExitGo)
 		}
 	}
@@ -384,7 +384,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 				Argument: &struct{}{},
 			}, serviceIndex, serviceAccounts)
 		default:
-			ctx.State.Registers[7] = Register(HostCallWhat)
+			ctx.State.Registers[7] = types.Register(HostCallWhat)
 			return NewSimpleExitReason(ExitGo)
 		}
 	}
@@ -398,7 +398,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
 	_, code := serviceAccount.MetadataAndCode()
-	if code == nil {
+	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return serviceAccount, 0
 	}
 	_, gas := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
