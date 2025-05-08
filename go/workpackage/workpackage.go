@@ -1,6 +1,7 @@
 package workpackage
 
 import (
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
 )
@@ -11,7 +12,7 @@ type WorkPackage struct {
 	AuthorizationCodeHash         [32]byte                     // u
 	ParameterizationBlob          []byte                       // p
 	RefinementContext             workreport.RefinementContext // x
-	WorkItems                     []WorkItem                   // at least 1, at most MaxWorkItemsInPackage // w
+	WorkItems                     []WorkItem                   // w
 }
 
 // TODO: implement // c
@@ -25,21 +26,31 @@ func (wp WorkPackage) Authorizer() [32]byte {
 }
 
 type WorkItem struct {
-	ServiceIdentifier       types.ServiceIndex //s
-	CodeHash                [32]byte           //c
-	Payload                 []byte             //y
+	ServiceIdentifier       types.ServiceIndex // s
+	CodeHash                [32]byte           // h
+	Payload                 []byte             // y
 	RefinementGasLimit      types.GasValue     // g
 	AccumulationGasLimit    types.GasValue     // a
-	NumDataSegmentsExported int                //e
-	ImportedDataSegments    []struct {         // i
+	NumDataSegmentsExported uint16             // e
+	ImportedDataSegments    []struct {
 		ExportingWorkPackageHash struct {
 			Identifier                   [32]byte
 			IsHashOfExportingWorkPackage bool
 		}
 		Index int
+	} // i
+	BlobHashesAndLengthsIntroduced []BlobHashAndLengthIntroduced // x
+}
+
+func (i WorkItem) MaxTotalSize() int {
+	totalBlobLength := 0
+	for _, blobHashAndLengthIntroduced := range i.BlobHashesAndLengthsIntroduced {
+		totalBlobLength += blobHashAndLengthIntroduced.Length
 	}
-	BlobHashesAndLengthsIntroduced []struct { // x
-		BlobHash [32]byte
-		Length   int
-	}
+	return len(i.Payload) + len(i.ImportedDataSegments)*int(constants.MaxImportsInWorkPackage) + totalBlobLength
+}
+
+type BlobHashAndLengthIntroduced struct { // x
+	BlobHash [32]byte
+	Length   int
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
@@ -61,7 +62,9 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		case HistoricalLookupID:
 			return HistoricalLookup(ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
 		case FetchID:
-			return Fetch(ctx, workItemIndex, workPackage, authorizerOutput, importSegments)
+			panic("not implemented")
+			// TODO: Figure out how to compute the blobs introduced for a work item
+			return Fetch(ctx, &workPackage, &[32]byte{}, &authorizerOutput, &workItemIndex, &importSegments, nil, nil, nil)
 		case ExportID:
 			return Export(ctx, exportSegmentOffset)
 		case GasID:
@@ -99,13 +102,10 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 
 	a := serializer.Serialize(struct {
 		ServiceIndex                   types.ServiceIndex
-		BlobHashesAndLengthsIntroduced []struct {
-			BlobHash [32]byte
-			Length   int
-		}
-		WorkPackageHash   [32]byte
-		RefinementContext workreport.RefinementContext
-		Authorizer        [32]byte
+		BlobHashesAndLengthsIntroduced []workpackage.BlobHashAndLengthIntroduced
+		WorkPackageHash                [32]byte
+		RefinementContext              workreport.RefinementContext
+		Authorizer                     [32]byte
 	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
 	integratedPVMsAndExportSequence := &IntegratedPVMsAndExportSequence{
 		IntegratedPVMs: map[int]IntegratedPVM{},
@@ -287,6 +287,8 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
 		case GasID:
 			return Gas(ctx.State, struct{}{})
+		case FetchID:
+			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, &operandTuples, nil)
 		case InfoID:
 			return Info(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -357,7 +359,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed
 }
 
-func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
+func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
@@ -378,6 +380,8 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 			}, ctx.Argument, serviceIndex)
 		case GasID:
 			return Gas(ctx.State, struct{}{})
+		case FetchID:
+			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, nil, &deferredTransfers)
 		case InfoID:
 			return Info(&HostFunctionContext[struct{}]{
 				State:    ctx.State,

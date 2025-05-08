@@ -13,6 +13,7 @@ import (
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
+	"github.com/ascrivener/jam/workpackage"
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -79,6 +80,8 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 				buf.WriteByte(byte(*er.ExecutionError))
 			}
 			return
+		case reflect.TypeOf(workpackage.WorkItem{}):
+			panic("Cannot directly serialize WorkItem")
 		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
 			sks := v.Interface().(sealingkeysequence.SealingKeySequence)
 			if sks.IsSealKeyTickets() {
@@ -202,7 +205,8 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			}
 			v.Set(reflect.ValueOf(er))
 			return nil
-
+		case reflect.TypeOf(workpackage.WorkItem{}):
+			panic("Cannot directly deserialize WorkItem")
 		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
 			tag, err := buf.ReadByte()
 			if err != nil {

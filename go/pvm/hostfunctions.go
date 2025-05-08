@@ -12,6 +12,7 @@ import (
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
 	"github.com/ascrivener/jam/workpackage"
+	wp "github.com/ascrivener/jam/workpackage"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -887,45 +888,175 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	})
 }
 
-func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegmentsIndex int, workPackage workpackage.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte) ExitReason {
-	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+func serializeWorkItemForFetch(i workpackage.WorkItem) []byte {
+	return serializer.Serialize(struct {
+		ServiceIdentifier                 types.ServiceIndex
+		CodeHash                          [32]byte
+		Payload                           []byte
+		RefinementGasLimit                types.GasValue
+		AccumulationGasLimit              types.GasValue
+		NumDataSegmentsExported           uint16
+		LenImportedDataSegments           uint16
+		LenBlobHashesAndLengthsIntroduced uint16
+		LenPayload                        uint32
+	}{
+		ServiceIdentifier:                 i.ServiceIdentifier,
+		CodeHash:                          i.CodeHash,
+		RefinementGasLimit:                i.RefinementGasLimit,
+		AccumulationGasLimit:              i.AccumulationGasLimit,
+		NumDataSegmentsExported:           i.NumDataSegmentsExported,
+		LenImportedDataSegments:           uint16(len(i.ImportedDataSegments)),
+		LenBlobHashesAndLengthsIntroduced: uint16(len(i.BlobHashesAndLengthsIntroduced)),
+		LenPayload:                        uint32(len(i.Payload)),
+	})
+}
+
+func Fetch[T any](ctx *HostFunctionContext[T], workPackage *workpackage.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, operandTuples *[]OperandTuple, deferredTransfers *[]DeferredTransfer) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[T]) ExitReason {
 		var preimage *[]byte
+		w11 := ctx.State.Registers[11]
+		w12 := ctx.State.Registers[12]
 		switch ctx.State.Registers[10] {
 		case 0:
-			serialized := serializer.Serialize(workPackage)
+			serialized := serializer.SerializeChainParameters()
 			preimage = &serialized
 		case 1:
-			preimage = &authorizerOutput
+			if n == nil {
+				break
+			}
+			bytes := (*n)[:]
+			preimage = &bytes
 		case 2:
-			if ctx.State.Registers[11] < types.Register(len(workPackage.WorkItems)) {
-				preimage = &workPackage.WorkItems[int(ctx.State.Registers[11])].Payload
+			if authorizerOutput == nil {
+				break
 			}
+			preimage = authorizerOutput
 		case 3:
-			if ctx.State.Registers[11] < types.Register(len(workPackage.WorkItems)) {
-				blobHashesAndLengthsIntroduced := workPackage.WorkItems[int(ctx.State.Registers[11])].BlobHashesAndLengthsIntroduced
-				if ctx.State.Registers[12] < types.Register(len(blobHashesAndLengthsIntroduced)) {
-					blobHash := blobHashesAndLengthsIntroduced[int(ctx.State.Registers[12])].BlobHash[:]
-					preimage = &blobHash
-				}
+			if importSegmentsIndex == nil || w11 >= types.Register(len(*blobsIntroduced)) {
+				break
 			}
+
+			idx1 := int(w11)
+			if w12 >= types.Register(len((*blobsIntroduced)[idx1])) {
+				break
+			}
+
+			idx2 := int(w12)
+			preimage = &(*blobsIntroduced)[idx1][idx2]
 		case 4:
-			blobHashesAndLengthsIntroduced := workPackage.WorkItems[importSegmentsIndex].BlobHashesAndLengthsIntroduced
-			if ctx.State.Registers[11] < types.Register(len(blobHashesAndLengthsIntroduced)) {
-				blobHash := blobHashesAndLengthsIntroduced[int(ctx.State.Registers[11])].BlobHash[:]
-				preimage = &blobHash
+			if importSegmentsIndex == nil || w11 >= types.Register(len((*blobsIntroduced)[*importSegmentsIndex])) {
+				break
 			}
+
+			idx1 := int(w11)
+			preimage = &(*blobsIntroduced)[*importSegmentsIndex][idx1]
 		case 5:
-			if ctx.State.Registers[11] < types.Register(len(importSegments)) && ctx.State.Registers[12] < types.Register(len(importSegments[ctx.State.Registers[11]])) {
-				segment := importSegments[ctx.State.Registers[11]][ctx.State.Registers[12]][:]
-				preimage = &segment
+			if importSegmentsIndex == nil || w11 >= types.Register(len(*importSegments)) {
+				break
 			}
+
+			idx1 := int(w11)
+			if w12 >= types.Register(len((*importSegments)[idx1])) {
+				break
+			}
+
+			idx2 := int(w12)
+			segment := (*importSegments)[idx1][idx2][:]
+			preimage = &segment
 		case 6:
-			if ctx.State.Registers[11] < types.Register(len(importSegments[importSegmentsIndex])) {
-				segment := importSegments[importSegmentsIndex][ctx.State.Registers[11]][:]
-				preimage = &segment
+			if importSegmentsIndex == nil || w11 >= types.Register(len((*importSegments)[*importSegmentsIndex])) {
+				break
 			}
+
+			idx1 := int(w11)
+			segment := (*importSegments)[*importSegmentsIndex][idx1][:]
+			preimage = &segment
 		case 7:
-			preimage = &workPackage.ParameterizationBlob
+			if workPackage == nil {
+				break
+			}
+			serialized := serializer.Serialize(*workPackage)
+			preimage = &serialized
+		case 8:
+			if workPackage == nil {
+				break
+			}
+			serialized := serializer.Serialize(struct {
+				WorkPackage wp.WorkPackage
+				Blob        []byte
+			}{
+				WorkPackage: *workPackage,
+				Blob:        workPackage.ParameterizationBlob,
+			})
+			preimage = &serialized
+		case 9:
+			if workPackage == nil {
+				break
+			}
+			preimage = &workPackage.AuthorizationToken
+		case 10:
+			if workPackage == nil {
+				break
+			}
+			serialized := serializer.Serialize(workPackage.RefinementContext)
+			preimage = &serialized
+		case 11:
+			if workPackage == nil {
+				break
+			}
+			blobs := make([]types.Blob, len(workPackage.WorkItems))
+			for i, workItem := range workPackage.WorkItems {
+				blobs[i] = serializeWorkItemForFetch(workItem)
+			}
+			serialized := serializer.Serialize(blobs)
+			preimage = &serialized
+		case 12:
+			if workPackage == nil {
+				break
+			}
+			if w11 >= types.Register(len(workPackage.WorkItems)) {
+				break
+			}
+			serialized := serializeWorkItemForFetch(workPackage.WorkItems[int(w11)])
+			preimage = &serialized
+		case 13:
+			if workPackage == nil {
+				break
+			}
+			if w11 >= types.Register(len(workPackage.WorkItems)) {
+				break
+			}
+			preimage = &workPackage.WorkItems[int(w11)].Payload
+		case 14:
+			if operandTuples == nil {
+				break
+			}
+			serialized := serializer.Serialize(*operandTuples)
+			preimage = &serialized
+		case 15:
+			if operandTuples == nil {
+				break
+			}
+			if w11 >= types.Register(len(*operandTuples)) {
+				break
+			}
+			serialized := serializer.Serialize((*operandTuples)[int(w11)])
+			preimage = &serialized
+		case 16:
+			if deferredTransfers == nil {
+				break
+			}
+			serialized := serializer.Serialize(*deferredTransfers)
+			preimage = &serialized
+		case 17:
+			if deferredTransfers == nil {
+				break
+			}
+			if w11 >= types.Register(len(*deferredTransfers)) {
+				break
+			}
+			serialized := serializer.Serialize((*deferredTransfers)[int(w11)])
+			preimage = &serialized
 		}
 
 		preimageLen := 0
@@ -936,7 +1067,7 @@ func Fetch(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], importSegm
 		o := ctx.State.Registers[7]
 		f := min(ctx.State.Registers[8], types.Register(preimageLen))
 
-		// l = min(ω11, |v| - f)
+		// l = min(ω9, |v| - f)
 		l := min(ctx.State.Registers[9], types.Register(preimageLen)-f)
 
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
