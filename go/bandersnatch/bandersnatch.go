@@ -5,7 +5,7 @@ package bandersnatch
 #cgo darwin LDFLAGS: -framework Security
 
 // Declaration of the Rust functions.
-int ietf_vrf_output(const unsigned char *input_ptr, unsigned char *out_ptr);
+int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
 */
 import "C"
@@ -18,6 +18,16 @@ import (
 
 func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
 	var out [32]byte
+
+	ret := C.ietf_vrf_output(
+		(*C.uchar)(unsafe.Pointer(&proof)),
+		C.size_t(len(proof)),
+		(*C.uchar)(unsafe.Pointer(&out[0])),
+	)
+	if ret != 0 {
+		return out, errors.New("vrf_output failed")
+	}
+
 	return out, nil
 }
 
@@ -27,6 +37,7 @@ func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]b
 
 	ret := C.ietf_vrf_output(
 		(*C.uchar)(unsafe.Pointer(&proof)),
+		C.size_t(len(proof)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
 	if ret != 0 {

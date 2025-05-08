@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::Read;
 use std::slice;
 
-pub fn ietf_vrf_output_ffi<S: Suite + IetfSuite>(proof: &[u8; 96]) -> Result<[u8; 32], Error> {
+pub fn ietf_vrf_output_ffi<S: Suite>(proof: &[u8]) -> Result<[u8; 32], Error> {
     // For Bandersnatch IETF proof, the format is:
     // - gamma (32 bytes)
     // - c (32 bytes)
@@ -34,17 +34,13 @@ pub fn ietf_vrf_output_ffi<S: Suite + IetfSuite>(proof: &[u8; 96]) -> Result<[u8
 }
 
 #[no_mangle]
-pub extern "C" fn ietf_vrf_output(input_ptr: *const u8, out_ptr: *mut u8) -> i32 {
+pub extern "C" fn ietf_vrf_output(input_ptr: *const u8, input_len: usize, out_ptr: *mut u8) -> i32 {
     if input_ptr.is_null() || out_ptr.is_null() {
         return -1;
     }
-    let input_slice = unsafe { slice::from_raw_parts(input_ptr, 96) };
-    let input_array: &[u8; 96] = match input_slice.try_into() {
-        Ok(arr) => arr,
-        Err(_) => return -2,
-    };
+    let input_slice = unsafe { slice::from_raw_parts(input_ptr, input_len) };
 
-    match ietf_vrf_output_ffi::<BandersnatchSha512Ell2>(input_array) {
+    match ietf_vrf_output_ffi::<BandersnatchSha512Ell2>(input_slice) {
         Ok(result_array) => {
             unsafe {
                 std::ptr::copy_nonoverlapping(result_array.as_ptr(), out_ptr, 32);

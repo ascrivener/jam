@@ -73,9 +73,19 @@ type Assurance struct {
 	Signature      string `json:"signature"`
 }
 
+type Ticket struct {
+	Attempt   uint64 `json:"attempt"`
+	Signature string `json:"signature"`
+}
+
+type Preimage struct {
+	ServiceIndex uint64 `json:"requester"`
+	Data         string `json:"blob"`
+}
+
 type Extrinsic struct {
-	Tickets    []interface{}   `json:"tickets"`
-	Preimages  []interface{}   `json:"preimages"`
+	Tickets    []Ticket        `json:"tickets"`
+	Preimages  []Preimage      `json:"preimages"`
 	Guarantees []GuaranteeJSON `json:"guarantees"`
 	Assurances []Assurance     `json:"assurances"`
 	Disputes   Disputes        `json:"disputes"`
@@ -629,7 +639,7 @@ func TestDeserializePendingReports(t *testing.T) {
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jamtestnet/data/assurances/state_transitions"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)
@@ -649,13 +659,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	t.Logf("Processing %d test vector files", len(fileNames))
 
 	failedTests := 0
-	for idx, fileName := range fileNames {
-		if idx == 0 {
-			continue
-		}
-		if fileName != "00000004.json" {
-			continue
-		}
+	for _, fileName := range fileNames {
 		t.Logf("Processing test vector file: %s", fileName)
 
 		// Process each file sequentially
@@ -725,16 +729,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Run state transition function
 			t.Logf("Stage 8: Running state transition function...")
 			postState := StateTransitionFunction(preState, testBlock)
-			t.Logf("Stage 9: State transition completed")
+			// t.Logf("Stage 9: State transition completed")
 
-			serializedPostState := StateSerializer(postState)
-			t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
+			// serializedPostState := StateSerializer(postState)
+			// t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
 
-			merklizedPostState := MerklizeState(postState)
-			expectedStateRoot := testVector.PostState.StateRoot
-			actualStateRoot := hex.EncodeToString(merklizedPostState[:])
-			stateRootMatch := expectedStateRoot == actualStateRoot
-			t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
+			// merklizedPostState := MerklizeState(postState)
+			// expectedStateRoot := testVector.PostState.StateRoot
+			// actualStateRoot := hex.EncodeToString(merklizedPostState[:])
+			// stateRootMatch := expectedStateRoot == actualStateRoot
+			// t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
 
 			// if !stateRootMatch {
 			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
@@ -745,12 +749,12 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			expectedSerializedState := testVector.PostState.KeyVals.toMap()
 			t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
-			t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
-			if !compareSerializedStatesNoFatal(expectedSerializedState, serializedPostState, t) {
-				failedTests++
-				return
-			}
-			t.Logf("Stage 14: Serialized states match")
+			// t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
+			// if !compareSerializedStatesNoFatal(expectedSerializedState, serializedPostState, t) {
+			// 	failedTests++
+			// 	return
+			// }
+			// t.Logf("Stage 14: Serialized states match")
 
 			// Deserialize the expected state
 			expectedPostState, err := StateDeserializer(expectedSerializedState)
@@ -770,6 +774,14 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			}
 			t.Logf("Stage 17: State objects match")
 
+			merklizedPostState := MerklizeState(postState)
+			expectedStateRoot := testVector.PostState.StateRoot
+			actualStateRoot := "0x" + hex.EncodeToString(merklizedPostState[:])
+			stateRootMatch := expectedStateRoot == actualStateRoot
+			if !stateRootMatch {
+				t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
+			}
+			t.Logf("Stage 18: State root match")
 			t.Logf("Successfully processed %s", fileName)
 
 			// Force garbage collection
@@ -966,13 +978,9 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 	extrinsics := extrinsics.Extrinsics{
 		Guarantees: convertGuarantees(blockJSON.Extrinsic.Guarantees),
 		Assurances: convertAssurances(blockJSON.Extrinsic.Assurances),
-		Disputes: extrinsics.Disputes{
-			Verdicts: []extrinsics.Verdict{},
-			Culprits: []extrinsics.Culprit{},
-			Faults:   []extrinsics.Fault{},
-		},
-		Tickets:   extrinsics.Tickets{},
-		Preimages: extrinsics.Preimages{},
+		Disputes:   convertDisputes(blockJSON.Extrinsic.Disputes),
+		Tickets:    convertTickets(blockJSON.Extrinsic.Tickets),
+		Preimages:  convertPreimages(blockJSON.Extrinsic.Preimages),
 	}
 
 	// Build the full block
@@ -1052,4 +1060,45 @@ func convertAssurances(assurancesJSON []Assurance) extrinsics.Assurances {
 	}
 
 	return assurances
+}
+
+func convertTickets(ticketsJSON []Ticket) extrinsics.Tickets {
+	tickets := extrinsics.Tickets{}
+
+	for _, t := range ticketsJSON {
+		bytes := hexToBytesMust(t.Signature)
+		if len(bytes) != 784 {
+			panic("signature wrong length")
+		}
+		tickets = append(tickets, extrinsics.Ticket{
+			EntryIndex:    types.TicketEntryIndex(t.Attempt),
+			ValidityProof: types.BandersnatchRingVRFProof(bytes),
+		})
+	}
+
+	return tickets
+}
+
+func convertPreimages(preimagesJSON []Preimage) extrinsics.Preimages {
+	preimages := extrinsics.Preimages{}
+
+	for _, p := range preimagesJSON {
+		preimages = append(preimages, extrinsics.Preimage{
+			ServiceIndex: types.ServiceIndex(p.ServiceIndex),
+			Data:         hexToBytesMust(p.Data),
+		})
+	}
+
+	return preimages
+}
+
+func convertDisputes(disputesJSON Disputes) extrinsics.Disputes {
+	if len(disputesJSON.Verdicts) > 0 || len(disputesJSON.Culprits) > 0 || len(disputesJSON.Faults) > 0 {
+		panic("disputes not supported")
+	}
+	return extrinsics.Disputes{
+		Verdicts: []extrinsics.Verdict{},
+		Culprits: []extrinsics.Culprit{},
+		Faults:   []extrinsics.Fault{},
+	}
 }

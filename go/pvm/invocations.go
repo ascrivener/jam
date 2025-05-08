@@ -9,7 +9,6 @@ import (
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
@@ -107,7 +106,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 
 	a := serializer.Serialize(struct {
 		ServiceIndex                   types.ServiceIndex
-		BlobHashesAndLengthsIntroduced []workpackage.BlobHashAndLengthIntroduced
+		BlobHashesAndLengthsIntroduced []wp.BlobHashAndLengthIntroduced
 		WorkPackageHash                [32]byte
 		RefinementContext              workreport.RefinementContext
 		Authorizer                     [32]byte

@@ -11,7 +11,6 @@ import (
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
-	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
 	"golang.org/x/crypto/blake2b"
 )
@@ -949,7 +948,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex
 	})
 }
 
-func serializeWorkItemForFetch(i workpackage.WorkItem) []byte {
+func serializeWorkItemForFetch(i wp.WorkItem) []byte {
 	return serializer.Serialize(struct {
 		ServiceIdentifier                 types.ServiceIndex
 		CodeHash                          [32]byte
@@ -972,7 +971,7 @@ func serializeWorkItemForFetch(i workpackage.WorkItem) []byte {
 	})
 }
 
-func Fetch[T any](ctx *HostFunctionContext[T], workPackage *workpackage.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, operandTuples *[]OperandTuple, deferredTransfers *[]DeferredTransfer) ExitReason {
+func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, operandTuples *[]OperandTuple, deferredTransfers *[]DeferredTransfer) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[T]) ExitReason {
 		var preimage *[]byte
 		w11 := ctx.State.Registers[11]
