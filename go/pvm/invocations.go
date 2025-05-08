@@ -15,25 +15,28 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-todo: make this match 0.6.6 (code size)
-func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) types.ExecutionExitReason {
+func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.ExecutionExitReason, types.GasValue) {
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
-		if n == GasID {
+		switch n {
+		case GasID:
 			return Gas(ctx.State, struct{}{})
+		case FetchID:
+			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil, nil)
+		default:
+			ctx.State.Registers[7] = types.Register(HostCallWhat)
+			return NewSimpleExitReason(ExitGo)
 		}
-		ctx.State.Registers[7] = types.Register(HostCallWhat)
-		return NewSimpleExitReason(ExitGo)
 	}
-	args := serializer.Serialize(struct {
-		WorkPackage wp.WorkPackage
-		Core        types.CoreIndex
-	}{
-		WorkPackage: workpackage,
-		Core:        core,
-	})
-	exitReason, _ := ΨM(workpackage.AuthorizationCode(), 0, types.GasValue(constants.IsAuthorizedGasAllocation), args, hf, &struct{}{})
-	return exitReason
+	authorizationCode := workpackage.AuthorizationCode()
+	if len(authorizationCode) == 0 {
+		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), types.GasValue(0)
+	}
+	if len(authorizationCode) > int(constants.IsAuthorizedCodeMaxSizeOctets) {
+		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), types.GasValue(0)
+	}
+	exitReason, gasUsed := ΨM(authorizationCode, 0, types.GasValue(constants.IsAuthorizedGasAllocation), serializer.Serialize(core), hf, &struct{}{})
+	return exitReason, gasUsed
 }
 
 type IntegratedPVM struct {
@@ -54,7 +57,7 @@ type HostFunctionContext[T any] struct {
 
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
-todo: make this match 0.6.6 (code size)
+// TODO: needs work. for m2
 func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
@@ -194,17 +197,19 @@ type OperandTuple struct { // O
 	ExecutionExitReason   types.ExecutionExitReason // d
 }
 
+type PreimageProvisions map[struct {
+	ServiceIndex types.ServiceIndex
+	BlobString   string
+}]struct{}
+
 type AccumulationResultContext struct { // X
 	AccumulatingServiceIndex types.ServiceIndex          // s
 	StateComponents          AccumulationStateComponents // u
 	DerivedServiceIndex      types.ServiceIndex          // i
 	DeferredTransfers        []DeferredTransfer          // t
 	PreimageResult           *[32]byte                   // y
-	PreimageProvisions        map[struct {
-		ServiceIndex types.ServiceIndex
-		BlobString   string
-	}]struct{} // p
-} todo ^ use these account privileges in the parallelized accumulation function
+	PreimageProvisions       PreimageProvisions          // p
+}
 
 // DeepCopy creates a deep copy of AccumulationResultContext
 func (x AccumulationResultContext) DeepCopy() *AccumulationResultContext {
@@ -271,8 +276,7 @@ func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAcc
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-todo: make sure this matches 0.6.6
-func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue) {
+func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Remember to use g = 10 + w9 for transfer
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
@@ -335,11 +339,11 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
 	serviceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
 	if !ok {
-		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
+		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}
 	}
 	_, code := serviceAccount.MetadataAndCode()
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
-		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
+		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}
 	}
 	// Create two separate context objects
 	exceptionalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
@@ -357,15 +361,15 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		OperandTuples: operandTuples,
 	}), hf, &ctx)
 	if executionExitReason.IsError() {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions
 	}
 	blob := *executionExitReason.Blob
 	if len(blob) == 32 {
 		var preimageResult [32]byte
 		copy(preimageResult[:], blob)
-		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, &preimageResult, gasUsed
+		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, &preimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions
 	}
-	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed
+	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions
 }
 
 func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {

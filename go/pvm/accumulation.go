@@ -8,9 +8,10 @@ import (
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workreport"
+	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue) {
+func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
 	var gas types.GasValue
 	operandTuples := make([]OperandTuple, 0)
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
@@ -102,11 +103,14 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	// Map to store state components by service index (for privileged services)
 	privilegedStateComponents := make(map[types.ServiceIndex]AccumulationStateComponents)
 
+	// Map to store preimage provisions by service index
+	allPreimageProvisions := make(PreimageProvisions)
+
 	for _, sIndex := range serviceIndices {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
-			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed := SingleServiceAccumulation(accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
+			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed, preimageProvisions := SingleServiceAccumulation(accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
 			mu.Lock()
 			serviceGasUsage = append(serviceGasUsage, struct {
 				ServiceIndex types.ServiceIndex
@@ -128,6 +132,10 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 				}] = struct{}{}
 			}
 			transfersByServiceIndex[sIndex] = deferredTransfersResult
+
+			for k, v := range preimageProvisions {
+				allPreimageProvisions[k] = v
+			}
 
 			// Add relevant service accounts to n
 			for serviceIndex, serviceAccount := range accumulationStateComponentsResult.ServiceAccounts {
@@ -177,6 +185,22 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	// Finally, remove any keys in m (keys that disappeared in at least one result)
 	for serviceIndex := range m {
 		delete(finalServiceAccounts, serviceIndex)
+	}
+
+	// Provisions preimage integration done below
+
+	for preimageProvision := range allPreimageProvisions {
+		serviceAccount, ok := finalServiceAccounts[preimageProvision.ServiceIndex]
+		if !ok {
+			continue
+		}
+		preimageBytes := []byte(preimageProvision.BlobString)
+		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKey{
+			Preimage:   blake2b.Sum256(preimageBytes),
+			BlobLength: types.BlobLength(len(preimageBytes)),
+		}
+		serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey] = []types.Timeslot{timeslot}
+		serviceAccount.PreimageLookup[preimageLookupHistoricalStatusKey.Preimage] = types.Blob(preimageBytes)
 	}
 
 	// Get the components from privileged services
