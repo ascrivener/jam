@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
+todo: make this match 0.6.6 (code size)
 func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) types.ExecutionExitReason {
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) ExitReason {
 		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
@@ -53,6 +54,7 @@ type HostFunctionContext[T any] struct {
 
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
+todo: make this match 0.6.6 (code size)
 func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
@@ -198,7 +200,11 @@ type AccumulationResultContext struct { // X
 	DerivedServiceIndex      types.ServiceIndex          // i
 	DeferredTransfers        []DeferredTransfer          // t
 	PreimageResult           *[32]byte                   // y
-}
+	PreimageProvisions        map[struct {
+		ServiceIndex types.ServiceIndex
+		BlobString   string
+	}]struct{} // p
+} todo ^ use these account privileges in the parallelized accumulation function
 
 // DeepCopy creates a deep copy of AccumulationResultContext
 func (x AccumulationResultContext) DeepCopy() *AccumulationResultContext {
@@ -265,6 +271,7 @@ func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAcc
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
+todo: make sure this matches 0.6.6
 func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Remember to use g = 10 + w9 for transfer
@@ -318,6 +325,8 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 			return Forget(ctx, timeslot)
 		case YieldID:
 			return Yield(ctx)
+		case ProvideID:
+			return Provide(ctx, serviceIndex)
 		default:
 			ctx.State.Registers[7] = types.Register(HostCallWhat)
 			return NewSimpleExitReason(ExitGo)
@@ -329,7 +338,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
 	}
 	_, code := serviceAccount.MetadataAndCode()
-	if code == nil {
+	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0
 	}
 	// Create two separate context objects

@@ -46,6 +46,7 @@ const (
 	VoidID
 	InvokeID
 	ExpungeID
+	ProvideID
 )
 
 type ExitReasonType uint64
@@ -880,6 +881,66 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Set the exceptional accumulation result's preimage to this hash
 		// x'y = h
 		ctx.Argument.AccumulationResultContext.PreimageResult = &keyHash
+
+		// Set OK status in register ω7
+		ctx.State.Registers[7] = types.Register(HostCallOK)
+
+		return NewSimpleExitReason(ExitGo)
+	})
+}
+
+func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex types.ServiceIndex) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+		// Extract offset o from register ω8
+		o := ctx.State.Registers[8] // Offset
+		z := ctx.State.Registers[9]
+
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), uint64(z), ram.NoWrap) {
+			// If memory is inaccessible, return panic (h = ∇)
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		i := ctx.State.RAM.InspectRange(uint64(o), uint64(z), ram.NoWrap, false)
+
+		d := ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts
+
+		sStar := ctx.State.Registers[7]
+		if sStar == types.Register(^uint64(0)) {
+			sStar = types.Register(serviceIndex)
+		}
+
+		serviceAccount, ok := d[types.ServiceIndex(sStar)]
+		if sStar > types.Register(^uint32(0)) || !ok {
+			ctx.State.Registers[7] = types.Register(HostCallWho)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKey{
+			Preimage:   blake2b.Sum256(i),
+			BlobLength: types.BlobLength(z),
+		}
+
+		historicalStatus, ok := serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey]
+
+		if !ok || len(historicalStatus) > 0 {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		preimageProvision := struct {
+			ServiceIndex types.ServiceIndex
+			BlobString   string
+		}{
+			ServiceIndex: types.ServiceIndex(sStar),
+			BlobString:   string(i),
+		}
+
+		if _, ok := ctx.Argument.AccumulationResultContext.PreimageProvisions[preimageProvision]; ok {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		ctx.Argument.AccumulationResultContext.PreimageProvisions[preimageProvision] = struct{}{}
 
 		// Set OK status in register ω7
 		ctx.State.Registers[7] = types.Register(HostCallOK)
