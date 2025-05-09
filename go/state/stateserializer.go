@@ -57,7 +57,7 @@ func invertStateKeyConstructor(key [31]byte) (uint8, types.ServiceIndex, bool) {
 
 // invertStateKeyConstructorFromHash extracts the service index and hash from a key
 // created with stateKeyConstructorFromHash
-func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]byte) {
+func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [27]byte) {
 	// Extract service index from interleaved positions 0, 2, 4, 6
 	s := uint32(key[0]) |
 		(uint32(key[2]) << 8) |
@@ -65,7 +65,7 @@ func invertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]by
 		(uint32(key[6]) << 24)
 
 	// Reconstruct the original hash
-	var h [32]byte
+	var h [27]byte
 
 	// First 4 bytes were interleaved at positions 1, 3, 5, 7
 	h[0] = key[1]
@@ -270,7 +270,7 @@ func findPreimageHistoricalStatusEntries(serialized map[[31]byte][]byte, sIndex 
 
 		// Create the key
 		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			HashedPreimage: [27]byte(hash[4:]),
+			HashedPreimage: [23]byte(hash[4:]),
 			BlobLength:     types.BlobLength(blobLength),
 		}
 

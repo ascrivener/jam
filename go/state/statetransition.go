@@ -208,7 +208,7 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 	blobs := make([][]byte, 0, len(commitments))
 	for _, commitment := range commitments {
 		var buffer bytes.Buffer
-		buffer.Write(serializer.EncodeLittleEndian(4, uint64(commitment.ServiceIndex)))
+		buffer.Write(serializer.Serialize(commitment.ServiceIndex))
 		buffer.Write(serializer.Serialize(commitment.PreimageResult))
 		blobs = append(blobs, buffer.Bytes())
 	}

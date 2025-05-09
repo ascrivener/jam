@@ -1,6 +1,8 @@
 package merklizer
 
-import "bytes"
+import (
+	"bytes"
+)
 
 func node(blobs [][]byte, hash func([]byte) [32]byte) []byte {
 	if len(blobs) == 0 {

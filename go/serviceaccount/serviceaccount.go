@@ -10,7 +10,7 @@ import (
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 type PreimageLookupHistoricalStatusKey struct {
-	HashedPreimage [27]byte
+	HashedPreimage [23]byte
 	BlobLength     types.BlobLength
 }
 
@@ -24,26 +24,26 @@ type ServiceAccount struct {
 	MinimumGasForOnTransfer        types.GasValue                                         // m
 }
 
-type StorageDictionaryKey [27]byte
+type StorageDictionaryKey [23]byte
 
 func StorageDictionaryKeyFromFullKey(k [32]byte) StorageDictionaryKey {
 	var result StorageDictionaryKey
-	copy(result[:], k[:27])
+	copy(result[:], k[:23])
 	return result
 }
 
-type PreimageLookupKey [27]byte
+type PreimageLookupKey [23]byte
 
 func PreimageLookupKeyFromFullKey(h [32]byte) PreimageLookupKey {
 	var result PreimageLookupKey
-	copy(result[:], h[1:28])
+	copy(result[:], h[1:24])
 	return result
 }
 
 func PreimageLookupHistoricalStatusKeyFromFullKey(h [32]byte, blobLength types.BlobLength) PreimageLookupHistoricalStatusKey {
 	preimageHash := blake2b.Sum256(h[:])
 	var result PreimageLookupHistoricalStatusKey
-	copy(result.HashedPreimage[:], preimageHash[2:29])
+	copy(result.HashedPreimage[:], preimageHash[2:25])
 	result.BlobLength = blobLength
 	return result
 }

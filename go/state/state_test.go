@@ -711,14 +711,14 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			}
 			t.Logf("Stage 4: Successfully deserialized pre-state")
 
-			// preStateReserialized := StateSerializer(preState)
-			// t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
+			preStateReserialized := StateSerializer(preState)
+			t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
 
-			// if !compareSerializedStatesNoFatal(preStateSerialized, preStateReserialized, t) {
-			// 	failedTests++
-			// 	return
-			// }
-			// t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
+			if !compareSerializedStatesNoFatal(preStateSerialized, preStateReserialized, t) {
+				failedTests++
+				return
+			}
+			t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
 
 			// b. Convert block to implementation block and run state transition
 			testBlock, err := BlockFromJSON(testVector.Block)
