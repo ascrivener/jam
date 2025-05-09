@@ -4,23 +4,48 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
+	"golang.org/x/crypto/blake2b"
 )
 
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 type PreimageLookupHistoricalStatusKey struct {
-	Preimage   [32]byte
-	BlobLength types.BlobLength
+	HashedPreimage [27]byte
+	BlobLength     types.BlobLength
 }
 
 type ServiceAccount struct {
-	StorageDictionary              map[[31]byte]types.Blob                                // s
-	PreimageLookup                 map[[32]byte]types.Blob                                // p
+	StorageDictionary              map[StorageDictionaryKey]types.Blob                    // s
+	PreimageLookup                 map[PreimageLookupKey]types.Blob                       // p
 	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot // l
 	CodeHash                       [32]byte                                               // c
 	Balance                        types.Balance                                          // b
 	MinimumGasForAccumulate        types.GasValue                                         // g
 	MinimumGasForOnTransfer        types.GasValue                                         // m
+}
+
+type StorageDictionaryKey [27]byte
+
+func StorageDictionaryKeyFromFullKey(k [32]byte) StorageDictionaryKey {
+	var result StorageDictionaryKey
+	copy(result[:], k[:27])
+	return result
+}
+
+type PreimageLookupKey [27]byte
+
+func PreimageLookupKeyFromFullKey(h [32]byte) PreimageLookupKey {
+	var result PreimageLookupKey
+	copy(result[:], h[1:28])
+	return result
+}
+
+func PreimageLookupHistoricalStatusKeyFromFullKey(h [32]byte, blobLength types.BlobLength) PreimageLookupHistoricalStatusKey {
+	preimageHash := blake2b.Sum256(h[:])
+	var result PreimageLookupHistoricalStatusKey
+	copy(result.HashedPreimage[:], preimageHash[2:29])
+	result.BlobLength = blobLength
+	return result
 }
 
 // o
@@ -48,7 +73,7 @@ func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 // bold m, bold c
 
 func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte) {
-	if preimage, ok := s.PreimageLookup[s.CodeHash]; ok {
+	if preimage, ok := s.PreimageLookup[PreimageLookupKeyFromFullKey(s.CodeHash)]; ok {
 		offset := 0
 		L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 		if !ok {

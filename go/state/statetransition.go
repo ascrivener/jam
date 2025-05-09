@@ -342,24 +342,18 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
 func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
 	for _, preimage := range preimages {
-		hashedPreimage := blake2b.Sum256(preimage.Data)
+		hash := blake2b.Sum256(preimage.Data)
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex]
-		if _, exists := serviceAccount.PreimageLookup[hashedPreimage]; exists {
+		if _, exists := serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)]; exists {
 			continue
 		}
-		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   hashedPreimage,
-			BlobLength: types.BlobLength(len(preimage.Data)),
-		}]; !exists {
+		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(preimage.Data)))]; !exists {
 			continue
 		} else if len(availabilityTimeslots) > 0 {
 			continue
 		}
-		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookup[hashedPreimage] = preimage.Data
-		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   hashedPreimage,
-			BlobLength: types.BlobLength(len(preimage.Data)),
-		}] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
+		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)] = preimage.Data
+		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(preimage.Data)))] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
 	}
 }
 

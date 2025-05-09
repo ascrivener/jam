@@ -12,7 +12,6 @@ import (
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/util"
 	"github.com/ascrivener/jam/workpackage"
 )
 
@@ -669,10 +668,31 @@ func BitSequenceToUintBE(bs *bitsequence.BitSequence) uint64 {
 	return x
 }
 
-func StorageKeyConstructorFromFullKey(s types.ServiceIndex, h [32]byte) [31]byte {
-	ones := EncodeLittleEndian(4, uint64(1<<32-1))
-	combined := append(ones, h[:27]...)
-	return StateKeyConstructorFromHash(s, util.SliceToArray32(combined))
+func BlobLengthFromPreimageLookupHistoricalStatusKey(key [31]byte) types.BlobLength {
+	_, h := InvertStateKeyConstructorFromHash(key)
+	return types.BlobLength(DecodeLittleEndian(h[:4]))
+}
+
+func InvertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]byte) {
+	// Extract service index from interleaved positions 0, 2, 4, 6
+	s := uint32(key[0]) |
+		(uint32(key[2]) << 8) |
+		(uint32(key[4]) << 16) |
+		(uint32(key[6]) << 24)
+
+	// Reconstruct the original hash
+	var h [32]byte
+
+	// First 4 bytes were interleaved at positions 1, 3, 5, 7
+	h[0] = key[1]
+	h[1] = key[3]
+	h[2] = key[5]
+	h[3] = key[7]
+
+	// Remaining bytes were copied starting at position 8
+	copy(h[4:], key[8:])
+
+	return types.ServiceIndex(s), h
 }
 
 func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {

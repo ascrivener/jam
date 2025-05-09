@@ -143,7 +143,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			copy(keyArray[:], h[:])
 
 			// Look up in state if available
-			if val, ok := a.StorageDictionary[serializer.StorageKeyConstructorFromFullKey(serviceIndex, keyArray)]; ok {
+			if val, ok := a.StorageDictionary[serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)]; ok {
 				byteSlice := []byte(val)
 				preImage = &byteSlice
 			}
@@ -199,7 +199,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		h := blake2b.Sum256(combinedBytes)
 		copy(keyArray[:], h[:])
 
-		key := serializer.StorageKeyConstructorFromFullKey(serviceIndex, keyArray)
+		key := serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
@@ -459,20 +459,17 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 
 		// Create preimage history map with the code hash and label length as key
 		preimageHistory := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
-		key := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   codeHash,
-			BlobLength: types.BlobLength(labelLength),
-		}
+		key := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(codeHash, types.BlobLength(labelLength))
 		preimageHistory[key] = []types.Timeslot{}
 
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
 			CodeHash:                       codeHash,
-			StorageDictionary:              make(map[[31]byte]types.Blob),
+			StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
 			PreimageLookupHistoricalStatus: preimageHistory,
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
-			PreimageLookup:                 make(map[[32]byte]types.Blob),
+			PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
 		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
@@ -658,10 +655,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
 
 		// Create the key for lookup
-		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   hash,
-			BlobLength: types.BlobLength(length),
-		}
+		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(length))
 
 		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
 		if !exists || length > uint64(^uint32(0)) {
@@ -710,10 +704,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   keyHash,
-			BlobLength: types.BlobLength(z),
-		}]
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))]
 
 		if !ok || z > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
@@ -763,10 +754,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   keyHash,
-			BlobLength: types.BlobLength(z),
-		}
+		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
 
 		// Get the accumulating service account (xs)
 		serviceAccount := ctx.Argument.AccumulatingServiceAccount()
@@ -819,10 +807,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
 		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   keyHash,
-			BlobLength: types.BlobLength(z),
-		}
+		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
 
 		// Get the accumulating service account (xs)
 		xs := ctx.Argument.AccumulatingServiceAccount()
@@ -844,7 +829,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 			delete(xs.PreimageLookupHistoricalStatus, histKey)
 
 			// Also remove the key from PreimageLookup if it exists
-			delete(xs.PreimageLookup, keyHash)
+			delete(xs.PreimageLookup, serviceaccount.PreimageLookupKeyFromFullKey(keyHash))
 		} else if len(historicalStatus) == 1 {
 			// Replace [x] with [x, t] if status is [x]
 			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[0], timeslot}
@@ -914,10 +899,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   blake2b.Sum256(i),
-			BlobLength: types.BlobLength(z),
-		}
+		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(blake2b.Sum256(i), types.BlobLength(z))
 
 		historicalStatus, ok := serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey]
 
@@ -1450,7 +1432,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 		if a != nil {
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
-			if v, ok := a.PreimageLookup[keyArray]; ok {
+			if v, ok := a.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(keyArray)]; ok {
 				byteSlice := []byte(v)
 				preImage = &byteSlice
 			}

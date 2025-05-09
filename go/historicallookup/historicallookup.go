@@ -8,15 +8,12 @@ import (
 )
 
 func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
-	p, ok := serviceAccount.PreimageLookup[hash]
+	p, ok := serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)]
 	if !ok {
 		return nil
 	}
 
-	key := serviceaccount.PreimageLookupHistoricalStatusKey{
-		Preimage:   hash,
-		BlobLength: types.BlobLength(len(p)),
-	}
+	key := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(p)))
 	historicalStatus := serviceAccount.PreimageLookupHistoricalStatus[key]
 
 	switch len(historicalStatus) {

@@ -10,7 +10,6 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/sealingkeysequence"
-	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
@@ -621,8 +620,8 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 		for _, account := range jsonState.Accounts {
 			// Create a new service account
 			serviceAcc := &serviceaccount.ServiceAccount{
-				StorageDictionary:              make(map[[31]byte]types.Blob),
-				PreimageLookup:                 make(map[[32]byte]types.Blob),
+				StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
+				PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
 				PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
 			}
 
@@ -649,7 +648,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 				// Convert blob from hex string to []byte
 				blob := hexToBytesMust(preimage.Blob)
 
-				serviceAcc.PreimageLookup[hash] = blob
+				serviceAcc.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)] = blob
 			}
 
 			// Process lookup metadata entries
@@ -661,10 +660,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 				}
 
 				// Create historical status key
-				histKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-					Preimage:   keyHash,
-					BlobLength: types.BlobLength(lookupEntry.Key.Length),
-				}
+				histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(lookupEntry.Key.Length))
 
 				// Convert value array to timeslots
 				timeslots := make([]types.Timeslot, len(lookupEntry.Value))
@@ -679,7 +675,7 @@ func StateFromGreekJSON(jsonData []byte) (State, error) {
 			// Check if storage is not null and not empty
 			if account.Data.Storage != nil {
 				for key, val := range account.Data.Storage {
-					serviceAcc.StorageDictionary[serializer.StorageKeyConstructorFromFullKey(types.ServiceIndex(account.ID), hexToHashMust(key))] = hexToBytesMust(val)
+					serviceAcc.StorageDictionary[serviceaccount.StorageDictionaryKeyFromFullKey(hexToHashMust(key))] = hexToBytesMust(val)
 				}
 			}
 

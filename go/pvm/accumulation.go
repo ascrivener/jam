@@ -194,13 +194,11 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		if !ok {
 			continue
 		}
-		preimageBytes := []byte(preimageProvision.BlobString)
-		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKey{
-			Preimage:   blake2b.Sum256(preimageBytes),
-			BlobLength: types.BlobLength(len(preimageBytes)),
-		}
+		blob := []byte(preimageProvision.BlobString)
+		preimage := blake2b.Sum256(blob)
+		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(preimage, types.BlobLength(len(blob)))
 		serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey] = []types.Timeslot{timeslot}
-		serviceAccount.PreimageLookup[preimageLookupHistoricalStatusKey.Preimage] = types.Blob(preimageBytes)
+		serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(preimage)] = types.Blob(blob)
 	}
 
 	// Get the components from privileged services

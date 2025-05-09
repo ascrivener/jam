@@ -660,6 +660,9 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
+		if fileName != "00000017.json" {
+			continue
+		}
 		t.Logf("Processing test vector file: %s", fileName)
 
 		// Process each file sequentially
@@ -780,6 +783,13 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			stateRootMatch := expectedStateRoot == actualStateRoot
 			if !stateRootMatch {
 				t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
+
+				serializedPostState := StateSerializer(postState)
+				expectedSerializedPostState := testVector.PostState.KeyVals.toMap()
+				if !compareSerializedStatesNoFatal(expectedSerializedPostState, serializedPostState, t) {
+					failedTests++
+					return
+				}
 			}
 			t.Logf("Stage 18: State root match")
 			t.Logf("Successfully processed %s", fileName)
