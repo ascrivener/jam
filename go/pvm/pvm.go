@@ -167,6 +167,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 
 func (pvm *PVM) Ψ() ExitReason {
 	for {
+		pvm.State.Gas -= types.SignedGasValue(1)
 		exitReason := pvm.SingleStep()
 		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
 			// Continue executing if the exit reason is still "go".
@@ -191,6 +192,9 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 			pvm.State.RAM.ClearRollbackLog()
 			return exitReason
 		}
+
+		// quite hacky.. basically re-add the gas that was subtracted in Ψ for the host call.
+		pvm.State.Gas += types.SignedGasValue(1)
 
 		hostCall := exitReason.ComplexExitReason.Parameter
 		stateBeforeHostCall := *pvm.State
