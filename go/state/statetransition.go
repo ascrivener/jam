@@ -678,6 +678,8 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		posteriorValidatorStatistics.CoreStatistics[cIndex] = coreStats
 	}
 
+	posteriorValidatorStatistics.ServiceStatistics = make(map[types.ServiceIndex]validatorstatistics.ServiceStatistics)
+
 	trackedServiceIndices := map[types.ServiceIndex]struct{}{}
 	for _, guarantee := range guarantees {
 		for _, workDigest := range guarantee.WorkReport.WorkDigests {

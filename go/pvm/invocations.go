@@ -186,13 +186,14 @@ func SelectDeferredTransfers(deferredTransfers []DeferredTransfer, serviceIndex 
 	return selectedDeferredTransfers
 }
 
+// TODO: this order is NOT what it is in the gray paper
 type OperandTuple struct { // O
 	WorkPackageHash       [32]byte                  // h
 	SegmentRoot           [32]byte                  // e
 	AuthorizerHash        [32]byte                  // a
 	WorkReportOutput      []byte                    // o
 	WorkResultPayloadHash [32]byte                  // y
-	GasLimit              types.GasValue            // g
+	GasLimit              types.GenericGasValue     // g
 	ExecutionExitReason   types.ExecutionExitReason // d
 }
 
@@ -254,6 +255,7 @@ func AccumulationResultContextFromAccumulationStateComponents(accumulationStateC
 		DerivedServiceIndex:      derivedServiceIndex,
 		DeferredTransfers:        []DeferredTransfer{},
 		PreimageResult:           nil,
+		PreimageProvisions:       PreimageProvisions{},
 	}
 }
 

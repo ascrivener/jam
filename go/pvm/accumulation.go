@@ -27,7 +27,7 @@ func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateCom
 					AuthorizerHash:        report.AuthorizerHash,
 					WorkReportOutput:      report.Output,
 					WorkResultPayloadHash: workDigest.PayloadHash,
-					GasLimit:              workDigest.AccumulateGasLimit,
+					GasLimit:              types.GenericGasValue(workDigest.AccumulateGasLimit),
 					ExecutionExitReason:   workDigest.WorkResult,
 				})
 			}
