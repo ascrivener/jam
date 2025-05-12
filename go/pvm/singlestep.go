@@ -151,10 +151,10 @@ func djump(a uint32, instructionCounter types.Register, dynamicJumpTable []types
 		return NewSimpleExitReason(ExitHalt), instructionCounter
 	}
 
-	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%constants.DynamicAddressAlignmentFactor != 0 {
+	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
 		return NewSimpleExitReason(ExitPanic), instructionCounter
 	}
-	nextInstructionCounter := dynamicJumpTable[a/constants.DynamicAddressAlignmentFactor-1]
+	nextInstructionCounter := dynamicJumpTable[a/uint32(constants.DynamicAddressAlignmentFactor)-1]
 	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
 	if !exists {
 		return NewSimpleExitReason(ExitPanic), instructionCounter

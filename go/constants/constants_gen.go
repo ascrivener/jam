@@ -33,7 +33,7 @@ var testConstants = map[string]int{
 	"NumValidators":                                     6,
 	"NumTicketEntries":                                  3,
 	"NumTimeslotsPerEpoch":                              12,
-	"TicketSubmissionEndingSlotPhaseNumber":             500,
+	"TicketSubmissionEndingSlotPhaseNumber":             10,
 	"NumCores":                                          2,
 	"AuthorizerQueueLength":                             80,
 	"MaxItemsInAuthorizationsPool":                      8,

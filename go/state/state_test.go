@@ -27,7 +27,7 @@ import (
 // Define a struct to match the JSON structure
 type ValidatorEntry struct {
 	Bandersnatch string `json:"bandersnatch"`
-	Ed25519      string `json:"ed25519,omitempty"` // Optional
+	Ed25519      string `json:"ed25519"`
 }
 
 type EpochMark struct {
@@ -36,17 +36,25 @@ type EpochMark struct {
 	Validators     []ValidatorEntry `json:"validators"`
 }
 
+type TicketMark struct {
+	ID      string `json:"id"`
+	Attempt uint64 `json:"attempt"`
+}
+
+type OffenderMark struct {
+}
+
 type BlockHeader struct {
-	Parent          string        `json:"parent"`
-	ParentStateRoot string        `json:"parent_state_root"`
-	ExtrinsicHash   string        `json:"extrinsic_hash"`
-	Slot            int           `json:"slot"`
-	AuthorIndex     int           `json:"author_index"`
-	EntropySource   string        `json:"entropy_source"`
-	Seal            string        `json:"seal"`
-	EpochMark       *EpochMark    `json:"epoch_mark"`
-	OffendersMark   []interface{} `json:"offenders_mark"`
-	TicketsMark     interface{}   `json:"tickets_mark"`
+	Parent          string         `json:"parent"`
+	ParentStateRoot string         `json:"parent_state_root"`
+	ExtrinsicHash   string         `json:"extrinsic_hash"`
+	Slot            int            `json:"slot"`
+	AuthorIndex     int            `json:"author_index"`
+	EntropySource   string         `json:"entropy_source"`
+	Seal            string         `json:"seal"`
+	EpochMark       *EpochMark     `json:"epoch_mark"`
+	OffendersMark   []OffenderMark `json:"offenders_mark"`
+	TicketsMark     *[]TicketMark  `json:"tickets_mark"`
 }
 
 type Disputes struct {
@@ -660,7 +668,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName != "00000017.json" {
+		if fileName != "00000024.json" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
@@ -935,53 +943,13 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		BandersnatchBlockAuthorIndex: types.ValidatorIndex(blockJSON.Header.AuthorIndex),
 		VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.EntropySource)),
 		BlockSeal:                    types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
+		EpochMarker:                  convertEpochMark(blockJSON.Header.EpochMark),
+		WinningTicketsMarker:         convertTicketsMark(blockJSON.Header.TicketsMark),
+		OffendersMarker:              []types.Ed25519PublicKey{},
 	}
 
-	if blockJSON.Header.EpochMark != nil {
-		// Convert validators
-		var validatorKeys [constants.NumValidators]struct {
-			types.BandersnatchPublicKey
-			types.Ed25519PublicKey
-		}
-		for i, v := range blockJSON.Header.EpochMark.Validators {
-			validatorKeys[i] = struct {
-				types.BandersnatchPublicKey
-				types.Ed25519PublicKey
-			}{
-				types.BandersnatchPublicKey(hexToHashMust(v.Bandersnatch)),
-				types.Ed25519PublicKey(hexToHashMust(v.Ed25519)),
-			}
-		}
-
-		// Set up epoch mark
-		blockHeader.EpochMarker = &header.EpochMarker{
-			CurrentEpochRandomness: hexToHashMust(blockJSON.Header.EpochMark.Entropy),
-			TicketsRandomness:      hexToHashMust(blockJSON.Header.EpochMark.TicketsEntropy),
-			ValidatorKeys:          validatorKeys,
-		}
-	}
-
-	// Handle OffendersMark if present
-	offenders := make([]types.Ed25519PublicKey, 0)
-	for _, offender := range blockJSON.Header.OffendersMark {
-		// Convert offender to string if possible, otherwise skip
-		if offenderMap, ok := offender.(map[string]interface{}); ok {
-			if ed25519Str, ok := offenderMap["ed25519"].(string); ok {
-				var key types.Ed25519PublicKey
-				copy(key[:], hexToBytes(ed25519Str))
-				offenders = append(offenders, key)
-			}
-		}
-	}
-	blockHeader.OffendersMarker = offenders
-
-	blockHeader.WinningTicketsMarker = nil
-
-	// Handle WinningTicketsMarker if present
-	if blockJSON.Header.TicketsMark != nil {
-		// Initialize with empty tickets to satisfy the type
-		var tickets [constants.NumTimeslotsPerEpoch]header.Ticket
-		blockHeader.WinningTicketsMarker = &tickets
+	if len(blockJSON.Header.OffendersMark) > 0 {
+		panic("Offenders marker not implemented")
 	}
 
 	// Convert extrinsic part (simplified for now)
@@ -1110,5 +1078,49 @@ func convertDisputes(disputesJSON Disputes) extrinsics.Disputes {
 		Verdicts: []extrinsics.Verdict{},
 		Culprits: []extrinsics.Culprit{},
 		Faults:   []extrinsics.Fault{},
+	}
+}
+
+func convertTicketsMark(ticketsMarkJSON *[]TicketMark) *([constants.NumTimeslotsPerEpoch]header.Ticket) {
+	tickets := [constants.NumTimeslotsPerEpoch]header.Ticket{}
+
+	if ticketsMarkJSON == nil {
+		return nil
+	}
+
+	for i, t := range *ticketsMarkJSON {
+		tickets[i] = header.Ticket{
+			EntryIndex:                 types.TicketEntryIndex(t.Attempt),
+			VerifiablyRandomIdentifier: hexToHashMust(t.ID),
+		}
+	}
+
+	return &tickets
+}
+
+func convertEpochMark(epochMarkJSON *EpochMark) *header.EpochMarker {
+	if epochMarkJSON == nil {
+		return nil
+	}
+
+	validatorKeys := [constants.NumValidators]struct {
+		types.BandersnatchPublicKey
+		types.Ed25519PublicKey
+	}{}
+
+	for i, v := range epochMarkJSON.Validators {
+		validatorKeys[i] = struct {
+			types.BandersnatchPublicKey
+			types.Ed25519PublicKey
+		}{
+			types.BandersnatchPublicKey(hexToHashMust(v.Bandersnatch)),
+			types.Ed25519PublicKey(hexToHashMust(v.Ed25519)),
+		}
+	}
+
+	return &header.EpochMarker{
+		CurrentEpochRandomness: hexToHashMust(epochMarkJSON.Entropy),
+		TicketsRandomness:      hexToHashMust(epochMarkJSON.TicketsEntropy),
+		ValidatorKeys:          validatorKeys,
 	}
 }

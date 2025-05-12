@@ -1024,11 +1024,11 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				break
 			}
 			serialized := serializer.Serialize(struct {
-				WorkPackage wp.WorkPackage
-				Blob        []byte
+				CodeHash [32]byte
+				Blob     []byte
 			}{
-				WorkPackage: *workPackage,
-				Blob:        workPackage.ParameterizationBlob,
+				CodeHash: workPackage.AuthorizationCodeHash,
+				Blob:     workPackage.ParameterizationBlob,
 			})
 			preimage = &serialized
 		case 9:
