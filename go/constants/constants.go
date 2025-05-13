@@ -2,11 +2,9 @@
 // Generated from network: tiny
 package constants
 
-const NumValidators uint16 = 6 // V
+const NumTicketEntries int = 3
 
-const NumTimeslotsPerEpoch uint32 = 12 // E
-
-const AuthorizerQueueLength uint16 = 80 // Q
+const TicketSubmissionEndingSlotPhaseNumber uint32 = 10 // Y
 
 const MaxItemsInAuthorizationsPool uint16 = 8 // O
 
@@ -14,70 +12,68 @@ const ValidatorCoreAssignmentsRotationPeriodInTimeslots uint16 = 4 // R
 
 const SegmentSize uint32 = 4104 // W_G
 
-const ErasureCodedPiecesInSegment uint32 = 1026 // W_P
-
-const NumCores uint16 = 2 // C
-
-const NumTicketEntries int = 3
-
-const TicketSubmissionEndingSlotPhaseNumber uint32 = 10 // Y
-
-const MaxTicketsPerExtrinsic uint16 = 3 // K
-
 const ErasureCodedPiecesSize uint32 = 4 // W_E
+
+const ErasureCodedPiecesInSegment uint32 = 1026 // W_P
 
 const UnreferencePreimageExpungeTimeslots uint32 = 6 // D
 
+const NumValidators uint16 = 6 // V
+
+const NumCores uint16 = 2 // C
+
+const NumTimeslotsPerEpoch uint32 = 12 // E
+
+const MaxTicketsPerExtrinsic uint16 = 3 // K
+
+const AuthorizerQueueLength uint16 = 80 // Q
+
 // Additional constants
-const ServiceMinimumBalance uint64 = 100 // B_S
+const IsAuthorizedCodeMaxSizeOctets uint32 = 64000 // W_A
 
-const ServiceMinimumBalancePerItem uint64 = 10 // B_I
+const ServiceCodeMaxSize uint32 = 4000000 // W_C
 
-const UnavailableWorkTimeoutTimeslots uint16 = 5 // U
-
-const SingleAccumulationAllocatedGas uint64 = 10000000 // G_A
+const RecentHistorySizeBlocks uint16 = 8 // H
 
 const AccumulationQueueMaxEntries uint16 = 1024 // S
 
 const IsAuthorizedGasAllocation uint64 = 50000000 // G_I
 
-const RefineGasAllocation uint64 = 5000000000 // G_R
-
-const WorkPackageManifestMaxEntries int = (1 << 11)
-
-const MaxExtrinsicsInWorkPackage uint16 = 128 // T
-
-const IsAuthorizedCodeMaxSizeOctets uint32 = 64000 // W_A
-
-const TotalAccumulationAllocatedGas int = 3500000000
-
-const RecentHistorySizeBlocks uint16 = 8 // H
-
-const DynamicAddressAlignmentFactor int = 2
-
 const MaxImportsInWorkPackage uint32 = 3072 // W_M
-
-const TransferMemoSize uint32 = 128 // W_T
 
 const MaxExportsInWorkPackage uint32 = 3072 // W_X
 
-const ServiceCodeMaxSize uint32 = 4000000 // W_C
+const LookupAnchorMaxAgeTimeslots uint32 = 14400 // L
+
+const ServiceMinimumBalance uint64 = 100 // B_S
 
 const MaxSumDependencyItemsInReport uint16 = 8 // J
 
+const RefineGasAllocation uint64 = 5000000000 // G_R
+
 const AllAccumulationTotalGasAllocation uint64 = 3500000000 // G_T
 
-const LookupAnchorMaxAgeTimeslots uint32 = 14400 // L
-
-const SlotPeriodInSeconds uint16 = 6 // P
-
-const MaxSizeEncodedWorkPackage uint32 = 12 << 20 // W_B
+const MaxExtrinsicsInWorkPackage uint16 = 128 // T
 
 const ServiceMinimumBalancePerOctet uint64 = 1 // B_L
 
+const DynamicAddressAlignmentFactor int = 2 // Z_A
+
+const TransferMemoSize uint32 = 128 // W_T
+
+const MaxSizeEncodedWorkPackage uint32 = 12 << 20 // W_B
+
+const ServiceMinimumBalancePerItem uint64 = 10 // B_I
+
+const UnavailableWorkTimeoutTimeslots uint16 = 5 // U
+
 const MaxWorkItemsInPackage uint16 = 16 // I
 
+const SingleAccumulationAllocatedGas uint64 = 10000000 // G_A
+
 const MaxTotalSizeWorkReportBlobs uint32 = 48 << 10 // W_R
+
+const SlotPeriodInSeconds uint16 = 6 // P
 
 // Derived constants
 const TwoThirdsNumValidators uint16 = 2 * NumValidators / 3

@@ -668,7 +668,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName != "00000024.json" {
+		if fileName != "00000026.json" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)

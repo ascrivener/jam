@@ -185,8 +185,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		vz := ctx.State.Registers[10] // Value length
 
 		// Check if key memory range is accessible
-		keyValid := !ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap)
-		if !keyValid {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
@@ -200,20 +199,6 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		copy(keyArray[:], h[:])
 
 		key := serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)
-		// Handle according to vz (value length)
-		if vz == 0 {
-			// If vz = 0, remove entry
-			delete(serviceAccount.StorageDictionary, key)
-		} else {
-			// Check if value memory range is accessible
-			if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
-				return NewSimpleExitReason(ExitPanic)
-			}
-
-			// Write the value to the account storage
-			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			serviceAccount.StorageDictionary[key] = valueBytes
-		}
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
@@ -223,7 +208,26 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 			l = types.Register(HostCallNone)
 		}
 
+		oldValue, ok := serviceAccount.StorageDictionary[key]
+
+		// Handle according to vz (value length)
+		if vz == 0 {
+			// If vz = 0, remove entry
+			delete(serviceAccount.StorageDictionary, key)
+		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		} else {
+			// Write the value to the account storage
+			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
+			serviceAccount.StorageDictionary[key] = valueBytes
+		}
+
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
+			if !ok {
+				delete(serviceAccount.StorageDictionary, key)
+			} else {
+				serviceAccount.StorageDictionary[key] = oldValue
+			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 		} else {
 			ctx.State.Registers[7] = l
@@ -235,13 +239,13 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 
 // AccountInfo represents the structured account information for serialization
 type AccountInfo struct {
-	CodeHash                       [32]byte                                                              // c
-	Balance                        types.Balance                                                         // b
-	ThresholdBalanceNeeded         types.Balance                                                         // t
-	MinimumGasForAccumulate        types.GasValue                                                        // g
-	MinimumGasForOnTransfer        types.GasValue                                                        // m
-	PreimageLookupHistoricalStatus map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot // l
-	StorageItems                   uint32                                                                // i
+	CodeHash                 [32]byte       // c
+	Balance                  types.Balance  // b
+	ThresholdBalanceNeeded   types.Balance  // t
+	MinimumGasForAccumulate  types.GasValue // g
+	MinimumGasForOnTransfer  types.GasValue // m
+	TotalOctetsUsedInStorage uint64         // o
+	StorageItems             uint32         // i
 }
 
 func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
@@ -267,13 +271,13 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 		if targetAccount != nil {
 			// Create struct with account information
 			accountInfo := AccountInfo{
-				CodeHash:                       targetAccount.CodeHash,
-				Balance:                        targetAccount.Balance,
-				ThresholdBalanceNeeded:         targetAccount.ThresholdBalanceNeeded(),
-				MinimumGasForAccumulate:        targetAccount.MinimumGasForAccumulate,
-				MinimumGasForOnTransfer:        targetAccount.MinimumGasForOnTransfer,
-				PreimageLookupHistoricalStatus: targetAccount.PreimageLookupHistoricalStatus,
-				StorageItems:                   targetAccount.TotalItemsUsedInStorage(),
+				CodeHash:                 targetAccount.CodeHash,
+				Balance:                  targetAccount.Balance,
+				ThresholdBalanceNeeded:   targetAccount.ThresholdBalanceNeeded(),
+				MinimumGasForAccumulate:  targetAccount.MinimumGasForAccumulate,
+				MinimumGasForOnTransfer:  targetAccount.MinimumGasForOnTransfer,
+				TotalOctetsUsedInStorage: targetAccount.TotalOctetsUsedInStorage(),
+				StorageItems:             targetAccount.TotalItemsUsedInStorage(),
 			}
 
 			// Serialize the account information
@@ -403,7 +407,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason
 
 		// Calculate total size needed for validator keysets
 		// Each validator keyset is 336 bytes, and we need constants.NumValidators of them
-		totalSize := uint64(336 * constants.NumValidators)
+		totalSize := uint64(336 * uint64(constants.NumValidators))
 
 		// Check if memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
@@ -1132,7 +1136,7 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(z), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
-		if exportSegmentOffset+len(ctx.Argument.ExportSequence) >= constants.WorkPackageManifestMaxEntries {
+		if exportSegmentOffset+len(ctx.Argument.ExportSequence) >= int(constants.MaxExportsInWorkPackage) {
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 			return NewSimpleExitReason(ExitGo)
 		}

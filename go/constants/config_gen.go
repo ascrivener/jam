@@ -1,6 +1,8 @@
 //go:build ignore
 // +build ignore
 
+// run : go run config_gen.go -network tiny
+
 package main
 
 import (
@@ -53,20 +55,18 @@ var additionalConstants = map[string]map[string]string{
 	"ServiceMinimumBalance":             {"type": "uint64", "value": "100", "comment": "B_S"},
 	"ServiceMinimumBalancePerItem":      {"type": "uint64", "value": "10", "comment": "B_I"},
 	"ServiceMinimumBalancePerOctet":     {"type": "uint64", "value": "1", "comment": "B_L"},
-	"TotalAccumulationAllocatedGas":     {"type": "int", "value": "3500000000", "comment": ""},
 	"RecentHistorySizeBlocks":           {"type": "uint16", "value": "8", "comment": "H"},
 	"UnavailableWorkTimeoutTimeslots":   {"type": "uint16", "value": "5", "comment": "U"},
 	"MaxWorkItemsInPackage":             {"type": "uint16", "value": "16", "comment": "I"},
 	"MaxSumDependencyItemsInReport":     {"type": "uint16", "value": "8", "comment": "J"},
 	"SingleAccumulationAllocatedGas":    {"type": "uint64", "value": "10000000", "comment": "G_A"},
 	"AccumulationQueueMaxEntries":       {"type": "uint16", "value": "1024", "comment": "S"},
-	"DynamicAddressAlignmentFactor":     {"type": "int", "value": "2", "comment": ""},
+	"DynamicAddressAlignmentFactor":     {"type": "int", "value": "2", "comment": "Z_A"},
 	"IsAuthorizedGasAllocation":         {"type": "uint64", "value": "50000000", "comment": "G_I"},
 	"RefineGasAllocation":               {"type": "uint64", "value": "5000000000", "comment": "G_R"},
 	"AllAccumulationTotalGasAllocation": {"type": "uint64", "value": "3500000000", "comment": "G_T"},
 	"MaxImportsInWorkPackage":           {"type": "uint32", "value": "3072", "comment": "W_M"},
 	"MaxTotalSizeWorkReportBlobs":       {"type": "uint32", "value": "48 << 10", "comment": "W_R"},
-	"WorkPackageManifestMaxEntries":     {"type": "int", "value": "(1 << 11)", "comment": ""},
 	"TransferMemoSize":                  {"type": "uint32", "value": "128", "comment": "W_T"},
 	"MaxExportsInWorkPackage":           {"type": "uint32", "value": "3072", "comment": "W_X"},
 	"LookupAnchorMaxAgeTimeslots":       {"type": "uint32", "value": "14400", "comment": "L"},
@@ -75,27 +75,29 @@ var additionalConstants = map[string]map[string]string{
 
 func main() {
 	// Define command line flags
-	networkFlag := flag.String("network", "tiny", "Network to generate constants for (e.g., tiny, production)")
-	configPathFlag := flag.String("config-path", "", "Path to the external config file")
+	networkFlag := flag.String("network", "tiny", "Network to generate constants for (e.g., tiny, full)")
+	configPathFlag := flag.String("config-path", "", "Path to the external config file (optional, will be auto-determined if not provided)")
 	outputFileFlag := flag.String("output", "constants.go", "Output file path")
 
 	flag.Parse()
 
-	if *configPathFlag == "" {
-		fmt.Println("Error: config-path is required")
-		flag.Usage()
-		os.Exit(1)
+	// Auto-determine config path if not provided
+	configPath := *configPathFlag
+	if configPath == "" {
+		// Default path pattern for config files
+		configPath = fmt.Sprintf("../../../jamtestnet/chainspecs/configs/config_%s.go", *networkFlag)
+		fmt.Printf("Auto-determined config path: %s\n", configPath)
 	}
 
 	// Parse the specified config file
-	config, err := parseConfigFile(*configPathFlag)
+	config, err := parseConfigFile(configPath)
 	if err != nil {
-		fmt.Printf("Error parsing config file %s: %v\n", *configPathFlag, err)
+		fmt.Printf("Error parsing config file %s: %v\n", configPath, err)
 		os.Exit(1)
 	}
 
 	if config == nil {
-		fmt.Printf("Error: Could not extract constants from %s\n", *configPathFlag)
+		fmt.Printf("Error: Could not extract constants from %s\n", configPath)
 		os.Exit(1)
 	}
 
