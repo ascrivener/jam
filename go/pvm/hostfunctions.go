@@ -86,11 +86,11 @@ type HostFunction[T any] func(HostFunctionIdentifier, *HostFunctionContext[T]) E
 
 const GasUsage types.GasValue = 10
 
-func Gas(state *State, args ...any) ExitReason {
-	if state.Gas < 0 {
-		return NewSimpleExitReason(ExitOutOfGas)
-	}
-	return NewSimpleExitReason(ExitGo)
+func Gas(ctx *HostFunctionContext[struct{}], args ...any) ExitReason {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
+		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
+		return NewSimpleExitReason(ExitGo)
+	})
 }
 
 // VerifyAndReturnStateForAccessor implements the state lookup host function
@@ -538,6 +538,7 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 }
 
 func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+	ctx.State.Gas -= types.SignedGasValue(ctx.State.Registers[9])
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract parameters from registers [d, a, l, o] = ω7⋅⋅⋅+4
 		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
@@ -1541,9 +1542,9 @@ func withGasCheck[T any](
 	ctx *HostFunctionContext[T],
 	fn func(*HostFunctionContext[T]) ExitReason,
 ) ExitReason {
-	exitReason := Gas(ctx.State)
-	if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitOutOfGas {
-		return exitReason
+	ctx.State.Gas -= types.SignedGasValue(GasUsage)
+	if ctx.State.Gas < 0 {
+		return NewSimpleExitReason(ExitOutOfGas)
 	}
 	return fn(ctx)
 }

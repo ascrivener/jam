@@ -16,10 +16,9 @@ import (
 
 func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.ExecutionExitReason, types.GasValue) {
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) ExitReason {
-		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case GasID:
-			return Gas(ctx.State, struct{}{})
+			return Gas(ctx, struct{}{})
 		case FetchID:
 			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil, nil)
 		default:
@@ -61,7 +60,6 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
-		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case HistoricalLookupID:
 			return HistoricalLookup(ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
@@ -72,7 +70,9 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		case ExportID:
 			return Export(ctx, exportSegmentOffset)
 		case GasID:
-			return Gas(ctx.State, struct{}{})
+			return Gas(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{}}, struct{}{})
 		case MachineID:
 			return Machine(ctx)
 		case PeekID:
@@ -279,8 +279,6 @@ type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
 func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
-		// Remember to use g = 10 + w9 for transfer
-		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case ReadID:
 			return Read(&HostFunctionContext[struct{}]{
@@ -298,7 +296,10 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 				Argument: &struct{}{},
 			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
 		case GasID:
-			return Gas(ctx.State, struct{}{})
+			return Gas(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		case FetchID:
 			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, &operandTuples, nil)
 		case InfoID:
@@ -318,7 +319,6 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:
-			ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(ctx.State.Registers[9])
 			return Transfer(ctx)
 		case EjectID:
 			return Eject(ctx, timeslot)
@@ -376,7 +376,6 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 
 func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
-		ctx.State.Gas = ctx.State.Gas - types.SignedGasValue(GasUsage)
 		switch n {
 		case LookupID:
 			return Lookup(&HostFunctionContext[struct{}]{
@@ -394,7 +393,10 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 				Argument: &struct{}{},
 			}, ctx.Argument, serviceIndex)
 		case GasID:
-			return Gas(ctx.State, struct{}{})
+			return Gas(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		case FetchID:
 			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, nil, &deferredTransfers)
 		case InfoID:
