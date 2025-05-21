@@ -186,15 +186,14 @@ func SelectDeferredTransfers(deferredTransfers []DeferredTransfer, serviceIndex 
 	return selectedDeferredTransfers
 }
 
-// TODO: this order is NOT what it is in the gray paper
 type OperandTuple struct { // O
 	WorkPackageHash       [32]byte                  // h
 	SegmentRoot           [32]byte                  // e
 	AuthorizerHash        [32]byte                  // a
-	WorkReportOutput      []byte                    // o
 	WorkResultPayloadHash [32]byte                  // y
 	GasLimit              types.GenericGasValue     // g
 	ExecutionExitReason   types.ExecutionExitReason // d
+	WorkReportOutput      []byte                    // o
 }
 
 type PreimageProvisions map[struct {
@@ -353,13 +352,13 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		ExceptionalAccumulationResultContext: *exceptionalContext,
 	}
 	serializedArguments := serializer.Serialize(struct {
-		Timeslot      types.Timeslot
-		ServiceIndex  types.ServiceIndex
-		OperandTuples []OperandTuple
+		Timeslot         types.GenericNum
+		ServiceIndex     types.GenericNum
+		OperandTuplesLen types.GenericNum
 	}{
-		Timeslot:      timeslot,
-		ServiceIndex:  serviceIndex,
-		OperandTuples: operandTuples,
+		Timeslot:         types.GenericNum(timeslot),
+		ServiceIndex:     types.GenericNum(serviceIndex),
+		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
 	executionExitReason, gasUsed := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
 	if executionExitReason.IsError() {
@@ -423,13 +422,13 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		return serviceAccount, 0
 	}
 	_, gas := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
-		Timeslot          types.Timeslot
-		ServiceIndex      types.ServiceIndex
-		DeferredTransfers []DeferredTransfer
+		Timeslot             types.GenericNum
+		ServiceIndex         types.GenericNum
+		DeferredTransfersLen types.GenericNum
 	}{
-		Timeslot:          timeslot,
-		ServiceIndex:      serviceIndex,
-		DeferredTransfers: deferredTransfers,
+		Timeslot:             types.GenericNum(timeslot),
+		ServiceIndex:         types.GenericNum(serviceIndex),
+		DeferredTransfersLen: types.GenericNum(len(deferredTransfers)),
 	}), hf, serviceAccount)
 	return serviceAccount, gas
 }
