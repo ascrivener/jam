@@ -166,23 +166,27 @@ func (h *BlockHandler) processMessage(msg Message) error {
 		// In the block announcement protocol, each leaf is:
 		// Leaf = Header Hash ++ Slot
 
-		// However, in our current implementation, leaves are encoded as:
-		// headerLen (uint32) followed by the header bytes
-
-		// So we continue using our existing logic to parse the header
-		headerLen, err := DecodeUint32(msg, &offset)
-		if err != nil {
-			return fmt.Errorf("failed to decode header length: %w", err)
+		// Check if we have enough bytes for the header hash and slot
+		if offset+32+4 > len(msg) {
+			return fmt.Errorf("message truncated: not enough bytes for leaf %d", i)
 		}
 
-		fmt.Printf("Leaf %d: header length %d\n", i, headerLen)
+		// Extract header hash (32 bytes)
+		headerHash := [32]byte{}
+		copy(headerHash[:], msg[offset:offset+32])
+		offset += 32
 
-		header, err := DecodeBytes(msg, &offset, int(headerLen))
-		if err != nil {
-			return fmt.Errorf("failed to decode header: %w", err)
-		}
+		// Extract header slot (uint32)
+		headerSlot := binary.LittleEndian.Uint32(msg[offset : offset+4])
+		offset += 4
 
-		fmt.Printf("Leaf %d: header first 8 bytes %x\n", i, header[:min(8, len(header))])
+		fmt.Printf("Leaf %d: header hash %x, slot %d\n", i, headerHash, headerSlot)
+
+		// Create a simple header with the hash and slot
+		// For the BlockHandler, we'll use a binary format that includes both
+		header := make([]byte, 36)
+		copy(header[:32], headerHash[:])
+		binary.LittleEndian.PutUint32(header[32:], headerSlot)
 
 		// Handle the new block header
 		if h.handler != nil {

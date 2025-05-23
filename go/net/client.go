@@ -51,7 +51,14 @@ func NewClient(config Config) (*Client, error) {
 	}
 
 	// Generate TLS certificate
-	tlsConfig, err := generateTLSConfig(config.PublicKey, config.PrivateKey, config.Version, config.ChainHash, config.IsBuilder, config.Insecure)
+	tlsConfig, err := generateTLSConfig(
+		config.PublicKey,
+		config.PrivateKey,
+		config.Version,
+		config.ChainHash,
+		config.IsBuilder,
+		config.Insecure,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
 	}

@@ -23,7 +23,7 @@ func generateTLSConfig(pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, ver
 	// Debug: Log the public key for troubleshooting
 	log.Printf("Ed25519 Public Key: %s", hex.EncodeToString(pubKey))
 
-	// Create certificate
+	// Create certificate dynamically
 	certDER, err := generateCertificate(pubKey, privKey)
 	if err != nil {
 		return nil, err
@@ -47,29 +47,42 @@ func generateTLSConfig(pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, ver
 		}
 	}
 
-	// Create leaf certificate
-	leaf, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse certificate: %w", err)
+	// Create certificate for TLS
+	certForTLS := tls.Certificate{
+		Certificate: [][]byte{certDER},
+		PrivateKey:  privKey,
 	}
 
 	// Construct ALPN identifier
-	alpn := fmt.Sprintf("jamnp-s/%s/%s", version, chainHash)
-	if isBuilder {
-		alpn += "/builder"
-	}
+	var alpnIdentifiers []string
+
+	// Try all possible ALPN format variations
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp-s/0/dev")                        // Dev testnet format
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp-s/0/DEV")                        // Uppercase variant
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp-s")                              // Base protocol only
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp-s/dev")                          // Without version
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp-s/0")                            // Version only
+	alpnIdentifiers = append(alpnIdentifiers, fmt.Sprintf("jamnp-s/0/%s", chainHash)) // With provided chain hash
+
+	// Additional formats used by some implementations
+	alpnIdentifiers = append(alpnIdentifiers, "jam")      // Just "jam"
+	alpnIdentifiers = append(alpnIdentifiers, "jamnp")    // Just "jamnp"
+	alpnIdentifiers = append(alpnIdentifiers, "polkajam") // Just "polkajam"
+	alpnIdentifiers = append(alpnIdentifiers, "h3")       // HTTP/3 (some QUIC implementations default to this)
+
+	log.Printf("Trying %d ALPN identifiers: %v", len(alpnIdentifiers), alpnIdentifiers)
 
 	// In insecure mode, use a very minimal TLS config
 	if insecure {
 		log.Println("Using insecure TLS configuration")
-		// For testing only - use the absolute minimum TLS configuration that will work
+		// For testing only - use the minimum TLS configuration that will work while still properly presenting our identity
 		return &tls.Config{
-			Certificates:       []tls.Certificate{{Certificate: [][]byte{certDER}, PrivateKey: privKey}},
-			NextProtos:         []string{alpn},
+			Certificates:       []tls.Certificate{certForTLS},
+			NextProtos:         alpnIdentifiers,
 			MinVersion:         tls.VersionTLS13,
 			InsecureSkipVerify: true,
-			// Important: Do not validate client certificates at all in test mode
-			ClientAuth: tls.NoClientCert,
+			// Still require server certificates, but don't validate them
+			ClientAuth: tls.RequireAnyClientCert,
 			// Do not attempt to verify the peer name
 			VerifyConnection: func(tls.ConnectionState) error {
 				return nil
@@ -79,6 +92,14 @@ func generateTLSConfig(pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, ver
 			// Add debug callback for TLS handshake
 			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 				log.Println("Client verifying peer certificate in insecure mode (should always pass)")
+				// Log the certificate details but don't reject
+				if len(rawCerts) > 0 {
+					cert, err := x509.ParseCertificate(rawCerts[0])
+					if err == nil {
+						log.Printf("Server certificate (not validated): Subject=%s, Issuer=%s",
+							cert.Subject.CommonName, cert.Issuer.CommonName)
+					}
+				}
 				return nil
 			},
 		}, nil
@@ -87,18 +108,39 @@ func generateTLSConfig(pubKey ed25519.PublicKey, privKey ed25519.PrivateKey, ver
 	// Create TLS config for secure mode
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{
-			{
-				Certificate: [][]byte{certDER},
-				PrivateKey:  privKey,
-				Leaf:        leaf,
-			},
+			certForTLS,
 		},
-		NextProtos:             []string{alpn},
+		NextProtos:             alpnIdentifiers,
 		MinVersion:             tls.VersionTLS13,
 		CurvePreferences:       []tls.CurveID{tls.X25519},
 		SessionTicketsDisabled: true,
 		// JAMNP-S requires client and server certificates
 		ClientAuth: tls.RequireAnyClientCert,
+		// Add detailed handshake callback for debugging
+		VerifyConnection: func(state tls.ConnectionState) error {
+			log.Printf("=== TLS HANDSHAKE COMPLETE ===")
+			log.Printf("Protocol version: %x", state.Version)
+			log.Printf("Cipher suite: %x", state.CipherSuite)
+			log.Printf("Negotiated protocol: %s", state.NegotiatedProtocol)
+			log.Printf("Server name: %s", state.ServerName)
+			log.Printf("Peer certificates: %d", len(state.PeerCertificates))
+
+			if len(state.PeerCertificates) > 0 {
+				cert := state.PeerCertificates[0]
+				log.Printf("Peer certificate details:")
+				log.Printf("  Subject: %s", cert.Subject.CommonName)
+				log.Printf("  Issuer: %s", cert.Issuer.CommonName)
+				log.Printf("  Valid from: %s", cert.NotBefore)
+				log.Printf("  Valid until: %s", cert.NotAfter)
+				log.Printf("  DNS names: %v", cert.DNSNames)
+
+				if pubKey, ok := cert.PublicKey.(ed25519.PublicKey); ok {
+					log.Printf("  Public key: %x", pubKey)
+				}
+			}
+
+			return nil
+		},
 	}
 
 	// Only verify certificates if not in insecure mode
@@ -207,17 +249,24 @@ func generateCertificate(pubKey ed25519.PublicKey, privKey ed25519.PrivateKey) (
 
 	// Create self-signed certificate
 	return x509.CreateCertificate(rand.Reader, template, template, pubKey, privKey)
+
 }
 
 // generateAlternativeName computes the alternative name as specified in the protocol
 // It implements the N(k) function from the specification
 func generateAlternativeName(pubKey ed25519.PublicKey) string {
+
 	// Log the public key bytes for debugging
 	log.Printf("Input to alternative name generation: %x", pubKey)
 
 	// Deserialize public key to a uint256
 	n := deserializeUint256(pubKey)
-	log.Printf("Deserialized uint256: %s", n.Text(16))
+	log.Printf("Deserialized uint256 (hex): %s", n.Text(16))
+	log.Printf("Deserialized uint256 (decimal): %s", n.String())
+
+	// Serialize uint256 back to a 32-byte array
+	serialized := serializeUint256(n)
+	log.Printf("Serialized uint256: %x", serialized)
 
 	// Apply the B(n, l) function with l=52
 	const alphabet = "abcdefghijklmnopqrstuvwxyz234567"
@@ -228,42 +277,67 @@ func generateAlternativeName(pubKey ed25519.PublicKey) string {
 	for i := 0; i < 52; i++ {
 		// Get n mod 32 and write the corresponding character
 		mod := new(big.Int).Mod(n, big.NewInt(32))
-		result.WriteByte(alphabet[mod.Int64()])
+		modVal := mod.Int64()
+		result.WriteByte(alphabet[modVal])
 
 		// Integer division: n = floor(n / 32)
 		n.Div(n, big.NewInt(32))
 	}
 
-	return result.String()
+	altName := result.String()
+	log.Printf("Generated alternative name: %s", altName)
+
+	return altName
 }
 
 // deserializeUint256 converts a 32-byte array to a big.Int (uint256)
 // This implements the E^(-1)_32 deserialization function as defined in the GP
 func deserializeUint256(data []byte) *big.Int {
-	// The specification requires interpreting the key as a 256-bit unsigned integer
-	// Make a copy to ensure we don't modify the original data
-	buf := make([]byte, len(data))
-	copy(buf, data)
+	// Create a new big.Int
+	result := new(big.Int)
 
-	// The GP's definition might require the bytes to be in a specific order
-	// Let's try big-endian first (which is the default for big.Int)
-	n := new(big.Int).SetBytes(buf)
+	// Use the same approach as DecodeLittleEndian but for big.Int
+	// For each byte, shift it to the appropriate position and OR it in
+	for i, b := range data {
+		// Convert byte to big.Int
+		byteVal := big.NewInt(int64(b))
 
-	// Debug: Log both possibilities
-	reversed := make([]byte, len(buf))
-	copy(reversed, buf)
-	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
-		reversed[i], reversed[j] = reversed[j], reversed[i]
-	}
-	nReversed := new(big.Int).SetBytes(reversed)
+		// Shift the byte to its position (8*i bits)
+		if i > 0 {
+			byteVal.Lsh(byteVal, uint(8*i))
+		}
 
-	log.Printf("Original bytes interpretation (big-endian): %s", n.Text(16))
-	log.Printf("Reversed bytes interpretation (little-endian): %s", nReversed.Text(16))
-
-	// Reverse the bytes if we believe the deserialization should be little-endian
-	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
-		buf[i], buf[j] = buf[j], buf[i]
+		// OR it into the result
+		result.Or(result, byteVal)
 	}
 
-	return new(big.Int).SetBytes(buf)
+	// Log the result for debugging
+	log.Printf("Public key bytes: %x", data)
+	log.Printf("Little-endian deserialize result: %s", result.Text(16))
+
+	return result
+}
+
+// serializeUint256 converts a big.Int (uint256) to a 32-byte array
+// This implements the E_32 serialization function as defined in the GP
+func serializeUint256(n *big.Int) []byte {
+	// Create a new 32-byte array
+	result := make([]byte, 32)
+
+	// Clone the big.Int to avoid modifying the original
+	temp := new(big.Int).Set(n)
+
+	// For each byte position
+	for i := 0; i < 32; i++ {
+		// Extract the lowest 8 bits
+		byteVal := new(big.Int).And(temp, big.NewInt(0xFF))
+
+		// Store the byte
+		result[i] = byte(byteVal.Uint64())
+
+		// Shift right by 8 bits for the next byte
+		temp.Rsh(temp, 8)
+	}
+
+	return result
 }

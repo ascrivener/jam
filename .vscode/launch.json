@@ -63,6 +63,79 @@
                 "-test.run=TestPVMWithDirectoryTestVectors/inst_load_i16"
             ],
             "showLog": true
+        },
+        {
+            "name": "JAM Client - Alice (Testnet)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/go/cmd/polkajam-client/main.go",
+            "args": [
+                "-chain-hash",
+                "0259fbe9",
+                "-address",
+                "localhost:40005",
+                "-insecure",
+                "-use-alice",
+                "-mode",
+                "listen"
+            ],
+            "env": {},
+            "showLog": true
+        },
+        {
+            "name": "JAM Client (Alice)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/go/cmd/polkajam-client/main.go",
+            "args": [
+                "-chain-hash",
+                "0259fbe9",
+                "-address",
+                "localhost:40005",
+                "-insecure",
+                "-use-alice",
+                "-mode",
+                "listen"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "JAM Client (Listen Mode)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/go/cmd/polkajam-client/main.go",
+            "args": [
+                "-chain-hash",
+                "0259fbe9",
+                "-address",
+                "localhost:40005",
+                "-insecure",
+                "-mode",
+                "listen"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "JAM Client (State Request)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/go/cmd/polkajam-client/main.go",
+            "args": [
+                "-chain-hash",
+                "0259fbe9",
+                "-address",
+                "localhost:40005",
+                "-insecure",
+                "-mode",
+                "state",
+                "-state-hash",
+                "${input:stateHash}"
+            ],
+            "cwd": "${workspaceFolder}"
         }
     ],
     "inputs": [
@@ -75,6 +148,11 @@
                 "full"
             ],
             "default": "tiny"
+        },
+        {
+            "id": "stateHash",
+            "type": "promptString",
+            "description": "Enter the state hash (64 hex characters)"
         }
     ]
 }
