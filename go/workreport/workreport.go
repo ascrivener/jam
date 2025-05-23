@@ -5,7 +5,7 @@ import "github.com/ascrivener/jam/types"
 type WorkReport struct {
 	WorkPackageSpecification   AvailabilitySpecification // s
 	RefinementContext          RefinementContext         // x
-	CoreIndex                  types.CoreIndex           // c
+	CoreIndex                  types.GenericNum          // c
 	AuthorizerHash             [32]byte                  // a
 	Output                     []byte                    // o
 	SegmentRootLookup          map[[32]byte][32]byte     // l

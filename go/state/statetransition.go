@@ -145,7 +145,7 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 	for coreIndex, priorAuthorizersPoolForCore := range priorAuthorizersPool {
 		var workReport *workreport.WorkReport
 		for _, guarantee := range guarantees {
-			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
+			if guarantee.WorkReport.CoreIndex == types.GenericNum(coreIndex) {
 				workReport = &guarantee.WorkReport
 				break
 			}
@@ -430,7 +430,7 @@ func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Head
 func computePendingReports(guarantees extrinsics.Guarantees, postGuaranteesExtrinsicIntermediatePendingReports [constants.NumCores]*PendingReport, posteriorMostRecentBlockTimeslot types.Timeslot) [constants.NumCores]*PendingReport {
 	for coreIndex := range postGuaranteesExtrinsicIntermediatePendingReports {
 		for _, guarantee := range guarantees {
-			if guarantee.WorkReport.CoreIndex == types.CoreIndex(coreIndex) {
+			if guarantee.WorkReport.CoreIndex == types.GenericNum(coreIndex) {
 				postGuaranteesExtrinsicIntermediatePendingReports[coreIndex] = &PendingReport{
 					WorkReport: guarantee.WorkReport,
 					Timeslot:   posteriorMostRecentBlockTimeslot,
@@ -649,7 +649,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		// Find all work reports for this core in the guarantees
 		for _, guarantee := range guarantees {
 			workReport := guarantee.WorkReport
-			if workReport.CoreIndex != types.CoreIndex(cIndex) {
+			if workReport.CoreIndex != types.GenericNum(cIndex) {
 				continue
 			}
 
@@ -665,7 +665,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		}
 
 		for _, availableReport := range availableReports {
-			if availableReport.CoreIndex != types.CoreIndex(cIndex) {
+			if availableReport.CoreIndex != types.GenericNum(cIndex) {
 				continue
 			}
 

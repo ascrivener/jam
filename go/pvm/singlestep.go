@@ -33,21 +33,19 @@ func (pvm *PVM) SingleStep() ExitReason {
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 	priorIC := pvm.InstructionCounter
 
-	log.Printf("SingleStep: IC=%d, instructions length=%d", pvm.InstructionCounter, len(pvm.Instructions))
-
 	ctx := InstructionContext{
 		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
 		SkipLength:  skip(pvm.InstructionCounter, pvm.Opcodes),
 	}
 
-	log.Printf("SingleStep: Fetched instruction=%d, skipLength=%d", ctx.Instruction, ctx.SkipLength)
-
 	var exitReason ExitReason
 
+	log.Printf("SingleStep: instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+
+	pvm.State.Gas -= types.SignedGasValue(1)
+
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
-		log.Printf("SingleStep: Executing instruction handler for opcode=%d", ctx.Instruction)
 		exitReason = handler(pvm, &ctx)
-		log.Printf("SingleStep: Handler completed, new IC=%d, exit reason=%v", pvm.InstructionCounter, exitReason)
 	} else {
 		log.Printf("SingleStep: No handler found for instruction=%d", ctx.Instruction)
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
@@ -72,13 +70,9 @@ func (pvm *PVM) SingleStep() ExitReason {
 
 func getInstruction(instructions []byte, instructionCounter types.Register) byte {
 	if instructionCounter >= types.Register(len(instructions)) {
-		log.Printf("getInstruction: IC=%d is beyond instructions length=%d, returning trap (0)",
-			instructionCounter, len(instructions))
 		return 0
 	}
-	instr := instructions[instructionCounter]
-	log.Printf("getInstruction: IC=%d, instruction=%d", instructionCounter, instr)
-	return instr
+	return instructions[instructionCounter]
 }
 
 func getInstructionRange(instructions []byte, instructionCounter types.Register, count int) []byte {

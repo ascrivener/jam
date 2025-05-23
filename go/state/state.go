@@ -781,7 +781,7 @@ func convertJSONReportToImplReport(workReportJSON WorkReport) workreport.WorkRep
 	var report workreport.WorkReport
 
 	// Set CoreIndex
-	report.CoreIndex = types.CoreIndex(workReportJSON.CoreIndex)
+	report.CoreIndex = types.GenericNum(workReportJSON.CoreIndex)
 
 	// Convert results
 	for _, result := range workReportJSON.Results {
