@@ -10,28 +10,28 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func handleTrap(_ *PVM, _ *InstructionContext) ExitReason {
-	return NewSimpleExitReason(ExitPanic)
+func handleTrap(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
+	return NewSimpleExitReason(ExitPanic), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleFallthrough(_ *PVM, _ *InstructionContext) ExitReason {
-	return NewSimpleExitReason(ExitGo)
+func handleFallthrough(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleEcalli(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleEcalli(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	lx := min(4, ctx.SkipLength)
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+1, lx)))
-	return NewComplexExitReason(ExitHostCall, vx)
+	return NewComplexExitReason(ExitHostCall, vx), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleLoadImm64(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleLoadImm64(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%16))
 	vx := serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+2, 8))
 	pvm.State.Registers[ra] = types.Register(vx)
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Precompute the common immediate values.
 	lx := min(4, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%8))
 	ly := min(4, max(0, ctx.SkipLength-lx-1))
@@ -54,18 +54,16 @@ func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", ctx.Instruction))
 	}
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleJump(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleJump(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	lx := min(4, ctx.SkipLength)
 	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+1, lx))))
-	var exitReason ExitReason
-	exitReason, pvm.InstructionCounter = branch(vx, true, pvm.InstructionCounter, pvm.BasicBlockBeginningOpcodes)
-	return exitReason
+	return branch(vx, true, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
 }
 
-func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	exitReason := NewSimpleExitReason(ExitGo)
 	// Compute the register operand from the next byte (mod 16, capped to 12).
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%16))
@@ -78,9 +76,7 @@ func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[ra] + vx)
-		var nextIC types.Register
-		exitReason, nextIC = djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
-		pvm.InstructionCounter = nextIC
+		return djump(targetAddr, pvm.nextInstructionCounter(ctx.SkipLength), pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
 	case 51: // load_imm
 		pvm.State.Registers[ra] = vx
 	case 52: // load_u8
@@ -117,10 +113,10 @@ func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", ctx.Instruction))
 	}
-	return exitReason
+	return exitReason, pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Precompute the common immediate values, including the base register.
 	// Extract the base register (ra) from the first instruction byte.
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
@@ -152,10 +148,10 @@ func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleTwoImmValuesIndirect: unexpected opcode %d", ctx.Instruction))
 	}
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleOneRegOneImmOneOff(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleOneRegOneImmOneOff(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Precompute the immediate values and the register operand.
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)%16))
 	lx := min(4, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1)/16%8))
@@ -201,12 +197,10 @@ func handleOneRegOneImmOneOff(pvm *PVM, ctx *InstructionContext) ExitReason {
 
 	// Execute the branch. The branch() function returns the exit reason
 	// and the next instruction counter based on the branch condition.
-	var exitReason ExitReason
-	exitReason, pvm.InstructionCounter = branch(vy, cond, pvm.InstructionCounter, pvm.BasicBlockBeginningOpcodes)
-	return exitReason
+	return branch(vy, cond, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
 }
 
-func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Extract the two register operands from the same instruction byte.
 	// The lower 4 bits specify the destination register (rd),
 	// and the upper 4 bits specify the source register (ra).
@@ -224,8 +218,9 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 		if pvm.State.RAM.BeginningOfHeap != nil {
 			h = types.Register(*pvm.State.RAM.BeginningOfHeap)
 		}
+		// looking for the h where the range has one inaccessible
 		for ; h < types.MaxRegister; h++ {
-			// Check that the region of size registers[ra] starting at h is free.
+			// this means precisely that every element is accessible.
 			if !pvm.State.RAM.RangeUniform(ram.Inaccessible, uint64(h), uint64(pvm.State.Registers[ra]), ram.NoWrap) {
 				continue
 			}
@@ -287,10 +282,10 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleTwoReg: unexpected opcode %d", ctx.Instruction))
 	}
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Extract the two register operands from the same instruction byte.
 	// Lower 4 bits for 'ra' (destination) and upper 4 bits for 'rb' (source).
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
@@ -435,10 +430,10 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleTwoRegOneImm: unexpected opcode %d", ctx.Instruction))
 	}
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 }
 
-func handleTwoRegOneOffset(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleTwoRegOneOffset(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Extract two register operands from the same instruction byte.
 	// Lower 4 bits for 'ra', upper 4 bits for 'rb'.
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
@@ -468,12 +463,10 @@ func handleTwoRegOneOffset(pvm *PVM, ctx *InstructionContext) ExitReason {
 	}
 
 	// Execute the branch based on the computed condition.
-	var exitReason ExitReason
-	exitReason, pvm.InstructionCounter = branch(vx, cond, pvm.InstructionCounter, pvm.BasicBlockBeginningOpcodes)
-	return exitReason
+	return branch(vx, cond, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
 }
 
-func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Extract the register operands from the same instruction byte.
 	// Lower 4 bits: destination register (ra); upper 4 bits: base register (rb).
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
@@ -492,20 +485,18 @@ func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) ExitReason {
 		getInstructionRange(pvm.Instructions, pvm.InstructionCounter+3+types.Register(lx), ly)))
 
 	// Perform a dynamic jump based on the computed offset (rb + vy).
-	var exitReason ExitReason
-	exitReason, pvm.InstructionCounter = djump(
-		uint32(pvm.State.Registers[rb]+vy),
-		pvm.InstructionCounter,
-		pvm.DynamicJumpTable,
-		pvm.BasicBlockBeginningOpcodes,
-	)
 
 	// Store the immediate value vx into the destination register.
 	pvm.State.Registers[ra] = vx
-	return exitReason
+	return djump(
+		uint32(pvm.State.Registers[rb]+vy),
+		pvm.nextInstructionCounter(ctx.SkipLength),
+		pvm.DynamicJumpTable,
+		pvm.BasicBlockBeginningOpcodes,
+	)
 }
 
-func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
+func handleThreeReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	// Extract source registers from the same instruction byte.
 	// Lower 4 bits: ra; upper 4 bits: rb.
 	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
@@ -692,5 +683,11 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) ExitReason {
 	default:
 		panic(fmt.Sprintf("handleThreeReg: unexpected opcode %d", ctx.Instruction))
 	}
-	return NewSimpleExitReason(ExitGo)
+	return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
+}
+
+// nextInstructionCounter returns the next instruction counter position
+// after executing the current instruction with the given skip length
+func (pvm *PVM) nextInstructionCounter(skipLength int) types.Register {
+	return pvm.InstructionCounter + 1 + types.Register(skipLength)
 }

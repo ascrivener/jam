@@ -22,7 +22,7 @@ type InstructionContext struct {
 	SkipLength  int // Computed skip length for the current instruction.
 }
 
-type InstructionHandler func(pvm *PVM, ctx *InstructionContext) ExitReason
+type InstructionHandler func(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register)
 
 var dispatchTable [256]InstructionHandler
 
@@ -31,7 +31,6 @@ var terminationOpcodes [256]bool
 func (pvm *PVM) SingleStep() ExitReason {
 	// Reset the pre-allocated slice without allocating new memory.
 	pvm.State.RAM.ClearMemoryAccessExceptions()
-	priorIC := pvm.InstructionCounter
 
 	ctx := InstructionContext{
 		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
@@ -39,23 +38,20 @@ func (pvm *PVM) SingleStep() ExitReason {
 	}
 
 	var exitReason ExitReason
-
-	log.Printf("SingleStep: instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
-
-	pvm.State.Gas -= types.SignedGasValue(1)
+	var nextIC types.Register
 
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
-		exitReason = handler(pvm, &ctx)
+		exitReason, nextIC = handler(pvm, &ctx)
 	} else {
 		log.Printf("SingleStep: No handler found for instruction=%d", ctx.Instruction)
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
 
-	// default instruction counter increment
-	if priorIC == pvm.InstructionCounter {
-		pvm.InstructionCounter += 1 + types.Register(ctx.SkipLength)
-		log.Printf("SingleStep: Default IC increment applied, new IC=%d", pvm.InstructionCounter)
-	}
+	log.Printf("SingleStep: instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+
+	pvm.InstructionCounter = nextIC
+
+	pvm.State.Gas -= types.SignedGasValue(1)
 
 	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())
 	if minRamIndex != nil {

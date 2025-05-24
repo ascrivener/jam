@@ -291,6 +291,10 @@ func (r *RAM) indexRangeIterator(start, end uint64, fn func(uint64), mode Memory
 
 // pageRangeIterator applies the given function to each page in a range
 func (r *RAM) pageRangeIterator(start, end uint64, fn func(int), mode MemoryAccessMode) {
+	// Special case for zero-length ranges
+	if start == end {
+		return // No pages to process
+	}
 	// Calculate page boundaries
 	startPage := uint64(RamIndex(start) / PageSize)
 	endPage := uint64((RamIndex(end)-1)/PageSize) + 1
