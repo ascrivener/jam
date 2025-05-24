@@ -7,13 +7,13 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -183,7 +183,7 @@ func listenMode(client *net.Client, address string, timeout time.Duration) error
 
 	// Set up handlers for different stream types
 	var wg sync.WaitGroup
-	wg.Add(2) // One for block announcements, one for accepting new streams
+	wg.Add(1) // One for block announcements
 
 	// Handle block announcements (UP 0)
 	go func() {
@@ -196,69 +196,69 @@ func listenMode(client *net.Client, address string, timeout time.Duration) error
 	}()
 
 	// Accept and handle incoming streams
-	go func() {
-		defer wg.Done()
-		log.Println("Setting up stream acceptor...")
-		streamErrors := 0
-		for {
-			stream, err := conn.AcceptStream(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					log.Println("Context cancelled, stopping stream acceptor")
-					return
-				}
+	// go func() {
+	// 	defer wg.Done()
+	// 	log.Println("Setting up stream acceptor...")
+	// 	streamErrors := 0
+	// 	for {
+	// 		stream, err := conn.AcceptStream(ctx)
+	// 		if err != nil {
+	// 			if ctx.Err() != nil {
+	// 				log.Println("Context cancelled, stopping stream acceptor")
+	// 				return
+	// 			}
 
-				// Enhanced error logging
-				streamErrors++
-				log.Printf("Error accepting stream (%d): %v (type: %T)", streamErrors, err, err)
+	// 			// Enhanced error logging
+	// 			streamErrors++
+	// 			log.Printf("Error accepting stream (%d): %v (type: %T)", streamErrors, err, err)
 
-				if streamErrors%10 == 0 {
-					log.Printf("DIAGNOSTIC: Received %d stream accept errors, connection state: handshake=%v",
-						streamErrors, conn.ConnectionState().TLS.HandshakeComplete)
-				}
+	// 			if streamErrors%10 == 0 {
+	// 				log.Printf("DIAGNOSTIC: Received %d stream accept errors, connection state: handshake=%v",
+	// 					streamErrors, conn.ConnectionState().TLS.HandshakeComplete)
+	// 			}
 
-				// Check if this is a temporary error that we can retry
-				if streamErrors > 100 {
-					log.Printf("WARNING: High number of stream accept errors (%d), but continuing", streamErrors)
-				}
+	// 			// Check if this is a temporary error that we can retry
+	// 			if streamErrors > 100 {
+	// 				log.Printf("WARNING: High number of stream accept errors (%d), but continuing", streamErrors)
+	// 			}
 
-				// Short pause before retrying to avoid tight loops
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
+	// 			// Short pause before retrying to avoid tight loops
+	// 			time.Sleep(100 * time.Millisecond)
+	// 			continue
+	// 		}
 
-			// Reset error counter on successful accept
-			if streamErrors > 0 {
-				log.Printf("Successfully accepted stream after %d errors", streamErrors)
-				streamErrors = 0
-			}
+	// 		// Reset error counter on successful accept
+	// 		if streamErrors > 0 {
+	// 			log.Printf("Successfully accepted stream after %d errors", streamErrors)
+	// 			streamErrors = 0
+	// 		}
 
-			// Read the stream kind byte
-			kindBuf := make([]byte, 1)
-			_, err = stream.Read(kindBuf)
-			if err != nil {
-				log.Printf("Error reading stream kind: %v", err)
-				stream.Close()
-				continue
-			}
+	// 		// Read the stream kind byte
+	// 		kindBuf := make([]byte, 1)
+	// 		_, err = stream.Read(kindBuf)
+	// 		if err != nil {
+	// 			log.Printf("Error reading stream kind: %v", err)
+	// 			stream.Close()
+	// 			continue
+	// 		}
 
-			streamKind := kindBuf[0]
-			log.Printf("Received stream with kind: %d", streamKind)
+	// 		streamKind := kindBuf[0]
+	// 		log.Printf("Received stream with kind: %d", streamKind)
 
-			// Handle different stream kinds
-			switch streamKind {
-			case 141: // CE 141: Assurance distribution
-				go handleAssuranceDistribution(stream)
-			case 131, 132: // CE 131/132: Safrole ticket distribution
-				go handleTicketDistribution(stream, int(streamKind))
-			case 129: // CE 129: State request
-				go handleStateRequest(stream)
-			default:
-				log.Printf("Unsupported stream kind: %d, closing", streamKind)
-				stream.Close()
-			}
-		}
-	}()
+	// 		// Handle different stream kinds
+	// 		switch streamKind {
+	// 		case 141: // CE 141: Assurance distribution
+	// 			go handleAssuranceDistribution(stream)
+	// 		case 131, 132: // CE 131/132: Safrole ticket distribution
+	// 			go handleTicketDistribution(stream, int(streamKind))
+	// 		case 129: // CE 129: State request
+	// 			go handleStateRequest(stream)
+	// 		default:
+	// 			log.Printf("Unsupported stream kind: %d, closing", streamKind)
+	// 			stream.Close()
+	// 		}
+	// 	}
+	// }()
 
 	wg.Wait()
 	return nil
@@ -574,6 +574,7 @@ func requestBlocks(ctx context.Context, client *net.Client, session quic.Connect
 	}
 
 	// Signal end of request by closing the sending side of the stream
+	// This sends a FIN to the server but keeps the read side open
 	err = stream.Close()
 	if err != nil {
 		log.Fatalf("Failed to close send stream: %v", err)
@@ -702,23 +703,32 @@ func requestState(ctx context.Context, client *net.Client, session quic.Connecti
 	defer stream.Close()
 
 	// Write the stream kind (CE 129)
-	kindBytes := []byte{129, 0, 0, 0}
-	_, err = stream.Write(kindBytes)
+	_, err = stream.Write([]byte{129})
 	if err != nil {
 		log.Fatalf("Failed to write stream kind: %v", err)
 	}
 
 	// Prepare the state request message
-	// Format: State Root (32 bytes) + Components bitfield (variable length)
-	// For simplicity, we'll request all components (ones in every position)
-	// In a real implementation, you'd specify exactly which components you want
+	// Format: Header Hash (32 bytes) + Start Key (31 bytes) + End Key (31 bytes) + Maximum Size (4 bytes)
 
-	// Create a bitfield with all bits set to 1 (requesting all components)
-	// For demonstration, we'll use a 1-byte bitfield (8 components)
-	bitfield := []byte{0xFF} // All 8 bits set to 1
+	// Create empty start key (get from beginning)
+	startKey := make([]byte, 31)
 
-	// Construct the message: State Root + Bitfield
-	message := append(hashBytes, bitfield...)
+	// Create end key with all 0xFF (get everything up to the end)
+	endKey := make([]byte, 31)
+	for i := range endKey {
+		endKey[i] = 0xFF
+	}
+
+	// Set maximum size (e.g., 1MB)
+	maxSize := uint32(1024 * 1024)
+	maxSizeBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(maxSizeBytes, maxSize)
+
+	// Construct the message: Header Hash + Start Key + End Key + Maximum Size
+	message := append(hashBytes, startKey...)
+	message = append(message, endKey...)
+	message = append(message, maxSizeBytes...)
 
 	// Write the message size as a u32
 	messageSizeBytes := make([]byte, 4)
@@ -736,46 +746,282 @@ func requestState(ctx context.Context, client *net.Client, session quic.Connecti
 
 	log.Printf("State request sent successfully. Waiting for response...")
 
-	// Read the response
-	// First, read the size
+	// Signal that we're done writing by closing the write side of the stream
+	// This sends a FIN to the server but keeps the read side open
+	if stream, ok := stream.(quic.Stream); ok {
+		log.Printf("Explicitly closing write side of stream")
+		stream.Close()
+	} else {
+		log.Printf("Warning: Stream doesn't support proper half-close, using extended timeout instead")
+	}
+
+	// Increase the read timeout to give the server more time to respond
+	readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// Declare boundary nodes data in outer scope
+	var boundaryNodesData []byte
+
+	// Read with timeout
+	readErr := make(chan error, 1)
+	go func() {
+		// Read the boundary nodes first
+		sizeBuffer := make([]byte, 4)
+		_, err := io.ReadFull(stream, sizeBuffer)
+		if err != nil {
+			readErr <- fmt.Errorf("failed to read boundary nodes message size: %w", err)
+			return
+		}
+
+		boundaryNodesSize := binary.LittleEndian.Uint32(sizeBuffer)
+		log.Printf("Boundary nodes message size: %d bytes", boundaryNodesSize)
+
+		// Populate the outer scope variable
+		boundaryNodesData = make([]byte, boundaryNodesSize)
+		_, err = io.ReadFull(stream, boundaryNodesData)
+		if err != nil {
+			readErr <- fmt.Errorf("failed to read boundary nodes data: %w", err)
+			return
+		}
+		log.Printf("Received %d bytes of boundary nodes data", len(boundaryNodesData))
+
+		// Signal successful read
+		readErr <- nil
+	}()
+
+	// Wait for read completion or timeout
+	select {
+	case err := <-readErr:
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		log.Printf("Successfully read boundary nodes")
+	case <-readCtx.Done():
+		log.Fatalf("Timed out waiting for response (60s)")
+	}
+
+	// Now read the key/value pairs
 	sizeBuffer := make([]byte, 4)
 	_, err = io.ReadFull(stream, sizeBuffer)
 	if err != nil {
-		log.Fatalf("Failed to read response size: %v", err)
+		log.Fatalf("Failed to read key/value pairs message size: %v", err)
 	}
+	kvPairsSize := binary.LittleEndian.Uint32(sizeBuffer)
+	log.Printf("Key/value pairs message size: %d bytes", kvPairsSize)
 
-	responseSize := binary.LittleEndian.Uint32(sizeBuffer)
-	log.Printf("Response size: %d bytes", responseSize)
-
-	// Read the components
-	response := make([]byte, responseSize)
-	_, err = io.ReadFull(stream, response)
+	kvPairsData := make([]byte, kvPairsSize)
+	_, err = io.ReadFull(stream, kvPairsData)
 	if err != nil {
-		log.Fatalf("Failed to read response: %v", err)
+		log.Fatalf("Failed to read key/value pairs data: %v", err)
+	}
+	log.Printf("Received %d bytes of key/value pairs data", len(kvPairsData))
+
+	// Create a directory for state data
+	stateDir := fmt.Sprintf("state_%s", hashHex[:8])
+	err = os.MkdirAll(stateDir, 0755)
+	if err != nil {
+		log.Printf("Warning: Failed to create directory for state data: %v", err)
 	}
 
-	log.Printf("Received state components: %d bytes", len(response))
+	// Save the binary data first
+	if err == nil {
+		// Save boundary nodes
+		boundaryNodesFile := fmt.Sprintf("%s/boundary_nodes.bin", stateDir)
+		err = os.WriteFile(boundaryNodesFile, boundaryNodesData, 0644)
+		if err != nil {
+			log.Printf("Warning: Failed to save boundary nodes: %v", err)
+		} else {
+			log.Printf("Boundary nodes saved to %s", boundaryNodesFile)
+		}
 
-	// In a real implementation, you would:
-	// 1. Parse the response format according to the JAMNP-S specification
-	// 2. Extract the individual components
-	// 3. Process them according to your application logic
+		// Save key/value pairs
+		kvPairsFile := fmt.Sprintf("%s/key_value_pairs.bin", stateDir)
+		err = os.WriteFile(kvPairsFile, kvPairsData, 0644)
+		if err != nil {
+			log.Printf("Warning: Failed to save key/value pairs: %v", err)
+		} else {
+			log.Printf("Key/value pairs saved to %s", kvPairsFile)
+		}
+	}
 
-	// For now, just log a hexdump of the first 64 bytes
-	var hexdump strings.Builder
-	for i, b := range response {
-		if i >= 64 {
-			hexdump.WriteString("...")
+	// Now parse and convert to JSON format
+	// First, parse the boundary nodes (as a simple hex dump)
+	boundaryNodesJSON, err := json.MarshalIndent(generateHexDump(boundaryNodesData), "", "  ")
+	if err != nil {
+		log.Printf("Warning: Failed to convert boundary nodes to JSON: %v", err)
+	} else {
+		boundaryNodesJSONFile := fmt.Sprintf("%s/boundary_nodes.json", stateDir)
+		err = os.WriteFile(boundaryNodesJSONFile, boundaryNodesJSON, 0644)
+		if err != nil {
+			log.Printf("Warning: Failed to save boundary nodes JSON: %v", err)
+		} else {
+			log.Printf("Boundary nodes JSON saved to %s", boundaryNodesJSONFile)
+		}
+	}
+
+	// Then, parse the key/value pairs
+	kvEntries, err := parseKeyValuePairs(kvPairsData)
+	if err != nil {
+		log.Printf("Warning: Failed to parse key/value pairs: %v", err)
+	} else {
+		log.Printf("Successfully parsed %d key/value pairs", len(kvEntries))
+
+		// Convert to JSON
+		kvPairsJSON, err := json.MarshalIndent(kvEntries, "", "  ")
+		if err != nil {
+			log.Printf("Warning: Failed to convert key/value pairs to JSON: %v", err)
+		} else {
+			kvPairsJSONFile := fmt.Sprintf("%s/key_value_pairs.json", stateDir)
+			err = os.WriteFile(kvPairsJSONFile, kvPairsJSON, 0644)
+			if err != nil {
+				log.Printf("Warning: Failed to save key/value pairs JSON: %v", err)
+			} else {
+				log.Printf("Key/value pairs JSON saved to %s", kvPairsJSONFile)
+			}
+		}
+	}
+
+	log.Printf("State request completed successfully")
+}
+
+// StateEntry represents a key/value pair in the state data
+type StateEntry struct {
+	Key       []byte `json:"-"`
+	Value     []byte `json:"-"`
+	KeyHex    string `json:"key"`
+	ValueHex  string `json:"value"`
+	Position  uint32 `json:"position"`
+	ValueSize uint32 `json:"value_size"`
+}
+
+// parseKeyValuePairs tries to parse the binary data as key/value pairs
+func parseKeyValuePairs(data []byte) ([]StateEntry, error) {
+	var entries []StateEntry
+	var pos uint32 = 0
+	dataSize := uint32(len(data))
+	var kvCount int = 0
+
+	for pos+31 < dataSize {
+		startPos := pos
+
+		// Each key is 31 bytes
+		if pos+31 > dataSize {
 			break
 		}
-		hexdump.WriteString(fmt.Sprintf("%02x", b))
-		if (i+1)%32 == 0 {
-			hexdump.WriteString("\n")
-		} else if (i+1)%8 == 0 {
-			hexdump.WriteString(" ")
+		key := make([]byte, 31)
+		copy(key, data[pos:pos+31])
+		pos += 31
+
+		// Value length is a u32
+		if pos+4 > dataSize {
+			break
+		}
+
+		// Try multiple interpretations of the value length
+		lenBytes := data[pos : pos+4]
+		littleEndianLen := binary.LittleEndian.Uint32(lenBytes)
+		bigEndianLen := binary.BigEndian.Uint32(lenBytes)
+
+		log.Printf("Value length bytes at position %d: %x", pos, lenBytes)
+
+		// Determine the most likely value length
+		var valueLen uint32
+
+		// Check if either interpretation gives a reasonable result
+		if littleEndianLen < 100000 && pos+4+littleEndianLen <= dataSize {
+			valueLen = littleEndianLen
+		} else if bigEndianLen < 100000 && pos+4+bigEndianLen <= dataSize {
+			log.Printf("Using big-endian interpretation for value length")
+			valueLen = bigEndianLen
+		} else {
+			// If both interpretations are problematic, use a reasonable cap
+			log.Printf("Suspicious value length: %d bytes (little-endian), %d bytes (big-endian)",
+				littleEndianLen, bigEndianLen)
+
+			// Special case: if the first bytes are zeros, it's likely a small big-endian number
+			if lenBytes[0] == 0 && lenBytes[1] == 0 && lenBytes[2] == 0 {
+				valueLen = uint32(lenBytes[3])
+				log.Printf("Using single-byte value length: %d", valueLen)
+			} else {
+				log.Printf("Both length interpretations are problematic, capping to reasonable size")
+				valueLen = uint32(min(int(uint32(1024)), int(dataSize-pos-4)))
+			}
+		}
+
+		pos += 4 // Skip the length bytes
+
+		// Final safety check - ensure we don't exceed data boundaries
+		if pos+valueLen > dataSize {
+			log.Printf("Value length still exceeds remaining data, truncating to available bytes")
+			valueLen = dataSize - pos
+		}
+
+		// Extract the value
+		value := make([]byte, valueLen)
+		copy(value, data[pos:pos+valueLen])
+		pos += valueLen
+
+		// Create entry with both binary and hex-encoded data
+		entry := StateEntry{
+			Key:       key,
+			Value:     value,
+			KeyHex:    hex.EncodeToString(key),
+			ValueHex:  hex.EncodeToString(value),
+			Position:  startPos,
+			ValueSize: valueLen,
+		}
+
+		entries = append(entries, entry)
+		kvCount++
+
+		// Display the first few key/value pairs with detailed info
+		if kvCount <= 5 {
+			log.Printf("Key/Value Pair #%d (at position %d):", kvCount, startPos)
+			log.Printf("  Key (%d bytes): %x", len(key), key)
+			if valueLen <= 64 {
+				log.Printf("  Value (%d bytes): %x", valueLen, value)
+			} else {
+				log.Printf("  Value (%d bytes): %x...", valueLen, value[:64])
+			}
 		}
 	}
-	log.Printf("Response (first 64 bytes):\n%s", hexdump.String())
+
+	log.Printf("Total key/value pairs parsed: %d", kvCount)
+	return entries, nil
+}
+
+// generateHexDump creates a hex dump with position information
+func generateHexDump(data []byte) []map[string]interface{} {
+	var result []map[string]interface{}
+
+	// Process data in chunks of 16 bytes
+	for i := 0; i < len(data); i += 16 {
+		end := min(i+16, len(data))
+		chunk := data[i:end]
+
+		entry := map[string]interface{}{
+			"position": i,
+			"hex":      hex.EncodeToString(chunk),
+			"ascii":    formatASCII(chunk),
+		}
+
+		result = append(result, entry)
+	}
+
+	return result
+}
+
+// formatASCII converts a byte slice to printable ASCII, replacing non-printable characters with dots
+func formatASCII(data []byte) string {
+	result := make([]byte, len(data))
+	for i, b := range data {
+		if b >= 32 && b <= 126 {
+			result[i] = b
+		} else {
+			result[i] = '.'
+		}
+	}
+	return string(result)
 }
 
 // BlockHandler implements the net.BlockAnnouncementHandler interface
