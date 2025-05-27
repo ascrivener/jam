@@ -136,6 +136,18 @@
                 "${input:stateHash}"
             ],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug log_compare",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/go/tools/log_compare.go",
+            "args": [
+                "${workspaceFolder}/go/state/test2.txt",
+                "${workspaceFolder}/go/state/pvm_execution.log"
+            ],
+            "cwd": "${workspaceFolder}"
         }
     ],
     "inputs": [

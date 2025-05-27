@@ -32,7 +32,7 @@ type RefinementContext struct {
 
 type WorkDigest struct {
 	ServiceIndex                 types.ServiceIndex        // s
-	ServiceCodeHash              [32]byte                  // c
+	ServiceCodeHash              [32]byte                  // h
 	PayloadHash                  [32]byte                  // y
 	AccumulateGasLimit           types.GasValue            // g
 	WorkResult                   types.ExecutionExitReason // d
