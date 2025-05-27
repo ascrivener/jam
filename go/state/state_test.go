@@ -18,6 +18,7 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
+	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/google/go-cmp/cmp"
 
@@ -668,10 +669,18 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName != "00000007.json" {
+		if fileName == "00000000.json" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
+
+		// Create a log file specific to this test file
+		logFileName := fmt.Sprintf("pvm_execution_%s.log", strings.TrimSuffix(fileName, ".json"))
+		err := pvm.InitFileLogger(logFileName)
+		if err != nil {
+			t.Errorf("Failed to initialize file logger for %s: %v", fileName, err)
+			continue
+		}
 
 		// Process each file sequentially
 		func() {

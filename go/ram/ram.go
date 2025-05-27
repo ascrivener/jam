@@ -82,9 +82,6 @@ func NewEmptyRAM() *RAM {
 func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	ram := NewEmptyRAM()
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
-	if len(writeData)+int(z) > 0 { // then we actually have a heap
-		ram.BeginningOfHeap = &heapStart
-	}
 	// read-only section
 	ram.MutateRange(MajorZoneSize, readData, NoWrap, false)
 	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)
@@ -93,6 +90,10 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	// Calculate total heap size including both data and extra space
 	heapLength := uint64(TotalSizeNeededPages(len(writeData)) + z*PageSize)
 	ram.MutateAccessRange(uint64(heapStart), heapLength, Mutable, NoWrap)
+	heapStart += RamIndex(heapLength)
+	if heapLength > 0 { // then we actually have a heap
+		ram.BeginningOfHeap = &heapStart
+	}
 	// stack
 	stackStart := RamIndex(RamSize - 2*MajorZoneSize - ArgumentsZoneSize - TotalSizeNeededPages(stackSize))
 	ram.MutateAccessRange(uint64(stackStart), uint64(TotalSizeNeededPages(stackSize)), Mutable, NoWrap)

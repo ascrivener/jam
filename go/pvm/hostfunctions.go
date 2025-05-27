@@ -239,13 +239,13 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 
 // AccountInfo represents the structured account information for serialization
 type AccountInfo struct {
-	CodeHash                 [32]byte       // c
-	Balance                  types.Balance  // b
-	ThresholdBalanceNeeded   types.Balance  // t
-	MinimumGasForAccumulate  types.GasValue // g
-	MinimumGasForOnTransfer  types.GasValue // m
-	TotalOctetsUsedInStorage uint64         // o
-	StorageItems             uint32         // i
+	CodeHash                 [32]byte              // c
+	Balance                  types.GenericNum      // b
+	ThresholdBalanceNeeded   types.GenericNum      // t
+	MinimumGasForAccumulate  types.GenericGasValue // g
+	MinimumGasForOnTransfer  types.GenericGasValue // m
+	TotalOctetsUsedInStorage types.GenericNum      // o
+	StorageItems             types.GenericNum      // i
 }
 
 func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
@@ -272,12 +272,12 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 			// Create struct with account information
 			accountInfo := AccountInfo{
 				CodeHash:                 targetAccount.CodeHash,
-				Balance:                  targetAccount.Balance,
-				ThresholdBalanceNeeded:   targetAccount.ThresholdBalanceNeeded(),
-				MinimumGasForAccumulate:  targetAccount.MinimumGasForAccumulate,
-				MinimumGasForOnTransfer:  targetAccount.MinimumGasForOnTransfer,
-				TotalOctetsUsedInStorage: targetAccount.TotalOctetsUsedInStorage(),
-				StorageItems:             targetAccount.TotalItemsUsedInStorage(),
+				Balance:                  types.GenericNum(targetAccount.Balance),
+				ThresholdBalanceNeeded:   types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
+				MinimumGasForAccumulate:  types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
+				MinimumGasForOnTransfer:  types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
+				TotalOctetsUsedInStorage: types.GenericNum(targetAccount.TotalOctetsUsedInStorage()),
+				StorageItems:             types.GenericNum(targetAccount.TotalItemsUsedInStorage()),
 			}
 
 			// Serialize the account information

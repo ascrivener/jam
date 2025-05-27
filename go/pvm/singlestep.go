@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/bits"
+	"os"
 
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/constants"
@@ -28,6 +29,18 @@ var dispatchTable [256]InstructionHandler
 
 var terminationOpcodes [256]bool
 
+var fileLogger *log.Logger
+
+func InitFileLogger(filename string) error {
+	// Open the file with TRUNC flag instead of APPEND to clear existing content
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	fileLogger = log.New(file, "", log.LstdFlags)
+	return nil
+}
+
 func (pvm *PVM) SingleStep() ExitReason {
 	// Reset the pre-allocated slice without allocating new memory.
 	pvm.State.RAM.ClearMemoryAccessExceptions()
@@ -43,15 +56,18 @@ func (pvm *PVM) SingleStep() ExitReason {
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
 		exitReason, nextIC = handler(pvm, &ctx)
 	} else {
-		log.Printf("SingleStep: No handler found for instruction=%d", ctx.Instruction)
 		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
 	}
 
-	log.Printf("SingleStep: instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+	pvm.State.Gas -= types.SignedGasValue(1)
 
 	pvm.InstructionCounter = nextIC
 
-	pvm.State.Gas -= types.SignedGasValue(1)
+	if fileLogger != nil {
+		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+	} else {
+		log.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+	}
 
 	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())
 	if minRamIndex != nil {
@@ -126,28 +142,28 @@ func signExtendImmediate(n int, x uint64) types.Register {
 	return types.Register(x + sign*offset)
 }
 
-func branch(b types.Register, C bool, instructionCounter types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
+func branch(b types.Register, C bool, defaultNextInstructionCounter types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
 	if !C {
-		return NewSimpleExitReason(ExitGo), instructionCounter
+		return NewSimpleExitReason(ExitGo), defaultNextInstructionCounter
 	}
 	if _, exists := basicBlockBeginningOpcodes[int(b)]; !exists {
-		return NewSimpleExitReason(ExitPanic), instructionCounter
+		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
 	}
 	return NewSimpleExitReason(ExitGo), b
 }
 
-func djump(a uint32, instructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
+func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
 	if a == (1<<32)-(1<<16) { // ??
-		return NewSimpleExitReason(ExitHalt), instructionCounter
+		return NewSimpleExitReason(ExitHalt), defaultNextInstructionCounter
 	}
 
 	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
-		return NewSimpleExitReason(ExitPanic), instructionCounter
+		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
 	}
 	nextInstructionCounter := dynamicJumpTable[a/uint32(constants.DynamicAddressAlignmentFactor)-1]
 	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
 	if !exists {
-		return NewSimpleExitReason(ExitPanic), instructionCounter
+		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
 	}
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter
 }

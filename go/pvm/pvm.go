@@ -192,9 +192,6 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 			return exitReason
 		}
 
-		// quite hacky.. basically re-add the gas that was subtracted in Ψ for the host call.
-		pvm.State.Gas += types.SignedGasValue(1)
-
 		hostCall := exitReason.ComplexExitReason.Parameter
 		stateBeforeHostCall := *pvm.State
 		postHostCallExitReason := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})

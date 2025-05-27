@@ -218,17 +218,15 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register
 		if pvm.State.RAM.BeginningOfHeap != nil {
 			h = types.Register(*pvm.State.RAM.BeginningOfHeap)
 		}
-		// looking for the h where the range has one inaccessible
-		for ; h < types.MaxRegister; h++ {
-			// this means precisely that every element is accessible.
-			if !pvm.State.RAM.RangeUniform(ram.Inaccessible, uint64(h), uint64(pvm.State.Registers[ra]), ram.NoWrap) {
-				continue
-			}
-			// Mark the region as mutable.
-			pvm.State.RAM.MutateAccessRange(uint64(h), uint64(pvm.State.Registers[ra]), ram.Mutable, ram.NoWrap)
-			// Return the starting address of the allocated region.
+		size := uint64(pvm.State.Registers[ra])
+		if size == 0 {
 			pvm.State.Registers[rd] = h
-			break
+		} else {
+			pvm.State.Registers[rd] = h
+			h += types.Register(size)
+			var heapIndex ram.RamIndex = ram.RamIndex(h)
+			pvm.State.RAM.BeginningOfHeap = &heapIndex
+			pvm.State.RAM.MutateAccessRange(uint64(h), uint64(pvm.State.Registers[ra]), ram.Mutable, ram.NoWrap)
 		}
 
 	case 102: // count_set_bits_64
