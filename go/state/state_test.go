@@ -748,7 +748,12 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 			// Run state transition function
 			t.Logf("Stage 8: Running state transition function...")
-			postState := StateTransitionFunction(preState, testBlock)
+			postState, err := StateTransitionFunction(preState, testBlock)
+			if err != nil {
+				t.Errorf("Stage 8: State transition failed: %v", err)
+				failedTests++
+				return
+			}
 			// t.Logf("Stage 9: State transition completed")
 
 			// serializedPostState := StateSerializer(postState)

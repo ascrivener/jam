@@ -61,7 +61,7 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func StateTransitionFunction(priorState State, block block.Block) State {
+func StateTransitionFunction(priorState State, block block.Block) (State, error) {
 
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(block.Header)
 
@@ -121,7 +121,7 @@ func StateTransitionFunction(priorState State, block block.Block) State {
 		ValidatorStatistics:        validatorStatistics,
 		AccumulationQueue:          posteriorAccumulationQueue,
 		AccumulationHistory:        posteriorAccumulationHistory,
-	}
+	}, nil
 }
 
 func computeAvailableReports(pendingReports [constants.NumCores]*PendingReport, assurances extrinsics.Assurances) []workreport.WorkReport {

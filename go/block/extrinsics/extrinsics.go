@@ -1,9 +1,9 @@
 package extrinsics
 
 type Extrinsics struct {
-	Tickets    Tickets // 6.29
-	Disputes   Disputes
-	Preimages  Preimages
-	Assurances Assurances
-	Guarantees Guarantees // 11.4
+	Tickets    Tickets    // T // 6.29
+	Preimages  Preimages  // P
+	Guarantees Guarantees // G 11.4
+	Assurances Assurances // A
+	Disputes   Disputes   // D
 }

@@ -6,16 +6,16 @@ import (
 )
 
 type Header struct {
-	ParentHash                   [32]byte
-	PriorStateRoot               [32]byte
-	ExtrinsicHash                [32]byte
-	TimeSlot                     types.Timeslot
-	EpochMarker                  *EpochMarker
-	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket)
-	OffendersMarker              []types.Ed25519PublicKey
-	BandersnatchBlockAuthorIndex types.ValidatorIndex
-	VRFSignature                 types.BandersnatchVRFSignature
-	BlockSeal                    types.BandersnatchVRFSignature
+	ParentHash                   [32]byte                                  // p
+	PriorStateRoot               [32]byte                                  // r
+	ExtrinsicHash                [32]byte                                  // x
+	TimeSlot                     types.Timeslot                            // t
+	EpochMarker                  *EpochMarker                              // e
+	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket) // w
+	OffendersMarker              []types.Ed25519PublicKey                  // o
+	BandersnatchBlockAuthorIndex types.ValidatorIndex                      // i
+	VRFSignature                 types.BandersnatchVRFSignature            // v
+	BlockSeal                    types.BandersnatchVRFSignature            // s
 }
 
 type EpochMarker struct {
