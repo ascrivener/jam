@@ -59,9 +59,9 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	pages                        map[uint32][]byte // Page number -> page content
-	access                       [NumRamPages]RamAccess
-	BeginningOfHeap              *RamIndex // nil if no heap
+	pages                        map[uint32][]byte    // Page number -> page content
+	access                       map[uint32]RamAccess // Page number -> access rights
+	BeginningOfHeap              *RamIndex            // nil if no heap
 	rollbackLog                  map[RamIndex]byte
 	memoryAccessExceptionIndices []RamIndex // Track memory access exceptions internally
 }
@@ -74,6 +74,7 @@ type RAM struct {
 func NewEmptyRAM() *RAM {
 	return &RAM{
 		pages:                        make(map[uint32][]byte),
+		access:                       make(map[uint32]RamAccess),
 		rollbackLog:                  make(map[RamIndex]byte),
 		memoryAccessExceptionIndices: make([]RamIndex, 0),
 	}
@@ -120,6 +121,11 @@ func (r *RAM) getPageAndOffset(index RamIndex) (pageNum uint32, offset uint32) {
 
 // getPage returns the page at the given page number, or nil if it doesn't exist
 func (r *RAM) getPage(pageNum uint32) []byte {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to access invalid page number %d (max is %d)", pageNum, NumRamPages-1))
+	}
+
 	page, exists := r.pages[pageNum]
 	if !exists {
 		return nil
@@ -129,6 +135,11 @@ func (r *RAM) getPage(pageNum uint32) []byte {
 
 // getOrCreatePage returns the page at the given page number, creating it if it doesn't exist
 func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to create page at invalid index %d (max is %d)", pageNum, NumRamPages-1))
+	}
+
 	page, exists := r.pages[pageNum]
 	if !exists {
 		page = make([]byte, PageSize)
@@ -223,12 +234,28 @@ func (r *RAM) MutateRange(start uint64, newBytes []byte, mode MemoryAccessMode, 
 // Memory access control methods
 //
 
+// getPageAccess returns the access type for a given page number
+// Pages not explicitly set default to Inaccessible
+func (r *RAM) getPageAccess(pageNum uint32) RamAccess {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to access permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
+	}
+
+	access, exists := r.access[pageNum]
+	if !exists {
+		return Inaccessible // Default access is Inaccessible
+	}
+	return access
+}
+
 // InspectAccess returns the access type for the given memory index
 func (r *RAM) InspectAccess(index uint64, mode MemoryAccessMode) RamAccess {
 	if mode == Wrap {
 		index = index % RamSize
 	}
-	return r.access[index/PageSize]
+	pageNum := uint32(index / PageSize)
+	return r.getPageAccess(pageNum)
 }
 
 // RangeHas checks if any page in the range has the specified access type
@@ -243,8 +270,9 @@ func (r *RAM) RangeHas(access RamAccess, start, length uint64, mode MemoryAccess
 	end := start + length
 
 	result := false
-	r.pageRangeIterator(start, end, func(page int) {
-		if r.access[page] == access {
+	r.pageRangeIterator(start, end, func(page uint32) {
+		pageAccess := r.getPageAccess(page)
+		if pageAccess == access {
 			result = true
 		}
 	}, mode)
@@ -263,12 +291,23 @@ func (r *RAM) RangeUniform(access RamAccess, start, length uint64, mode MemoryAc
 	end := start + length
 
 	uniform := true
-	r.pageRangeIterator(start, end, func(page int) {
-		if r.access[page] != access {
+	r.pageRangeIterator(start, end, func(page uint32) {
+		pageAccess := r.getPageAccess(uint32(page))
+		if pageAccess != access {
 			uniform = false
 		}
 	}, mode)
 	return uniform
+}
+
+// setPageAccess sets the access type for a specific page number
+// with bounds checking
+func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to set permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
+	}
+	r.access[pageNum] = access
 }
 
 // MutateAccess sets the access type for a page containing the given index
@@ -276,7 +315,9 @@ func (r *RAM) MutateAccess(index uint64, access RamAccess, mode MemoryAccessMode
 	if mode == Wrap {
 		index = index % RamSize
 	}
-	r.access[index/PageSize] = access
+
+	pageNum := uint32(index / PageSize)
+	r.setPageAccess(pageNum, access)
 }
 
 // MutateAccessRange sets the access type for all pages in the range
@@ -284,8 +325,8 @@ func (r *RAM) MutateAccess(index uint64, access RamAccess, mode MemoryAccessMode
 func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode MemoryAccessMode) {
 	end := start + length
 
-	r.pageRangeIterator(start, end, func(page int) {
-		r.access[page] = access
+	r.pageRangeIterator(start, end, func(page uint32) {
+		r.setPageAccess(page, access)
 	}, mode)
 }
 
@@ -346,7 +387,7 @@ func (r *RAM) indexRangeIterator(start, end uint64, fn func(uint64), mode Memory
 }
 
 // pageRangeIterator applies the given function to each page in a range
-func (r *RAM) pageRangeIterator(start, end uint64, fn func(int), mode MemoryAccessMode) {
+func (r *RAM) pageRangeIterator(start, end uint64, fn func(uint32), mode MemoryAccessMode) {
 	// Special case for zero-length ranges
 	if start == end {
 		return // No pages to process
@@ -361,7 +402,7 @@ func (r *RAM) pageRangeIterator(start, end uint64, fn func(int), mode MemoryAcce
 		endPage*PageSize,
 		PageSize,
 		func(index uint64) {
-			fn(int(index / PageSize))
+			fn(uint32(index / PageSize))
 		},
 		mode,
 	)
