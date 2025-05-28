@@ -59,7 +59,7 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	value                        [RamSize]byte
+	pages                        map[uint32][]byte // Page number -> page content
 	access                       [NumRamPages]RamAccess
 	BeginningOfHeap              *RamIndex // nil if no heap
 	rollbackLog                  map[RamIndex]byte
@@ -73,6 +73,7 @@ type RAM struct {
 // NewEmptyRAM creates an empty RAM with rollback log initialized
 func NewEmptyRAM() *RAM {
 	return &RAM{
+		pages:                        make(map[uint32][]byte),
 		rollbackLog:                  make(map[RamIndex]byte),
 		memoryAccessExceptionIndices: make([]RamIndex, 0),
 	}
@@ -108,6 +109,51 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 // Memory access and mutation methods
 //
 
+// Helper methods for page-based memory management
+
+// getPageAndOffset converts an absolute memory index to page number and offset
+func (r *RAM) getPageAndOffset(index RamIndex) (pageNum uint32, offset uint32) {
+	pageNum = uint32(index / PageSize)
+	offset = uint32(index % PageSize)
+	return
+}
+
+// getPage returns the page at the given page number, or nil if it doesn't exist
+func (r *RAM) getPage(pageNum uint32) []byte {
+	page, exists := r.pages[pageNum]
+	if !exists {
+		return nil
+	}
+	return page
+}
+
+// getOrCreatePage returns the page at the given page number, creating it if it doesn't exist
+func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
+	page, exists := r.pages[pageNum]
+	if !exists {
+		page = make([]byte, PageSize)
+		r.pages[pageNum] = page
+	}
+	return page
+}
+
+// getByte returns a byte from a given absolute memory index
+func (r *RAM) getByte(index RamIndex) byte {
+	pageNum, offset := r.getPageAndOffset(index)
+	page := r.getPage(pageNum)
+	if page == nil {
+		return 0 // Unallocated memory reads as zero
+	}
+	return page[offset]
+}
+
+// setByte sets a byte at a given absolute memory index
+func (r *RAM) setByte(index RamIndex, value byte) {
+	pageNum, offset := r.getPageAndOffset(index)
+	page := r.getOrCreatePage(pageNum)
+	page[offset] = value
+}
+
 // Inspect returns the byte at the given index, optionally tracking access violations
 func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions bool) byte {
 	// Handle wrapping for Wrap mode
@@ -121,7 +167,8 @@ func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions
 			r.memoryAccessExceptionIndices = append(r.memoryAccessExceptionIndices, ramIndex)
 		}
 	}
-	return r.value[ramIndex]
+
+	return r.getByte(ramIndex)
 }
 
 // InspectRange returns bytes from start to end, optionally tracking access violations
@@ -145,7 +192,7 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAcc
 		index = index % RamSize
 	}
 
-	// Convert to RamIndex for array access
+	// Convert to RamIndex for access control
 	ramIndex := RamIndex(index)
 
 	if r.InspectAccess(index, mode) != Mutable {
@@ -154,13 +201,13 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAcc
 		}
 	}
 
-	// Store the original value only once (for rollback).
+	// Store the original value only once (for rollback)
 	if _, exists := r.rollbackLog[ramIndex]; !exists {
-		r.rollbackLog[ramIndex] = r.value[ramIndex]
+		r.rollbackLog[ramIndex] = r.getByte(ramIndex)
 	}
 
-	// Write directly to the value array.
-	r.value[ramIndex] = newByte
+	// Set the new value
+	r.setByte(ramIndex, newByte)
 }
 
 // MutateRange changes multiple bytes, optionally tracking access violations and updating rollback state
@@ -249,7 +296,7 @@ func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode Mem
 // Rollback restores original values from the rollback log
 func (r *RAM) Rollback() {
 	for idx, val := range r.rollbackLog {
-		r.value[idx] = val
+		r.setByte(idx, val)
 	}
 }
 
@@ -268,6 +315,14 @@ func (r *RAM) ClearMemoryAccessExceptions() {
 // GetMemoryAccessExceptions returns the memory access exceptions
 func (r *RAM) GetMemoryAccessExceptions() []RamIndex {
 	return r.memoryAccessExceptionIndices
+}
+
+// allocatePages ensures that pages from startPage to startPage+count exist
+func (r *RAM) allocatePages(startPage uint32, count uint32) {
+	endPage := startPage + count
+	for pageNum := startPage; pageNum < endPage; pageNum++ {
+		r.getOrCreatePage(pageNum)
+	}
 }
 
 // rangeIterator is the core implementation for iterating over both indices and pages
