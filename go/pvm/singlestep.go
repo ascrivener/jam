@@ -65,8 +65,6 @@ func (pvm *PVM) SingleStep() ExitReason {
 
 	if fileLogger != nil {
 		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
-	} else {
-		log.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
 	}
 
 	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())

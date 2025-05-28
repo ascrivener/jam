@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/block"
@@ -18,7 +19,6 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
-	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/google/go-cmp/cmp"
 
@@ -672,15 +672,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		if fileName == "00000000.json" {
 			continue
 		}
+		startTime := time.Now()
 		t.Logf("Processing test vector file: %s", fileName)
 
 		// Create a log file specific to this test file
-		logFileName := fmt.Sprintf("pvm_execution_%s.log", strings.TrimSuffix(fileName, ".json"))
-		err := pvm.InitFileLogger(logFileName)
-		if err != nil {
-			t.Errorf("Failed to initialize file logger for %s: %v", fileName, err)
-			continue
-		}
+		// logFileName := fmt.Sprintf("pvm_execution_%s.log", strings.TrimSuffix(fileName, ".json"))
+		// err := pvm.InitFileLogger(logFileName)
+		// if err != nil {
+		// t.Errorf("Failed to initialize file logger for %s: %v", fileName, err)
+		// 	continue
+		// }
 
 		// Process each file sequentially
 		func() {
@@ -819,6 +820,8 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Force garbage collection
 			runtime.GC()
 		}()
+		endTime := time.Now()
+		fmt.Println("Processed", fileName, "in", endTime.Sub(startTime))
 	}
 
 	if failedTests > 0 {
