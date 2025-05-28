@@ -223,10 +223,10 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register
 			pvm.State.Registers[rd] = h
 		} else {
 			pvm.State.Registers[rd] = h
+			pvm.State.RAM.MutateAccessRange(uint64(h), size, ram.Mutable, ram.NoWrap)
 			h += types.Register(size)
 			var heapIndex ram.RamIndex = ram.RamIndex(h)
 			pvm.State.RAM.BeginningOfHeap = &heapIndex
-			pvm.State.RAM.MutateAccessRange(uint64(h), uint64(pvm.State.Registers[ra]), ram.Mutable, ram.NoWrap)
 		}
 
 	case 102: // count_set_bits_64
