@@ -190,10 +190,10 @@ type OperandTuple struct { // O
 	WorkPackageHash       [32]byte                  // h
 	SegmentRoot           [32]byte                  // e
 	AuthorizerHash        [32]byte                  // a
-	WorkReportOutput      []byte                    // o
 	WorkResultPayloadHash [32]byte                  // y
 	GasLimit              types.GenericGasValue     // g
 	ExecutionExitReason   types.ExecutionExitReason // d
+	WorkReportOutput      []byte                    // o
 }
 
 type PreimageProvisions map[struct {

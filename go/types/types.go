@@ -152,10 +152,10 @@ func (er ExecutionExitReason) IsError() bool {
 }
 
 type PrivilegedServices struct {
-	ManagerServiceIndex             ServiceIndex              // m
-	AssignServiceIndex              ServiceIndex              // a
-	DesignateServiceIndex           ServiceIndex              // v
-	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue // g
+	ManagerServiceIndex             ServiceIndex                     // m
+	AssignServiceIndices            [constants.NumCores]ServiceIndex // a
+	DesignateServiceIndex           ServiceIndex                     // v
+	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue        // g
 }
 
 func (p PrivilegedServices) TotalAlwaysAccumulateGas() GasValue {
