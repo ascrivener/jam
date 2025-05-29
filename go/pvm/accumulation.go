@@ -46,38 +46,39 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	GasUsed      types.GasValue
 }) {
 	// Use a map to collect unique service indices to process
-	serviceIndicesMap := make(map[types.ServiceIndex]struct{})
+	originalServiceIndicesMap := make(map[types.ServiceIndex]struct{})
 
 	// Add regular service indices
 	for idx := range freeAccumulationServices {
-		serviceIndicesMap[idx] = struct{}{}
+		originalServiceIndicesMap[idx] = struct{}{}
 	}
 	for _, report := range workReports {
 		for _, workDigest := range report.WorkDigests {
-			serviceIndicesMap[workDigest.ServiceIndex] = struct{}{}
+			originalServiceIndicesMap[workDigest.ServiceIndex] = struct{}{}
 		}
 	}
 
 	// Add privileged service indices
+	serviceIndicesMapWithPrivileged := make(map[types.ServiceIndex]struct{})
 	managerServiceIndex := accumulationStateComponents.PrivilegedServices.ManagerServiceIndex
 	designateServiceIndex := accumulationStateComponents.PrivilegedServices.DesignateServiceIndex
 	assignServiceIndices := accumulationStateComponents.PrivilegedServices.AssignServiceIndices
 
-	serviceIndicesMap[managerServiceIndex] = struct{}{}
-	serviceIndicesMap[designateServiceIndex] = struct{}{}
+	serviceIndicesMapWithPrivileged[managerServiceIndex] = struct{}{}
+	serviceIndicesMapWithPrivileged[designateServiceIndex] = struct{}{}
 	for _, idx := range assignServiceIndices {
-		serviceIndicesMap[idx] = struct{}{}
+		serviceIndicesMapWithPrivileged[idx] = struct{}{}
 	}
 
 	// Convert map keys to a slice for deterministic processing order
-	serviceIndices := make([]types.ServiceIndex, 0, len(serviceIndicesMap))
-	for idx := range serviceIndicesMap {
-		serviceIndices = append(serviceIndices, idx)
+	serviceIndicesWithPrivileged := make([]types.ServiceIndex, 0, len(serviceIndicesMapWithPrivileged))
+	for idx := range serviceIndicesMapWithPrivileged {
+		serviceIndicesWithPrivileged = append(serviceIndicesWithPrivileged, idx)
 	}
 
 	// Sort service indices for deterministic processing order
-	sort.Slice(serviceIndices, func(i, j int) bool {
-		return serviceIndices[i] < serviceIndices[j]
+	sort.Slice(serviceIndicesWithPrivileged, func(i, j int) bool {
+		return serviceIndicesWithPrivileged[i] < serviceIndicesWithPrivileged[j]
 	})
 
 	var wg sync.WaitGroup
@@ -105,76 +106,87 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	// Map to store preimage provisions by service index
 	allPreimageProvisions := make(PreimageProvisions)
 
-	// Store manager result for later processing
-	var managerResult AccumulationStateComponents
+	// Map to store results by service index
+	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
 
-	// Initialize state components for privileged services
-	var posteriorUpcomingValidatorKeysets types.ValidatorKeysets
-	var posteriorAuthorizersQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte
-
-	for _, sIndex := range serviceIndices {
+	// Process all services in parallel
+	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
-			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed, preimageProvisions := SingleServiceAccumulation(accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
+			components, transfers, preimageResult, gasUsed, provisions := SingleServiceAccumulation(
+				accumulationStateComponents,
+				timeslot,
+				workReports,
+				freeAccumulationServices,
+				sIndex,
+				posteriorEntropyAccumulator,
+			)
+
 			mu.Lock()
-			serviceGasUsage = append(serviceGasUsage, struct {
-				ServiceIndex types.ServiceIndex
-				GasUsed      types.GasValue
-			}{
-				ServiceIndex: sIndex,
-				GasUsed:      gasUsed,
-			})
+			// Store complete results
+			resultsByServiceIndex[sIndex] = components
 
-			// For manager service, just store the result for later processing
-			if sIndex == managerServiceIndex {
-				// Store result for processing after parallel phase
-				managerResult = accumulationStateComponentsResult
-			}
-			// For non-manager services, process as usual
-			if sIndex == designateServiceIndex {
-				posteriorUpcomingValidatorKeysets = accumulationStateComponentsResult.UpcomingValidatorKeysets
-			}
+			if _, exists := originalServiceIndicesMap[sIndex]; exists {
 
-			for coreIndex := range constants.NumCores {
-				assignServiceIndex := accumulationStateComponentsResult.PrivilegedServices.AssignServiceIndices[coreIndex]
-				if sIndex == assignServiceIndex {
-					posteriorAuthorizersQueue[coreIndex] = accumulationStateComponentsResult.AuthorizersQueue[coreIndex]
+				if preimageResult != nil {
+					accumulationOutputPairings[BEEFYCommitment{
+						ServiceIndex:   sIndex,
+						PreimageResult: *preimageResult,
+					}] = struct{}{}
+				}
+
+				// Record gas usage
+				serviceGasUsage = append(serviceGasUsage, struct {
+					ServiceIndex types.ServiceIndex
+					GasUsed      types.GasValue
+				}{
+					ServiceIndex: sIndex,
+					GasUsed:      gasUsed,
+				})
+
+				// Store preimage provisions
+				for k, v := range provisions {
+					allPreimageProvisions[k] = v
+				}
+
+				// Store transfers by service index
+				transfersByServiceIndex[sIndex] = transfers
+
+				// Add relevant service accounts to n
+				for serviceIndex, serviceAccount := range components.ServiceAccounts {
+					_, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
+					if serviceIndex == sIndex || !ok {
+						n[serviceIndex] = serviceAccount
+					}
+				}
+
+				// For each original key, check if it's missing in this result
+				// If missing, add it to m (the union of missing keys)
+				for origKey := range originalKeys {
+					if _, exists := components.ServiceAccounts[origKey]; !exists {
+						m[origKey] = struct{}{}
+					}
 				}
 			}
-
-			if preimageResult != nil {
-				accumulationOutputPairings[BEEFYCommitment{
-					ServiceIndex:   sIndex,
-					PreimageResult: *preimageResult,
-				}] = struct{}{}
-			}
-			transfersByServiceIndex[sIndex] = deferredTransfersResult
-
-			for k, v := range preimageProvisions {
-				allPreimageProvisions[k] = v
-			}
-
-			// Add relevant service accounts to n
-			for serviceIndex, serviceAccount := range accumulationStateComponentsResult.ServiceAccounts {
-				_, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
-				if serviceIndex == sIndex || !ok {
-					n[serviceIndex] = serviceAccount
-				}
-			}
-
-			// For each original key, check if it's missing in this result
-			// If missing, add it to m (the union of missing keys)
-			for origKey := range originalKeys {
-				if _, exists := accumulationStateComponentsResult.ServiceAccounts[origKey]; !exists {
-					m[origKey] = struct{}{}
-				}
-			}
-
 			mu.Unlock()
 		}(sIndex)
 	}
 	wg.Wait()
+
+	// Process special service results after all parallel work is complete
+
+	// Process manager result - ensure it exists before using
+	managerResult := resultsByServiceIndex[managerServiceIndex]
+
+	// Process designate service
+	posteriorUpcomingValidatorKeysets := resultsByServiceIndex[designateServiceIndex].UpcomingValidatorKeysets
+
+	// Process assign services
+	var posteriorAuthorizersQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte
+	for coreIndex, assignServiceIndex := range assignServiceIndices {
+		posteriorAuthorizersQueue[coreIndex] = resultsByServiceIndex[assignServiceIndex].AuthorizersQueue[coreIndex]
+	}
 
 	// Now process manager service
 	posteriorPrivilegedServices := ResolveManagerAccumulationResultPrivilegedServices(
@@ -188,7 +200,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 
 	// Now combine the deferred transfers in service index order
 	deferredTransfers := make([]DeferredTransfer, 0)
-	for _, sIndex := range serviceIndices {
+	for _, sIndex := range serviceIndicesWithPrivileged {
 		if transfers, ok := transfersByServiceIndex[sIndex]; ok {
 			deferredTransfers = append(deferredTransfers, transfers...)
 		}
@@ -237,7 +249,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage
 }
 
-// ProcessPrivilegedServices processes the privileged services based on the manager result
+// ResolveManagerAccumulationResultPrivilegedServices processes the privileged services based on the manager result
 // and returns the updated privileged services configuration.
 // This function handles the designate service and assign services in parallel.
 func ResolveManagerAccumulationResultPrivilegedServices(
@@ -250,53 +262,52 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 ) types.PrivilegedServices {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var designateServiceResult AccumulationStateComponents
-	var assignServiceIndices [constants.NumCores]types.ServiceIndex
 
-	// Process designate service in parallel
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		result, _, _, _, _ := SingleServiceAccumulation(
-			accumulationStateComponents,
-			timeslot,
-			workReports,
-			freeAccumulationServices,
-			managerPrivilegedServices.DesignateServiceIndex,
-			posteriorEntropyAccumulator,
-		)
-		mu.Lock()
-		designateServiceResult = result
-		mu.Unlock()
-	}()
+	// Collect unique service indices to avoid redundant computation
+	uniqueServiceIndices := make(map[types.ServiceIndex]struct{})
+	uniqueServiceIndices[managerPrivilegedServices.DesignateServiceIndex] = struct{}{}
+	for _, idx := range managerPrivilegedServices.AssignServiceIndices {
+		uniqueServiceIndices[idx] = struct{}{}
+	}
 
-	// Process assign services in parallel
-	for coreIndex := range constants.NumCores {
+	// Map to store results by service index
+	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
+
+	// Process each unique service index in parallel
+	for serviceIndex := range uniqueServiceIndices {
 		wg.Add(1)
-		go func(coreIdx types.CoreIndex) {
+		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
-			assignResult, _, _, _, _ := SingleServiceAccumulation(
+			result, _, _, _, _ := SingleServiceAccumulation(
 				accumulationStateComponents,
 				timeslot,
 				workReports,
 				freeAccumulationServices,
-				managerPrivilegedServices.AssignServiceIndices[coreIdx],
+				sIndex,
 				posteriorEntropyAccumulator,
 			)
-
 			mu.Lock()
-			assignServiceIndices[coreIdx] = assignResult.PrivilegedServices.AssignServiceIndices[coreIdx]
+			resultsByServiceIndex[sIndex] = result
 			mu.Unlock()
-		}(types.CoreIndex(coreIndex))
+		}(serviceIndex)
 	}
 
 	// Wait for all parallel processing to complete
 	wg.Wait()
 
+	// Extract results for designate service
+	designateServiceIndex := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
+
+	// Extract results for assign service
+	var assignServiceIndices [constants.NumCores]types.ServiceIndex
+	for coreIdx, serviceIndex := range managerPrivilegedServices.AssignServiceIndices {
+		assignServiceIndices[coreIdx] = resultsByServiceIndex[serviceIndex].PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIdx)]
+	}
+
 	// Return the updated privileged services configuration
 	return types.PrivilegedServices{
 		ManagerServiceIndex:             managerPrivilegedServices.ManagerServiceIndex,
-		DesignateServiceIndex:           designateServiceResult.PrivilegedServices.DesignateServiceIndex,
+		DesignateServiceIndex:           designateServiceIndex,
 		AssignServiceIndices:            assignServiceIndices,
 		AlwaysAccumulateServicesWithGas: managerPrivilegedServices.AlwaysAccumulateServicesWithGas,
 	}
