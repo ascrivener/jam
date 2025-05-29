@@ -647,6 +647,7 @@ func TestDeserializeWorkReports(t *testing.T) {
 
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
+
 	// Get all test vectors from the reports-l0 directory
 	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
 	vectorFiles, err := os.ReadDir(vectorsDir)
@@ -672,19 +673,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		if fileName == "00000000.json" {
 			continue
 		}
-		startTime := time.Now()
 		t.Logf("Processing test vector file: %s", fileName)
-
-		// Create a log file specific to this test file
-		// logFileName := fmt.Sprintf("pvm_execution_%s.log", strings.TrimSuffix(fileName, ".json"))
-		// err := pvm.InitFileLogger(logFileName)
-		// if err != nil {
-		// t.Errorf("Failed to initialize file logger for %s: %v", fileName, err)
-		// 	continue
-		// }
 
 		// Process each file sequentially
 		func() {
+			fileStart := time.Now()
+			defer func() {
+				fileEnd := time.Now()
+				fmt.Printf("Processed %s in %v\n", fileName, fileEnd.Sub(fileStart))
+			}()
+
 			// Load and parse test vector
 			testVectorPath := filepath.Join(vectorsDir, fileName)
 			testVectorData, err := os.ReadFile(testVectorPath)
@@ -755,16 +753,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 				failedTests++
 				return
 			}
-			// t.Logf("Stage 9: State transition completed")
+			// logf("Stage 9: State transition completed")
 
 			// serializedPostState := StateSerializer(postState)
-			// t.Logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
+			// logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
 
 			// merklizedPostState := MerklizeState(postState)
 			// expectedStateRoot := testVector.PostState.StateRoot
 			// actualStateRoot := hex.EncodeToString(merklizedPostState[:])
 			// stateRootMatch := expectedStateRoot == actualStateRoot
-			// t.Logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
+			// logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
 
 			// if !stateRootMatch {
 			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
@@ -775,12 +773,12 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			expectedSerializedState := testVector.PostState.KeyVals.toMap()
 			t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
-			// t.Logf("Stage 13: Comparing serialized states (expected vs. actual)...")
+			// logf("Stage 13: Comparing serialized states (expected vs. actual)...")
 			// if !compareSerializedStatesNoFatal(expectedSerializedState, serializedPostState, t) {
 			// 	failedTests++
 			// 	return
 			// }
-			// t.Logf("Stage 14: Serialized states match")
+			// logf("Stage 14: Serialized states match")
 
 			// Deserialize the expected state
 			expectedPostState, err := StateDeserializer(expectedSerializedState)
@@ -820,12 +818,10 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Force garbage collection
 			runtime.GC()
 		}()
-		endTime := time.Now()
-		fmt.Println("Processed", fileName, "in", endTime.Sub(startTime))
 	}
 
 	if failedTests > 0 {
-		t.Logf("Tests completed with %d failures", failedTests)
+		t.Errorf("Tests completed with %d failures", failedTests)
 	} else {
 		t.Logf("All tests passed successfully")
 	}

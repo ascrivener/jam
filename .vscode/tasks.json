@@ -2,6 +2,21 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "Run Optimized State Tests",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go && go test -c -o state.test ./state -gcflags=all=-B && ./state.test -test.run=TestStateDeserializerWithTransition",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "select-constants-generator",
             "type": "shell",
             "command": "if [ \"${input:testSize}\" = \"tiny\" ]; then echo \"Using tiny test vectors with test constants\" && cd ${workspaceFolder}/go/constants && JAM_USE_TEST_CONSTANTS=true go run constants_gen.go; else echo \"Using full test vectors with production constants\" && cd ${workspaceFolder}/go/constants && go run constants_gen.go; fi",

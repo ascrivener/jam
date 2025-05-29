@@ -2,6 +2,32 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Run Optimized State Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go/state",
+            "preLaunchTask": "Run Optimized State Tests",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "name": "Run State Tests",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/go/state",
+            "args": [
+                "-test.run=TestStateDeserializerWithTransition",
+                "-test.v"
+            ],
+            "buildFlags": "-gcflags=all=-B",
+            "showLog": true
+        },
+        {
             "name": "Debug Accumulation Tests (With Size Selection)",
             "type": "go",
             "request": "launch",
