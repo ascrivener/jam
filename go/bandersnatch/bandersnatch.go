@@ -7,14 +7,25 @@ package bandersnatch
 // Declaration of the Rust functions.
 int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
+int initialize_pcs_params();
 */
 import "C"
 import (
 	"errors"
+	"log"
 	"unsafe"
 
 	"github.com/ascrivener/jam/types"
 )
+
+// init is called when the package is imported
+func init() {
+	// Initialize the PCS parameters on package import
+	ret := C.initialize_pcs_params()
+	if ret != 0 {
+		log.Fatalf("Failed to initialize PCS parameters: %d", ret)
+	}
+}
 
 func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
 	var out [32]byte

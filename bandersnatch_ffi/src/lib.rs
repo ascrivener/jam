@@ -1,13 +1,14 @@
-use ark_vrf::ietf::IetfSuite;
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::suites::bandersnatch::{
     BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
 };
 use ark_vrf::Suite;
 use ark_vrf::{codec, Error};
+use once_cell::sync::OnceCell;
 use std::fs::File;
 use std::io::Read;
 use std::slice;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub fn ietf_vrf_output_ffi<S: Suite>(proof: &[u8]) -> Result<[u8; 32], Error> {
     // For Bandersnatch IETF proof, the format is:
@@ -56,29 +57,62 @@ pub const PCS_SRS_FILE: &str = concat!(
     "/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin"
 );
 
-pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> {
-    let mut file = match File::open(PCS_SRS_FILE) {
-        Ok(f) => f,
-        Err(_) => {
-            return Err(Error::InvalidData);
-        }
-    };
+// Use OnceCell instead of Lazy for explicit initialization
+static PCS_PARAMS: OnceCell<Result<PcsParams, Error>> = OnceCell::new();
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-    let mut buf = Vec::new();
-    if let Err(_) = file.read_to_end(&mut buf) {
-        return Err(Error::InvalidData);
+/// Initialize the PCS parameters.
+/// Returns 0 on success, -1 on failure.
+/// Safe to call multiple times - will only initialize once.
+#[no_mangle]
+pub extern "C" fn initialize_pcs_params() -> i32 {
+    if INITIALIZED.load(Ordering::Relaxed) {
+        return 0; // Already initialized
     }
 
-    let pcs_params = match PcsParams::deserialize_uncompressed(&mut &buf[..]) {
-        Ok(p) => p,
-        Err(_) => {
-            return Err(Error::InvalidData);
+    let result = || -> Result<PcsParams, Error> {
+        let mut file = File::open(PCS_SRS_FILE).map_err(|_| Error::InvalidData)?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|_| Error::InvalidData)?;
+        PcsParams::deserialize_uncompressed(&mut &buf[..]).map_err(|_| Error::InvalidData)
+    }();
+
+    if PCS_PARAMS.set(result).is_err() {
+        return -1; // Error setting the value (should never happen)
+    }
+
+    INITIALIZED.store(true, Ordering::Relaxed);
+    0
+}
+
+// Helper function to get the initialized parameters
+fn get_pcs_params() -> Result<&'static PcsParams, Error> {
+    match PCS_PARAMS.get() {
+        Some(Ok(params)) => Ok(params),
+        Some(Err(_)) => Err(Error::InvalidData),
+        None => {
+            // Auto-initialize if not explicitly initialized
+            if initialize_pcs_params() != 0 {
+                return Err(Error::InvalidData);
+            }
+
+            // Now try again
+            match PCS_PARAMS.get() {
+                Some(Ok(params)) => Ok(params),
+                _ => Err(Error::InvalidData),
+            }
         }
-    };
+    }
+}
+
+pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> {
+    // Get the initialized PCS parameters
+    let pcs_params = get_pcs_params()?;
 
     let ring_size: usize = hashes.len();
 
-    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params) {
+    // Clone the parameters since from_pcs_params likely takes ownership
+    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params.clone()) {
         Ok(p) => p,
         Err(_) => {
             return Err(Error::InvalidData);
