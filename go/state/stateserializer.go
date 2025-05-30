@@ -125,6 +125,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 				MinimumGasForAccumulate  types.GasValue
 				MinimumGasForOnTransfer  types.GasValue
 				TotalOctetsUsedInStorage uint64
+				GratisStorageOffset      types.Balance
 				TotalItemsUsedInStorage  uint32
 			}{
 				sAccount.CodeHash,
@@ -132,6 +133,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 				sAccount.MinimumGasForAccumulate,
 				sAccount.MinimumGasForOnTransfer,
 				sAccount.TotalOctetsUsedInStorage(),
+				sAccount.GratisStorageOffset,
 				sAccount.TotalItemsUsedInStorage(),
 			},
 		})

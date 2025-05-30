@@ -18,6 +18,7 @@ type ServiceAccount struct {
 	StorageDictionary              map[StorageDictionaryKey]types.Blob                    // s
 	PreimageLookup                 map[PreimageLookupKey]types.Blob                       // p
 	PreimageLookupHistoricalStatus map[PreimageLookupHistoricalStatusKey][]types.Timeslot // l
+	GratisStorageOffset            types.Balance                                          // f
 	CodeHash                       [32]byte                                               // c
 	Balance                        types.Balance                                          // b
 	MinimumGasForAccumulate        types.GasValue                                         // g
@@ -67,7 +68,7 @@ func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
 
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
-	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage()) + constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage()))
+	return types.Balance(max(0, constants.ServiceMinimumBalance+constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage())+constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage())-uint64(s.GratisStorageOffset)))
 }
 
 // bold m, bold c

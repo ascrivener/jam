@@ -246,6 +246,7 @@ type AccountInfo struct {
 	MinimumGasForOnTransfer  types.GenericGasValue // m
 	TotalOctetsUsedInStorage types.GenericNum      // o
 	StorageItems             types.GenericNum      // i
+	GratisStorageOffset      types.GenericNum      // f
 }
 
 func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
@@ -278,6 +279,7 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 				MinimumGasForOnTransfer:  types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
 				TotalOctetsUsedInStorage: types.GenericNum(targetAccount.TotalOctetsUsedInStorage()),
 				StorageItems:             types.GenericNum(targetAccount.TotalItemsUsedInStorage()),
+				GratisStorageOffset:      types.GenericNum(targetAccount.GratisStorageOffset),
 			}
 
 			// Serialize the account information
