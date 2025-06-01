@@ -23,6 +23,9 @@ type ServiceAccount struct {
 	Balance                        types.Balance                                          // b
 	MinimumGasForAccumulate        types.GasValue                                         // g
 	MinimumGasForOnTransfer        types.GasValue                                         // m
+	CreatedTimeSlot                types.Timeslot                                         // r
+	MostRecentAccumulationTimeslot types.Timeslot                                         // a
+	ParentServiceIndex             types.ServiceIndex                                     // p
 }
 
 type StorageDictionaryKey [23]byte
@@ -78,7 +81,7 @@ func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte) {
 		offset := 0
 		L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 		if !ok {
-			panic("failed to decode metadata length")
+			return nil, nil
 		}
 		offset += n
 		m := preimage[offset : offset+int(L_m)]
