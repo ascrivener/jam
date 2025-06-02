@@ -314,7 +314,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case CheckpointID:
 			return Checkpoint(ctx)
 		case NewID:
-			return New(ctx)
+			return New(ctx, timeslot)
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:

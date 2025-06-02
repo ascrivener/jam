@@ -544,7 +544,10 @@ func accumulateAndIntegrate(
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			_, gasUsed := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
+			serviceAccount, gasUsed := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
+			if _, exists := accumulationStatistics[sIndex]; exists {
+				serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
+			}
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
 				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{

@@ -120,13 +120,16 @@ func StateSerializer(state State) map[[31]byte][]byte {
 				return stateKeyConstructor(255, sIndex)
 			},
 			data: struct {
-				CodeHash                 [32]byte
-				Balance                  types.Balance
-				MinimumGasForAccumulate  types.GasValue
-				MinimumGasForOnTransfer  types.GasValue
-				TotalOctetsUsedInStorage uint64
-				GratisStorageOffset      types.Balance
-				TotalItemsUsedInStorage  uint32
+				CodeHash                       [32]byte
+				Balance                        types.Balance
+				MinimumGasForAccumulate        types.GasValue
+				MinimumGasForOnTransfer        types.GasValue
+				TotalOctetsUsedInStorage       uint64
+				GratisStorageOffset            types.Balance
+				TotalItemsUsedInStorage        uint32
+				CreatedTimeSlot                types.Timeslot
+				MostRecentAccumulationTimeslot types.Timeslot
+				ParentServiceIndex             types.ServiceIndex
 			}{
 				sAccount.CodeHash,
 				sAccount.Balance,
@@ -135,6 +138,9 @@ func StateSerializer(state State) map[[31]byte][]byte {
 				sAccount.TotalOctetsUsedInStorage(),
 				sAccount.GratisStorageOffset,
 				sAccount.TotalItemsUsedInStorage(),
+				sAccount.CreatedTimeSlot,
+				sAccount.MostRecentAccumulationTimeslot,
+				sAccount.ParentServiceIndex,
 			},
 		})
 
@@ -363,12 +369,16 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 	for sIndex, data := range serviceIndexes {
 		// Deserialize account state
 		var accountData struct {
-			CodeHash                 [32]byte
-			Balance                  types.Balance
-			MinimumGasForAccumulate  types.GasValue
-			MinimumGasForOnTransfer  types.GasValue
-			TotalOctetsUsedInStorage uint64
-			TotalItemsUsedInStorage  uint32
+			CodeHash                       [32]byte
+			Balance                        types.Balance
+			MinimumGasForAccumulate        types.GasValue
+			MinimumGasForOnTransfer        types.GasValue
+			TotalOctetsUsedInStorage       uint64
+			GratisStorageOffset            types.Balance
+			TotalItemsUsedInStorage        uint32
+			CreatedTimeSlot                types.Timeslot
+			MostRecentAccumulationTimeslot types.Timeslot
+			ParentServiceIndex             types.ServiceIndex
 		}
 
 		if err := serializer.Deserialize(data, &accountData); err != nil {
@@ -384,6 +394,10 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 			StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
 			PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
 			PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
+			GratisStorageOffset:            accountData.GratisStorageOffset,
+			CreatedTimeSlot:                accountData.CreatedTimeSlot,
+			MostRecentAccumulationTimeslot: accountData.MostRecentAccumulationTimeslot,
+			ParentServiceIndex:             accountData.ParentServiceIndex,
 		}
 
 		// Now look for storage dictionary entries
