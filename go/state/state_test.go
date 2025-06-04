@@ -649,7 +649,7 @@ func TestDeserializeWorkReports(t *testing.T) {
 func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)
@@ -674,6 +674,24 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
+
+		// Create a directory for logs if it doesn't exist
+		// logDir := "test_logs"
+		// if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		// 	err := os.Mkdir(logDir, 0755)
+		// 	if err != nil {
+		// 		t.Fatalf("Failed to create log directory '%s': %v", logDir, err)
+		// 	}
+		// }
+
+		// // Initialize file logger for the current test vector
+		// logFileName := strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".log"
+		// logFilePath := filepath.Join(logDir, logFileName)
+		// if err := pvm.InitFileLogger(logFilePath); err != nil {
+		// 	t.Errorf("Failed to initialize file logger for %s: %v", logFilePath, err)
+		// 	// Decide if you want to continue without logging or skip the test
+		// 	// For now, let's log the error and continue
+		// }
 
 		// Process each file sequentially
 		func() {
