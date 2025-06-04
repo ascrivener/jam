@@ -336,6 +336,34 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 			return a.Float() < b.Float()
 		case reflect.String:
 			return a.String() < b.String()
+		case reflect.Array:
+			// Check if b is also an array and if both are byte arrays ([N]byte)
+			if b.Kind() == reflect.Array &&
+				a.Type().Elem().Kind() == reflect.Uint8 &&
+				b.Type().Elem().Kind() == reflect.Uint8 {
+
+				lenA := a.Len()
+				lenB := b.Len()
+				minLen := lenA
+				if lenB < minLen {
+					minLen = lenB
+				}
+
+				for k := 0; k < minLen; k++ {
+					byteA := byte(a.Index(k).Uint()) // .Uint() is safe for uint8 elements
+					byteB := byte(b.Index(k).Uint())
+					if byteA < byteB {
+						return true
+					}
+					if byteA > byteB {
+						return false
+					}
+				}
+				// If all common elements are equal, the shorter array comes first.
+				return lenA < lenB
+			}
+			// If not byte arrays or types mismatch for this specialized comparison, fall through.
+			fallthrough
 		default:
 			// Fallback: compare string representations.
 			return fmt.Sprintf("%v", a.Interface()) < fmt.Sprintf("%v", b.Interface())
