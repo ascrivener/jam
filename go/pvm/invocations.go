@@ -44,7 +44,7 @@ type IntegratedPVM struct {
 }
 
 type IntegratedPVMsAndExportSequence struct {
-	IntegratedPVMs map[int]IntegratedPVM
+	IntegratedPVMs map[uint64]IntegratedPVM
 	ExportSequence [][]byte
 }
 
@@ -77,12 +77,10 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 			return Machine(ctx)
 		case PeekID:
 			return Peek(ctx)
-		case ZeroID:
-			return Zero(ctx)
+		case PagesID:
+			return Pages(ctx)
 		case PokeID:
 			return Poke(ctx)
-		case VoidID:
-			return Void(ctx)
 		case InvokeID:
 			return Invoke(ctx)
 		case ExpungeID:
@@ -112,7 +110,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		Authorizer                     [32]byte
 	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
 	integratedPVMsAndExportSequence := &IntegratedPVMsAndExportSequence{
-		IntegratedPVMs: map[int]IntegratedPVM{},
+		IntegratedPVMs: map[uint64]IntegratedPVM{},
 		ExportSequence: [][]byte{},
 	}
 	r, _ := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)

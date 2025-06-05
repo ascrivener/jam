@@ -19,10 +19,19 @@ type HostFunctionIdentifier int
 
 const (
 	GasID HostFunctionIdentifier = iota
+	FetchID
 	LookupID
 	ReadID
 	WriteID
 	InfoID
+	HistoricalLookupID
+	ExportID
+	MachineID
+	PeekID
+	PokeID
+	PagesID
+	InvokeID
+	ExpungeID
 	BlessID
 	AssignID
 	DesignateID
@@ -35,16 +44,6 @@ const (
 	SolicitID
 	ForgetID
 	YieldID
-	HistoricalLookupID
-	FetchID
-	ExportID
-	MachineID
-	PeekID
-	PokeID
-	ZeroID
-	VoidID
-	InvokeID
-	ExpungeID
 	ProvideID
 )
 
@@ -1207,7 +1206,7 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
 		}
-		n := 0
+		n := uint64(0)
 		for {
 			if _, ok := ctx.Argument.IntegratedPVMs[n]; !ok {
 				break
@@ -1228,10 +1227,10 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		// Extract the 4 parameters from registers
-		n := int(ctx.State.Registers[7]) // Source integrated PVM index
-		o := ctx.State.Registers[8]      // Destination memory address
-		s := ctx.State.Registers[9]      // Source memory address
-		z := ctx.State.Registers[10]     // Length to copy
+		n := ctx.State.Registers[7]  // Source integrated PVM index
+		o := ctx.State.Registers[8]  // Destination memory address
+		s := ctx.State.Registers[9]  // Source memory address
+		z := ctx.State.Registers[10] // Length to copy
 
 		// Check if destination range is accessible
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
@@ -1239,7 +1238,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 		}
 
 		// Check if integrated PVM exists
-		sourcePVM, ok := ctx.Argument.IntegratedPVMs[n]
+		sourcePVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return NewSimpleExitReason(ExitGo)
@@ -1259,35 +1258,54 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 	})
 }
 
-func Zero(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
+func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		// Extract the 3 parameters from registers
-		n := int(ctx.State.Registers[7]) // Target integrated PVM index
-		p := ctx.State.Registers[8]      // Start address
-		c := ctx.State.Registers[9]      // Count/length
-
-		// Check for invalid memory range
-		// p < 16 ∨ p + c ≥ 2^32 / ZP
-		if p < 16 || p+c >= (1<<32)/ram.PageSize {
-			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo)
-		}
+		n := ctx.State.Registers[7] // Target integrated PVM index
+		p := ctx.State.Registers[8] // Start address
+		c := ctx.State.Registers[9] // Count/length
+		r := ctx.State.Registers[10]
 
 		// Check if integrated PVM exists
-		targetPVM, ok := ctx.Argument.IntegratedPVMs[n]
+		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		pPageStart := p * ram.PageSize
-		cPagesSize := c * ram.PageSize
-		// Zero out the memory range
-		// First create a zero-filled slice of the right size
-		zeroBytes := make([]byte, cPagesSize)
-		targetPVM.RAM.MutateRange(uint64(pPageStart), zeroBytes, ram.NoWrap, false)
-		targetPVM.RAM.MutateAccessRange(uint64(pPageStart), uint64(cPagesSize), ram.Mutable, ram.NoWrap)
+		// Check for invalid memory range
+		// p < 16 ∨ p + c ≥ 2^32 / ZP
+		if r > 4 || p < 16 || p+c >= (1<<32)/ram.PageSize {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
 
+		if r > 2 && targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(p)*ram.PageSize, uint64(c)*ram.PageSize, ram.NoWrap) {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		if r < 3 {
+			for i := uint64(p); i < uint64(p+c); i++ {
+				targetPVM.RAM.ZeroPage(uint32(i))
+			}
+		}
+
+		indexStart := uint64(p * ram.PageSize)
+		indexEnd := indexStart + uint64(c*ram.PageSize)
+
+		switch r {
+		case 0:
+			for i := uint64(p); i < uint64(p+c); i++ {
+				targetPVM.RAM.ClearPageAccess(uint32(i))
+			}
+		case 1:
+		case 3:
+			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, ram.Immutable, ram.NoWrap)
+		case 2:
+		case 4:
+			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, ram.Mutable, ram.NoWrap)
+		}
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 		return NewSimpleExitReason(ExitGo)
@@ -1297,10 +1315,10 @@ func Zero(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		// Extract the 4 parameters from registers
-		n := int(ctx.State.Registers[7]) // Target integrated PVM index
-		s := ctx.State.Registers[8]      // Source address in current context
-		o := ctx.State.Registers[9]      // Destination address in target PVM
-		z := ctx.State.Registers[10]     // Length to copy
+		n := ctx.State.Registers[7]  // Target integrated PVM index
+		s := ctx.State.Registers[8]  // Source address in current context
+		o := ctx.State.Registers[9]  // Destination address in target PVM
+		z := ctx.State.Registers[10] // Length to copy
 
 		// Check if source range is accessible in current context
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(s), uint64(z), ram.NoWrap) {
@@ -1308,7 +1326,7 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 		}
 
 		// Check if integrated PVM exists
-		targetPVM, ok := ctx.Argument.IntegratedPVMs[n]
+		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return NewSimpleExitReason(ExitGo)
@@ -1328,46 +1346,11 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason 
 	})
 }
 
-func Void(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
-	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
-		// Extract the 3 parameters from registers
-		n := int(ctx.State.Registers[7])     // Target integrated PVM index
-		pPageIndex := ctx.State.Registers[8] // Start address
-		cPages := ctx.State.Registers[9]     // length
-		pPageStart := pPageIndex * ram.PageSize
-		cPagesSize := cPages * ram.PageSize
-
-		// Check if integrated PVM exists
-		targetPVM, ok := ctx.Argument.IntegratedPVMs[n]
-		if !ok {
-			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		// Check if memory range is valid and accessible
-		if pPageIndex < 16 || pPageIndex+cPages >= (1<<32)/ram.PageSize ||
-			targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(pPageStart), uint64(cPagesSize), ram.NoWrap) {
-			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo)
-		}
-
-		// Zero out the memory by filling it with zeros
-		zeroBytes := make([]byte, cPagesSize)
-		targetPVM.RAM.MutateRange(uint64(pPageStart), zeroBytes, ram.NoWrap, false)
-		// Set the memory to inaccessible
-		targetPVM.RAM.MutateAccessRange(uint64(pPageStart), uint64(cPagesSize), ram.Inaccessible, ram.NoWrap)
-
-		// Set result to OK
-		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo)
-	})
-}
-
 func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		// Extract the parameters from registers
-		n := int(ctx.State.Registers[7]) // Target integrated PVM index
-		o := ctx.State.Registers[8]      // Memory offset for gas/weight data
+		n := ctx.State.Registers[7] // Target integrated PVM index
+		o := ctx.State.Registers[8] // Memory offset for gas/weight data
 
 		// Check if memory range o to o+112 is accessible for reading
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(112), ram.NoWrap) {
@@ -1375,7 +1358,7 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 		}
 
 		// Check if integrated PVM exists
-		targetPVM, ok := ctx.Argument.IntegratedPVMs[n]
+		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return NewSimpleExitReason(ExitGo)
@@ -1430,7 +1413,7 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 			}
 		}
 		// Always update the integrated PVM in one place
-		ctx.Argument.IntegratedPVMs[n] = targetPVM
+		ctx.Argument.IntegratedPVMs[uint64(n)] = targetPVM
 		return NewSimpleExitReason(ExitGo)
 	})
 }
@@ -1439,10 +1422,10 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReaso
 func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		// Extract the parameter from register
-		n := int(ctx.State.Registers[7]) // Target integrated PVM index to expunge
+		n := ctx.State.Registers[7] // Target integrated PVM index to expunge
 
 		// Check if integrated PVM exists
-		_, ok := ctx.Argument.IntegratedPVMs[n]
+		_, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			// n is not a key in the map, return WHO error
 			ctx.State.Registers[7] = types.Register(HostCallWho)
@@ -1451,10 +1434,10 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 
 		// PVM exists, store its index in Register 7
 		// Here we're assuming the "i" component refers to the index, which is n
-		ctx.State.Registers[7] = types.Register(n)
+		ctx.State.Registers[7] = n
 
 		// Remove the PVM from the map (m ∖ n)
-		delete(ctx.Argument.IntegratedPVMs, n)
+		delete(ctx.Argument.IntegratedPVMs, uint64(n))
 
 		return NewSimpleExitReason(ExitGo)
 	})
