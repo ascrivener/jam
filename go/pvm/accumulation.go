@@ -41,7 +41,7 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }) {
@@ -87,7 +87,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		ServiceIndex types.ServiceIndex
 		GasUsed      types.GasValue
 	}
-	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
+	accumulationOutputPairings := make([]BEEFYCommitment, 0)
 	n := make(serviceaccount.ServiceAccounts)
 
 	// m will store the union of (original keys - result keys) for all service indices
@@ -130,10 +130,10 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 			if _, exists := originalServiceIndicesMap[sIndex]; exists {
 
 				if preimageResult != nil {
-					accumulationOutputPairings[BEEFYCommitment{
+					accumulationOutputPairings = append(accumulationOutputPairings, BEEFYCommitment{
 						ServiceIndex:   sIndex,
 						PreimageResult: *preimageResult,
-					}] = struct{}{}
+					})
 				}
 
 				// Record gas usage
@@ -313,7 +313,7 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	}
 }
 
-func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }) {
@@ -321,7 +321,7 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
 	allDeferredTransfers := make([]DeferredTransfer, 0)
-	allOutputPairings := make(map[BEEFYCommitment]struct{})
+	allOutputPairings := make([]BEEFYCommitment, 0)
 	allServiceGasUsage := make([]struct {
 		ServiceIndex types.ServiceIndex
 		GasUsed      types.GasValue
@@ -376,8 +376,8 @@ func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports 
 		allServiceGasUsage = append(allServiceGasUsage, batchServiceGasUsage...)
 
 		// Merge the output pairings
-		for pairing := range batchPairings {
-			allOutputPairings[pairing] = struct{}{}
+		for _, pairing := range batchPairings {
+			allOutputPairings = append(allOutputPairings, pairing)
 		}
 
 		// Update the count of reports processed

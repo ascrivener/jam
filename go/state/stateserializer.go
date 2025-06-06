@@ -93,7 +93,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 	stateComponents := []StateComponent{
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(1) }, state.AuthorizersPool},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(2) }, state.AuthorizerQueue},
-		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, state.RecentBlocks},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, state.RecentActivity},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(4) }, state.SafroleBasicState},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(5) }, state.Disputes},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(6) }, state.EntropyAccumulator},
@@ -106,6 +106,7 @@ func StateSerializer(state State) map[[31]byte][]byte {
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(13) }, state.ValidatorStatistics},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(14) }, state.AccumulationQueue},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(15) }, state.AccumulationHistory},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(16) }, state.AccumulationOutputLog},
 	}
 
 	// Process ServiceAccounts
@@ -321,7 +322,7 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 	}{
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(1) }, &state.AuthorizersPool},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(2) }, &state.AuthorizerQueue},
-		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, &state.RecentBlocks},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(3) }, &state.RecentActivity},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(4) }, &state.SafroleBasicState},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(5) }, &state.Disputes},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(6) }, &state.EntropyAccumulator},
@@ -334,6 +335,7 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(13) }, &state.ValidatorStatistics},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(14) }, &state.AccumulationQueue},
 		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(15) }, &state.AccumulationHistory},
+		{func() [31]byte { return stateKeyConstructorFromStateComponentIndex(16) }, &state.AccumulationOutputLog},
 	}
 
 	// Deserialize each basic component

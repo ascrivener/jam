@@ -1,20 +1,22 @@
 package merklizer
 
+import "golang.org/x/crypto/sha3"
+
 // MMRNode represents a node in the Merkle Mountain Range
 // nil value represents an empty node
 type MMRNode *[32]byte
 
 // MMRRange is the Merkle Mountain Range structure
 // a slice of optional nodes (nil means empty)
-type MMRRange []MMRNode
+type MMBelt []MMRNode
 
 // DeepCopy creates a completely new copy of an MMRRange with new memory allocations
-func (r MMRRange) DeepCopy() MMRRange {
+func (r MMBelt) DeepCopy() MMBelt {
 	if r == nil {
 		return nil
 	}
 
-	result := make(MMRRange, len(r))
+	result := make(MMBelt, len(r))
 	for i, node := range r {
 		if node != nil {
 			// Create a new [32]byte and copy the data
@@ -30,12 +32,12 @@ func (r MMRRange) DeepCopy() MMRRange {
 // r: the current MMR range
 // l: the leaf to append
 // hash: hash function
-func Append(r MMRRange, l [32]byte, hash func([]byte) [32]byte) MMRRange {
+func Append(r MMBelt, l [32]byte, hash func([]byte) [32]byte) MMBelt {
 	return appendHelper(r, l, 0, hash)
 }
 
 // appendHelper (function P in the formula) is the recursive helper for Append
-func appendHelper(r MMRRange, l [32]byte, n int, hash func([]byte) [32]byte) MMRRange {
+func appendHelper(r MMBelt, l [32]byte, n int, hash func([]byte) [32]byte) MMBelt {
 	// Case 1: n ≥ |r| - we've gone past the end, append l
 	if n >= len(r) {
 		return append(r, &l)
@@ -69,4 +71,13 @@ func appendHelper(r MMRRange, l [32]byte, n int, hash func([]byte) [32]byte) MMR
 
 func replaceAtIndex[T any](r []T, idx int, value T) {
 	r[idx] = value
+}
+
+func Keccak256Hash(data []byte) [32]byte {
+	var result [32]byte
+	hash := sha3.NewLegacyKeccak256()
+	hash.Write(data)
+	sum := hash.Sum(nil)
+	copy(result[:], sum[:])
+	return result
 }

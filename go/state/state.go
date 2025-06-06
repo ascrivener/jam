@@ -9,6 +9,7 @@ import (
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
+	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/validatorstatistics"
@@ -17,7 +18,7 @@ import (
 
 type State struct {
 	AuthorizersPool            [constants.NumCores][][32]byte                                               // α
-	RecentBlocks               []RecentBlock                                                                // β
+	RecentActivity             RecentActivity                                                               // β
 	SafroleBasicState          SafroleBasicState                                                            // γ
 	ServiceAccounts            serviceaccount.ServiceAccounts                                               // δ
 	EntropyAccumulator         [4][32]byte                                                                  // η
@@ -32,6 +33,7 @@ type State struct {
 	ValidatorStatistics        validatorstatistics.ValidatorStatistics                                      // π
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
 	AccumulationHistory        AccumulationHistory                                                          // ξ
+	AccumulationOutputLog      []pvm.BEEFYCommitment                                                        // θ
 }
 
 type PendingReport struct {
