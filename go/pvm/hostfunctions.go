@@ -132,17 +132,10 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 		var preImage *[]byte
 
 		if a != nil {
-			// Create key by hashing service ID and memory contents
-			serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(sStar))
 			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-			combinedBytes := append(serviceIdBytes, keyBytes...)
-
-			var keyArray [32]byte
-			h := blake2b.Sum256(combinedBytes)
-			copy(keyArray[:], h[:])
 
 			// Look up in state if available
-			if val, ok := a.StorageDictionaryGet(keyArray[:]); ok {
+			if val, ok := a.StorageDictionaryGet(keyBytes); ok {
 				byteSlice := []byte(val)
 				preImage = &byteSlice
 			}
@@ -188,16 +181,9 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 			return NewSimpleExitReason(ExitPanic)
 		}
 
-		// Compute the key hash
-		serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(serviceIndex))
 		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-		combinedBytes := append(serviceIdBytes, keyBytes...)
 
-		var keyArray [32]byte
-		h := blake2b.Sum256(combinedBytes)
-		copy(keyArray[:], h[:])
-
-		oldValue, ok := serviceAccount.StorageDictionaryGet(keyArray[:])
+		oldValue, ok := serviceAccount.StorageDictionaryGet(keyBytes)
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
@@ -210,20 +196,20 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			serviceAccount.StorageDictionaryDelete(keyArray[:])
+			serviceAccount.StorageDictionaryDelete(keyBytes)
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			serviceAccount.StorageDictionarySet(keyArray[:], valueBytes)
+			serviceAccount.StorageDictionarySet(keyBytes, valueBytes)
 		}
 
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			if !ok {
-				serviceAccount.StorageDictionaryDelete(keyArray[:])
+				serviceAccount.StorageDictionaryDelete(keyBytes)
 			} else {
-				serviceAccount.StorageDictionarySet(keyArray[:], oldValue)
+				serviceAccount.StorageDictionarySet(keyBytes, oldValue)
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 		} else {
