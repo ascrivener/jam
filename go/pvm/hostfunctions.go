@@ -129,7 +129,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 		}
 
 		// Determine 'v'
-		var preImage *[]byte
+		var preImage []byte
 
 		if a != nil {
 			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
@@ -137,15 +137,12 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			// Look up in state if available
 			if val, ok := a.StorageDictionaryGet(keyBytes); ok {
 				byteSlice := []byte(val)
-				preImage = &byteSlice
+				preImage = byteSlice
 			}
 		}
 
 		// Calculate f and l
-		var preImageLen int
-		if preImage != nil {
-			preImageLen = len(*preImage)
-		}
+		preImageLen := len(preImage)
 
 		f := min(ctx.State.Registers[11], types.Register(preImageLen))
 		l := min(ctx.State.Registers[12], types.Register(preImageLen)-f)
@@ -160,7 +157,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(preImageLen)
-			slicedData := (*preImage)[int(f):int(f+l)]
+			slicedData := preImage[int(f):int(f+l)]
 			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
 		}
 
@@ -222,17 +219,17 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 
 // AccountInfo represents the structured account information for serialization
 type AccountInfo struct {
-	CodeHash                       [32]byte              // c
-	Balance                        types.GenericNum      // b
-	ThresholdBalanceNeeded         types.GenericNum      // t
-	MinimumGasForAccumulate        types.GenericGasValue // g
-	MinimumGasForOnTransfer        types.GenericGasValue // m
-	TotalOctetsUsedInStorage       types.GenericNum      // o
-	StorageItems                   types.GenericNum      // i
-	GratisStorageOffset            types.GenericNum      // f
-	CreatedTimeSlot                types.GenericNum      // r
-	MostRecentAccumulationTimeslot types.GenericNum      // a
-	ParentServiceIndex             types.GenericNum      // p
+	CodeHash                       [32]byte           // c
+	Balance                        types.Balance      // b
+	ThresholdBalanceNeeded         types.Balance      // t
+	MinimumGasForAccumulate        types.GasValue     // g
+	MinimumGasForOnTransfer        types.GasValue     // m
+	TotalOctetsUsedInStorage       uint64             // o
+	StorageItems                   uint32             // i
+	GratisStorageOffset            types.Balance      // f
+	CreatedTimeSlot                types.Timeslot     // r
+	MostRecentAccumulationTimeslot types.Timeslot     // a
+	ParentServiceIndex             types.ServiceIndex // p
 }
 
 func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
@@ -254,41 +251,47 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 		// Get output offset (o) from ω8
 		outputOffset := ctx.State.Registers[8]
 
+		var v []byte
+
 		// If target account exists, encode its information
 		if targetAccount != nil {
 			// Create struct with account information
 			accountInfo := AccountInfo{
 				CodeHash:                       targetAccount.CodeHash,
-				Balance:                        types.GenericNum(targetAccount.Balance),
-				ThresholdBalanceNeeded:         types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
-				MinimumGasForAccumulate:        types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
-				MinimumGasForOnTransfer:        types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
-				TotalOctetsUsedInStorage:       types.GenericNum(targetAccount.TotalOctetsUsedInStorage),
-				StorageItems:                   types.GenericNum(targetAccount.TotalItemsUsedInStorage),
-				GratisStorageOffset:            types.GenericNum(targetAccount.GratisStorageOffset),
-				CreatedTimeSlot:                types.GenericNum(targetAccount.CreatedTimeSlot),
-				MostRecentAccumulationTimeslot: types.GenericNum(targetAccount.MostRecentAccumulationTimeslot),
-				ParentServiceIndex:             types.GenericNum(targetAccount.ParentServiceIndex),
+				Balance:                        targetAccount.Balance,
+				ThresholdBalanceNeeded:         targetAccount.ThresholdBalanceNeeded(),
+				MinimumGasForAccumulate:        targetAccount.MinimumGasForAccumulate,
+				MinimumGasForOnTransfer:        targetAccount.MinimumGasForOnTransfer,
+				TotalOctetsUsedInStorage:       targetAccount.TotalOctetsUsedInStorage,
+				StorageItems:                   targetAccount.TotalItemsUsedInStorage,
+				GratisStorageOffset:            targetAccount.GratisStorageOffset,
+				CreatedTimeSlot:                targetAccount.CreatedTimeSlot,
+				MostRecentAccumulationTimeslot: targetAccount.MostRecentAccumulationTimeslot,
+				ParentServiceIndex:             targetAccount.ParentServiceIndex,
 			}
 
 			// Serialize the account information
-			serializedInfo := serializer.Serialize(accountInfo)
-
-			// Check if memory range is writable
-			if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(len(serializedInfo)), ram.NoWrap) {
-				return NewSimpleExitReason(ExitPanic)
-			}
-
-			// Write to memory
-			ctx.State.RAM.MutateRange(uint64(outputOffset), serializedInfo, ram.NoWrap, false)
-
-			// Set successful result
-			ctx.State.Registers[7] = types.Register(HostCallOK)
-		} else {
-			// Target account not found
-			ctx.State.Registers[7] = types.Register(HostCallNone)
+			v = serializer.Serialize(accountInfo)
 		}
 
+		f := min(ctx.State.Registers[11], types.Register(len(v)))
+		l := min(ctx.State.Registers[12], types.Register(len(v))-f)
+
+		// Check if memory range is writable
+		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(l), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		if v == nil {
+			ctx.State.Registers[7] = types.Register(HostCallNone)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		// Write to memory
+		ctx.State.RAM.MutateRange(uint64(outputOffset), v[int(f):int(f+l)], ram.NoWrap, false)
+
+		// Set successful result
+		ctx.State.Registers[7] = types.Register(len(v))
 		return NewSimpleExitReason(ExitGo)
 	})
 }
@@ -974,24 +977,24 @@ func serializeWorkItemForFetch(i wp.WorkItem) []byte {
 
 func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, operandTuples *[]OperandTuple, deferredTransfers *[]DeferredTransfer) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[T]) ExitReason {
-		var preimage *[]byte
+		var preimage []byte
 		w11 := ctx.State.Registers[11]
 		w12 := ctx.State.Registers[12]
 		switch ctx.State.Registers[10] {
 		case 0:
 			serialized := serializer.SerializeChainParameters()
-			preimage = &serialized
+			preimage = serialized
 		case 1:
 			if n == nil {
 				break
 			}
 			bytes := (*n)[:]
-			preimage = &bytes
+			preimage = bytes
 		case 2:
 			if authorizerOutput == nil {
 				break
 			}
-			preimage = authorizerOutput
+			preimage = *authorizerOutput
 		case 3:
 			if importSegmentsIndex == nil || w11 >= types.Register(len(*blobsIntroduced)) {
 				break
@@ -1003,14 +1006,14 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			}
 
 			idx2 := int(w12)
-			preimage = &(*blobsIntroduced)[idx1][idx2]
+			preimage = (*blobsIntroduced)[idx1][idx2]
 		case 4:
 			if importSegmentsIndex == nil || w11 >= types.Register(len((*blobsIntroduced)[*importSegmentsIndex])) {
 				break
 			}
 
 			idx1 := int(w11)
-			preimage = &(*blobsIntroduced)[*importSegmentsIndex][idx1]
+			preimage = (*blobsIntroduced)[*importSegmentsIndex][idx1]
 		case 5:
 			if importSegmentsIndex == nil || w11 >= types.Register(len(*importSegments)) {
 				break
@@ -1023,7 +1026,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 
 			idx2 := int(w12)
 			segment := (*importSegments)[idx1][idx2][:]
-			preimage = &segment
+			preimage = segment
 		case 6:
 			if importSegmentsIndex == nil || w11 >= types.Register(len((*importSegments)[*importSegmentsIndex])) {
 				break
@@ -1031,13 +1034,13 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 
 			idx1 := int(w11)
 			segment := (*importSegments)[*importSegmentsIndex][idx1][:]
-			preimage = &segment
+			preimage = segment
 		case 7:
 			if workPackage == nil {
 				break
 			}
 			serialized := serializer.Serialize(*workPackage)
-			preimage = &serialized
+			preimage = serialized
 		case 8:
 			if workPackage == nil {
 				break
@@ -1049,18 +1052,18 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				CodeHash: workPackage.AuthorizationCodeHash,
 				Blob:     workPackage.ParameterizationBlob,
 			})
-			preimage = &serialized
+			preimage = serialized
 		case 9:
 			if workPackage == nil {
 				break
 			}
-			preimage = &workPackage.AuthorizationToken
+			preimage = workPackage.AuthorizationToken
 		case 10:
 			if workPackage == nil {
 				break
 			}
 			serialized := serializer.Serialize(workPackage.RefinementContext)
-			preimage = &serialized
+			preimage = serialized
 		case 11:
 			if workPackage == nil {
 				break
@@ -1070,7 +1073,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				blobs[i] = serializeWorkItemForFetch(workItem)
 			}
 			serialized := serializer.Serialize(blobs)
-			preimage = &serialized
+			preimage = serialized
 		case 12:
 			if workPackage == nil {
 				break
@@ -1079,7 +1082,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				break
 			}
 			serialized := serializeWorkItemForFetch(workPackage.WorkItems[int(w11)])
-			preimage = &serialized
+			preimage = serialized
 		case 13:
 			if workPackage == nil {
 				break
@@ -1087,13 +1090,13 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			if w11 >= types.Register(len(workPackage.WorkItems)) {
 				break
 			}
-			preimage = &workPackage.WorkItems[int(w11)].Payload
+			preimage = workPackage.WorkItems[int(w11)].Payload
 		case 14:
 			if operandTuples == nil {
 				break
 			}
 			serialized := serializer.Serialize(*operandTuples)
-			preimage = &serialized
+			preimage = serialized
 		case 15:
 			if operandTuples == nil {
 				break
@@ -1102,13 +1105,13 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				break
 			}
 			serialized := serializer.Serialize((*operandTuples)[int(w11)])
-			preimage = &serialized
+			preimage = serialized
 		case 16:
 			if deferredTransfers == nil {
 				break
 			}
 			serialized := serializer.Serialize(*deferredTransfers)
-			preimage = &serialized
+			preimage = serialized
 		case 17:
 			if deferredTransfers == nil {
 				break
@@ -1117,13 +1120,10 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				break
 			}
 			serialized := serializer.Serialize((*deferredTransfers)[int(w11)])
-			preimage = &serialized
+			preimage = serialized
 		}
 
-		preimageLen := 0
-		if preimage != nil {
-			preimageLen = len(*preimage)
-		}
+		preimageLen := len(preimage)
 
 		o := ctx.State.Registers[7]
 		f := min(ctx.State.Registers[8], types.Register(preimageLen))
@@ -1137,7 +1137,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(preimageLen)
-			slicedData := (*preimage)[int(f):int(f+l)]
+			slicedData := preimage[int(f):int(f+l)]
 			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
 		}
 		return NewSimpleExitReason(ExitGo)
