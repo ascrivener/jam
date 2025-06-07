@@ -236,9 +236,8 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		}
 		blob := []byte(preimageProvision.BlobString)
 		preimage := blake2b.Sum256(blob)
-		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(preimage, types.BlobLength(len(blob)))
-		serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey] = []types.Timeslot{timeslot}
-		serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(preimage)] = types.Blob(blob)
+		serviceAccount.PreimageLookupHistoricalStatusSet(preimage, types.BlobLength(len(blob)), []types.Timeslot{timeslot})
+		serviceAccount.PreimageLookupSet(preimage, types.Blob(blob))
 	}
 
 	return AccumulationStateComponents{

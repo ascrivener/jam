@@ -142,7 +142,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			copy(keyArray[:], h[:])
 
 			// Look up in state if available
-			if val, ok := a.StorageDictionary[serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)]; ok {
+			if val, ok := a.StorageDictionaryGet(keyArray[:]); ok {
 				byteSlice := []byte(val)
 				preImage = &byteSlice
 			}
@@ -197,35 +197,33 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		h := blake2b.Sum256(combinedBytes)
 		copy(keyArray[:], h[:])
 
-		key := serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)
+		oldValue, ok := serviceAccount.StorageDictionaryGet(keyArray[:])
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
-		if val, ok := serviceAccount.StorageDictionary[key]; ok {
-			l = types.Register(len(val))
+		if ok {
+			l = types.Register(len(oldValue))
 		} else {
 			l = types.Register(HostCallNone)
 		}
 
-		oldValue, ok := serviceAccount.StorageDictionary[key]
-
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			delete(serviceAccount.StorageDictionary, key)
+			serviceAccount.StorageDictionaryDelete(keyArray[:])
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			serviceAccount.StorageDictionary[key] = valueBytes
+			serviceAccount.StorageDictionarySet(keyArray[:], valueBytes)
 		}
 
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			if !ok {
-				delete(serviceAccount.StorageDictionary, key)
+				serviceAccount.StorageDictionaryDelete(keyArray[:])
 			} else {
-				serviceAccount.StorageDictionary[key] = oldValue
+				serviceAccount.StorageDictionarySet(keyArray[:], oldValue)
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 		} else {
@@ -279,8 +277,8 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 				ThresholdBalanceNeeded:         types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
 				MinimumGasForAccumulate:        types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
 				MinimumGasForOnTransfer:        types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
-				TotalOctetsUsedInStorage:       types.GenericNum(targetAccount.TotalOctetsUsedInStorage()),
-				StorageItems:                   types.GenericNum(targetAccount.TotalItemsUsedInStorage()),
+				TotalOctetsUsedInStorage:       types.GenericNum(targetAccount.TotalOctetsUsedInStorage),
+				StorageItems:                   types.GenericNum(targetAccount.TotalItemsUsedInStorage),
 				GratisStorageOffset:            types.GenericNum(targetAccount.GratisStorageOffset),
 				CreatedTimeSlot:                types.GenericNum(targetAccount.CreatedTimeSlot),
 				MostRecentAccumulationTimeslot: types.GenericNum(targetAccount.MostRecentAccumulationTimeslot),
@@ -502,24 +500,21 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.T
 		var codeHash [32]byte
 		copy(codeHash[:], codeHashBytes)
 
-		// Create preimage history map with the code hash and label length as key
-		preimageHistory := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
-		key := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(codeHash, types.BlobLength(labelLength))
-		preimageHistory[key] = []types.Timeslot{}
+		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
 
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
+			ServiceIndex:                   currentDerivedServiceIndex,
 			CodeHash:                       codeHash,
-			StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
-			PreimageLookupHistoricalStatus: preimageHistory,
+			Storage:                        make(map[[31]byte]types.Blob),
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
-			PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
 			GratisStorageOffset:            types.Balance(gratisStorageOffset),
 			CreatedTimeSlot:                timeslot,
 			MostRecentAccumulationTimeslot: 0,
 			ParentServiceIndex:             ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex,
 		}
+		newAccount.PreimageLookupHistoricalStatusSet(codeHash, types.BlobLength(labelLength), []types.Timeslot{})
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
 		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
@@ -529,12 +524,11 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.T
 		// 2. The transfer amount to the new account
 		b := accumulatingServiceAccount.Balance - newAccount.ThresholdBalanceNeeded()
 		if b < accumulatingServiceAccount.ThresholdBalanceNeeded() {
+			newAccount.PreimageLookupHistoricalStatusDelete(codeHash, types.BlobLength(labelLength))
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return NewSimpleExitReason(ExitGo)
 		}
 		accumulatingServiceAccount.Balance = b
-
-		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
 		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + ((uint64(currentDerivedServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
 
 		// Get current service accounts and update them
@@ -697,17 +691,14 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 
 		// 3. Check interface type and if hash/lock pair exists in list
 		// (di ≠ 2 ∨ (h, l) ~∈ dl)
-		if destinationAccount.TotalItemsUsedInStorage() != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
+		if destinationAccount.TotalItemsUsedInStorage != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
+		length := max(81, destinationAccount.TotalOctetsUsedInStorage) - 81
 
-		// Create the key for lookup
-		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(length))
-
-		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
+		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatusGet(hash, types.BlobLength(length))
 		if !exists || length > uint64(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
@@ -754,7 +745,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))]
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatusGet(keyHash, types.BlobLength(z))
 
 		if !ok || z > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
@@ -803,20 +794,17 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
-
 		// Get the accumulating service account (xs)
 		serviceAccount := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		originalStatus, originalExists := serviceAccount.PreimageLookupHistoricalStatus[histKey]
+		originalStatus, originalExists := serviceAccount.PreimageLookupHistoricalStatusGet(keyHash, types.BlobLength(z))
 
 		// Make the changes directly to the service account
 		if !originalExists || z > types.Register(^uint32(0)) {
-			serviceAccount.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{}
+			serviceAccount.PreimageLookupHistoricalStatusSet(keyHash, types.BlobLength(z), []types.Timeslot{})
 		} else if len(originalStatus) == 2 {
-			serviceAccount.PreimageLookupHistoricalStatus[histKey] = append(originalStatus, timeslot)
+			serviceAccount.PreimageLookupHistoricalStatusSet(keyHash, types.BlobLength(z), append(originalStatus, timeslot))
 		} else {
 			// Key exists but doesn't have exactly two elements
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -827,9 +815,9 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		if serviceAccount.Balance < serviceAccount.ThresholdBalanceNeeded() {
 			// Revert the changes
 			if !originalExists {
-				delete(serviceAccount.PreimageLookupHistoricalStatus, histKey)
+				serviceAccount.PreimageLookupHistoricalStatusDelete(keyHash, types.BlobLength(z))
 			} else {
-				serviceAccount.PreimageLookupHistoricalStatus[histKey] = originalStatus
+				serviceAccount.PreimageLookupHistoricalStatusSet(keyHash, types.BlobLength(z), originalStatus)
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 			return NewSimpleExitReason(ExitGo)
@@ -856,14 +844,11 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
-
 		// Get the accumulating service account (xs)
 		xs := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		historicalStatus, exists := xs.PreimageLookupHistoricalStatus[histKey]
+		historicalStatus, exists := xs.PreimageLookupHistoricalStatusGet(keyHash, types.BlobLength(z))
 		if !exists || z > types.Register(^uint32(0)) {
 			// Key doesn't exist, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -876,16 +861,16 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		// Handle different cases based on historical status length and values
 		if len(historicalStatus) == 0 || (len(historicalStatus) == 2 && historicalStatus[1] < cutoffTime) {
 			// Remove the key if status is [] or [x, y] with y < t - D
-			delete(xs.PreimageLookupHistoricalStatus, histKey)
+			xs.PreimageLookupHistoricalStatusDelete(keyHash, types.BlobLength(z))
 
 			// Also remove the key from PreimageLookup if it exists
-			delete(xs.PreimageLookup, serviceaccount.PreimageLookupKeyFromFullKey(keyHash))
+			xs.PreimageLookupDelete(keyHash)
 		} else if len(historicalStatus) == 1 {
 			// Replace [x] with [x, t] if status is [x]
-			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[0], timeslot}
+			xs.PreimageLookupHistoricalStatusSet(keyHash, types.BlobLength(z), []types.Timeslot{historicalStatus[0], timeslot})
 		} else if len(historicalStatus) == 3 && historicalStatus[1] < cutoffTime {
 			// Replace [x, y, w] with [w, t] if status is [x, y, w] and y < t - D
-			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[2], timeslot}
+			xs.PreimageLookupHistoricalStatusSet(keyHash, types.BlobLength(z), []types.Timeslot{historicalStatus[2], timeslot})
 		} else {
 			// For any other case, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -949,9 +934,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(blake2b.Sum256(i), types.BlobLength(z))
-
-		historicalStatus, ok := serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey]
+		historicalStatus, ok := serviceAccount.PreimageLookupHistoricalStatusGet(blake2b.Sum256(i), types.BlobLength(z))
 
 		if !ok || len(historicalStatus) > 0 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -1466,7 +1449,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 		if a != nil {
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
-			if v, ok := a.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(keyArray)]; ok {
+			if v, ok := a.PreimageLookupGet(keyArray); ok {
 				byteSlice := []byte(v)
 				preImage = &byteSlice
 			}

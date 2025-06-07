@@ -1,14 +1,12 @@
 package state
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/types"
-	"github.com/ascrivener/jam/util"
 )
 
 // --- Key Constructors ---
@@ -136,9 +134,9 @@ func StateSerializer(state State) map[[31]byte][]byte {
 				sAccount.Balance,
 				sAccount.MinimumGasForAccumulate,
 				sAccount.MinimumGasForOnTransfer,
-				sAccount.TotalOctetsUsedInStorage(),
+				sAccount.TotalOctetsUsedInStorage,
 				sAccount.GratisStorageOffset,
-				sAccount.TotalItemsUsedInStorage(),
+				sAccount.TotalItemsUsedInStorage,
 				sAccount.CreatedTimeSlot,
 				sAccount.MostRecentAccumulationTimeslot,
 				sAccount.ParentServiceIndex,
@@ -146,38 +144,12 @@ func StateSerializer(state State) map[[31]byte][]byte {
 		})
 
 		// Process StorageDictionary.
-		ones := serializer.EncodeLittleEndian(4, ^uint64(0))
-		for k, v := range sAccount.StorageDictionary {
+		for k, v := range sAccount.Storage {
 			stateComponents = append(stateComponents, StateComponent{
 				keyFunc: func() [31]byte {
-					combined := append(ones, k[:]...)
-					return serializer.StateKeyConstructorFromHash(sIndex, util.SliceToArray32(combined))
+					return k
 				},
 				data: v,
-			})
-		}
-
-		// Process PreimageLookup.
-		onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
-		for h, p := range sAccount.PreimageLookup {
-			stateComponents = append(stateComponents, StateComponent{
-				keyFunc: func() [31]byte {
-					combined := append(onesMinusOne, h[:]...)
-					return serializer.StateKeyConstructorFromHash(sIndex, util.SliceToArray32(combined))
-				},
-				data: p,
-			})
-		}
-
-		// Process PreimageLookupLengthToTimeslots.
-		for k, t := range sAccount.PreimageLookupHistoricalStatus {
-			blobLengthBytes := serializer.EncodeLittleEndian(4, uint64(k.BlobLength))
-			stateComponents = append(stateComponents, StateComponent{
-				keyFunc: func() [31]byte {
-					combined := append(blobLengthBytes, k.HashedPreimage[:]...)
-					return serializer.StateKeyConstructorFromHash(sIndex, util.SliceToArray32(combined))
-				},
-				data: t,
 			})
 		}
 	}
@@ -191,51 +163,23 @@ func StateSerializer(state State) map[[31]byte][]byte {
 	return serialized
 }
 
-// findStorageDictionaryEntries finds all storage dictionary entries for a specific service
-func findStorageDictionaryEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[31]byte]bool) (map[serviceaccount.StorageDictionaryKey][]byte, error) {
-	result := make(map[serviceaccount.StorageDictionaryKey][]byte)
-	ones := serializer.EncodeLittleEndian(4, uint64(1<<32-1))
+// findStorageEntries finds all entries where the 0, 2, 4, 6th bytes match the serialized service index
+func findStorageEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[31]byte]bool) (map[[31]byte][]byte, error) {
+	result := make(map[[31]byte][]byte)
+
+	// Serialize the service index
+	sIndexBytes := serializer.EncodeLittleEndian(4, uint64(sIndex))
 
 	for key, data := range serialized {
-		// Extract service index and hash using our inverse function
-		extractedSIndex, hash := invertStateKeyConstructorFromHash(key)
+		// Check if the 0, 2, 4, 6th bytes match the serialized sIndex
+		if key[0] == sIndexBytes[0] && key[2] == sIndexBytes[2] &&
+			key[4] == sIndexBytes[4] && key[6] == sIndexBytes[6] {
 
-		// Check if this matches our service and has the "ones" prefix
-		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], ones) {
-
-			result[serviceaccount.StorageDictionaryKey(hash[4:])] = data
+			result[key] = data
 
 			// Check if key already processed
 			if alreadyProcessed := processedKeys[key]; alreadyProcessed {
-				return nil, fmt.Errorf("duplicate key processing detected: storage dictionary key %x already processed", key)
-			}
-
-			// Mark key as processed
-			processedKeys[key] = true
-		}
-	}
-
-	return result, nil
-}
-
-// findPreimageLookupEntries finds all preimage lookup entries for a specific service
-// Returns a map of hash keys to preimage bytes
-func findPreimageLookupEntries(serialized map[[31]byte][]byte, sIndex types.ServiceIndex, processedKeys map[[31]byte]bool) (map[serviceaccount.PreimageLookupKey][]byte, error) {
-	result := make(map[serviceaccount.PreimageLookupKey][]byte)
-	onesMinusOne := serializer.EncodeLittleEndian(4, uint64(1<<32-2))
-
-	for key, data := range serialized {
-		// Extract service index and hash using our inverse function
-		extractedSIndex, hash := invertStateKeyConstructorFromHash(key)
-
-		// Check if this matches our service and has the "onesMinusOne" prefix
-		if extractedSIndex == sIndex && len(hash) >= 4 && bytes.Equal(hash[:4], onesMinusOne) {
-			// Store the preimage with the reconstructed key
-			result[serviceaccount.PreimageLookupKey(hash[4:])] = data
-
-			// Check if key already processed
-			if alreadyProcessed := processedKeys[key]; alreadyProcessed {
-				return nil, fmt.Errorf("duplicate key processing detected: preimage lookup key %x already processed", key)
+				return nil, fmt.Errorf("duplicate key processing detected: storage key %x already processed", key)
 			}
 
 			// Mark key as processed
@@ -389,50 +333,29 @@ func StateDeserializer(serialized map[[31]byte][]byte) (State, error) {
 
 		// Create and populate service account
 		account := &serviceaccount.ServiceAccount{
+			ServiceIndex:                   types.ServiceIndex(sIndex),
 			CodeHash:                       accountData.CodeHash,
 			Balance:                        accountData.Balance,
 			MinimumGasForAccumulate:        accountData.MinimumGasForAccumulate,
 			MinimumGasForOnTransfer:        accountData.MinimumGasForOnTransfer,
-			StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
-			PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
-			PreimageLookupHistoricalStatus: make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot),
+			Storage:                        make(map[[31]byte]types.Blob),
 			GratisStorageOffset:            accountData.GratisStorageOffset,
 			CreatedTimeSlot:                accountData.CreatedTimeSlot,
 			MostRecentAccumulationTimeslot: accountData.MostRecentAccumulationTimeslot,
 			ParentServiceIndex:             accountData.ParentServiceIndex,
+			TotalOctetsUsedInStorage:       accountData.TotalOctetsUsedInStorage,
+			TotalItemsUsedInStorage:        accountData.TotalItemsUsedInStorage,
 		}
 
 		// Now look for storage dictionary entries
-		storageEntries, err := findStorageDictionaryEntries(serialized, types.ServiceIndex(sIndex), processedKeys)
+		storageEntries, err := findStorageEntries(serialized, types.ServiceIndex(sIndex), processedKeys)
 		if err != nil {
 			return State{}, fmt.Errorf("failed to find storage dictionary entries: %w", err)
 		}
 
 		// Return an error if any storage dictionary entries are found
 		for k, v := range storageEntries {
-			account.StorageDictionary[k] = v
-		}
-
-		// Look for preimage lookup entries - already deserialized
-		preimageEntries, err := findPreimageLookupEntries(serialized, types.ServiceIndex(sIndex), processedKeys)
-		if err != nil {
-			return State{}, fmt.Errorf("failed to find preimage lookup entries: %w", err)
-		}
-		for lookupKey, preimage := range preimageEntries {
-			// The preimage is already deserialized, just store it
-			account.PreimageLookup[lookupKey] = preimage
-		}
-
-		// Look for preimage historical status entries (requires PreimageLookup to be populated first)
-		// Already deserialized by the function
-		historicalEntries, err := findPreimageHistoricalStatusEntries(serialized, types.ServiceIndex(sIndex), account, processedKeys)
-		if err != nil {
-			return State{}, fmt.Errorf("failed to find preimage historical status entries: %w", err)
-		}
-
-		// Simply copy the entries to the account's map - no need to deserialize again
-		for lookupKey, timeslots := range historicalEntries {
-			account.PreimageLookupHistoricalStatus[lookupKey] = timeslots
+			account.Storage[k] = v
 		}
 
 		// Add to state after all data has been populated

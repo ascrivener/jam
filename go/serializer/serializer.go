@@ -13,6 +13,7 @@ import (
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workpackage"
+	"golang.org/x/crypto/blake2b"
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -723,7 +724,8 @@ func InvertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]by
 	return types.ServiceIndex(s), h
 }
 
-func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
+func StateKeyConstructorFromHash(s types.ServiceIndex, h []byte) [31]byte {
+	hash := blake2b.Sum256(h)
 	var key [31]byte
 
 	// Extract little-endian bytes of the ServiceIndex (s)
@@ -734,16 +736,16 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 
 	// Interleave n0, n1, n2, n3 with the first 4 bytes of h
 	key[0] = n0
-	key[1] = h[0]
+	key[1] = hash[0]
 	key[2] = n1
-	key[3] = h[1]
+	key[3] = hash[1]
 	key[4] = n2
-	key[5] = h[2]
+	key[5] = hash[2]
 	key[6] = n3
-	key[7] = h[3]
+	key[7] = hash[3]
 
 	// Copy the remaining bytes of h from index 4 onward
-	copy(key[8:], h[4:])
+	copy(key[8:], hash[4:])
 
 	return key
 }

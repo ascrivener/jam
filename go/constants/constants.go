@@ -61,7 +61,7 @@ const DynamicAddressAlignmentFactor int = 2 // Z_A
 
 const TransferMemoSize uint32 = 128 // W_T
 
-const MaxSizeEncodedWorkPackage uint32 = 12 << 20 // W_B
+const MaxSizeEncodedWorkPackage uint32 = 13794305 // W_B
 
 const ServiceMinimumBalancePerItem uint64 = 10 // B_I
 
