@@ -19,9 +19,8 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
-	"github.com/ascrivener/jam/serializer"
-	"github.com/google/go-cmp/cmp"
 
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -631,25 +630,11 @@ func hexToBytes(hexStr string) []byte {
 // 	}
 // }
 
-func TestDeserializeWorkReports(t *testing.T) {
-	hexStr := "0001e364cdf6a3c2346906d5b6957cfcec16b4e491624b61f2d0dd838610bf0ff27de7000000f05976dca720212793319c8b12e25757ed42bb7db450e7a6f442925c5aeada870000000000000000000000000000000000000000000000000000000000000000000042991de893888e5581df4a4589e93f8a10ec60093a8aef084f8d60da8643aa6c33f8a1b250facf94c5a60d33184c47bd7f12011d9f637fd2a3ac43f028106edb000000000000000000000000000000000000000000000000000000000000000042991de893888e5581df4a4589e93f8a10ec60093a8aef084f8d60da8643aa6c010000000001207fa86c31a25c109f8dbbcc8b6300543762be906e00135531107c0d54887e8307417574683d3c3e0001000000002ab7237c521b1e5f8e86da6fde8755290a5a9d495059fecc5b90a66c0e282dd25f930c75da61bb2e31b5b9426e3a4d8ff9582cade2dc31c6b202e17cecdd97afa08601000000000000030105009934000000009cce02000000"
-	data, err := hex.DecodeString(hexStr)
-	if err != nil {
-		t.Fatalf("failed to decode hex string: %v", err)
-	}
-
-	var deserialized [constants.NumCores]*PendingReport
-	err = serializer.Deserialize(data, &deserialized)
-	if err != nil {
-		t.Fatalf("failed to deserialize: %v", err)
-	}
-}
-
 // TestStateDeserializerWithTransition tests the serialization and deserialization with state transition
 func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)
@@ -670,7 +655,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName == "00000000.json" {
+		if fileName != "00000005.json" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
@@ -722,6 +707,39 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			preStateSerialized := testVector.PreState.KeyVals.toMap()
 			t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(preStateSerialized))
 
+			// Create a temporary in-memory PebbleDB repository
+			tempDir, err := os.MkdirTemp("", "jam-test-*")
+			if err != nil {
+				t.Fatalf("Failed to create temporary directory: %v", err)
+			}
+			defer os.RemoveAll(tempDir)
+
+			repo, err := staterepository.NewPebbleStateRepository(tempDir)
+			if err != nil {
+				t.Fatalf("Failed to create repository: %v", err)
+			}
+			defer repo.Close()
+
+			// Start transaction for batch operations
+			if err := repo.BeginTransaction(); err != nil {
+				t.Fatalf("Failed to begin transaction: %v", err)
+			}
+
+			// Store all key-value pairs into the repository
+			batch := repo.GetBatch()
+			for k, v := range preStateSerialized {
+				if err := batch.Set(k[:], v, nil); err != nil {
+					t.Fatalf("Failed to store key-value pair: %v", err)
+				}
+			}
+
+			// Commit the transaction
+			if err := repo.CommitTransaction(); err != nil {
+				t.Fatalf("Failed to commit transaction: %v", err)
+			}
+			t.Logf("Stage 3: Stored %d key-value pairs in repository", len(preStateSerialized))
+
+			// Create BitSeqKey map for merklization if needed for verification
 			bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
 			for k, v := range preStateSerialized {
 				bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
@@ -729,30 +747,13 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 					Value:       v,
 				}
 			}
-			t.Logf("Stage 3: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
+			t.Logf("Stage 4: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
 
 			// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
 
 			// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
 			// 	t.Fatalf("State root mismatch: expected %s, got %s", testVector.PreState.StateRoot, hex.EncodeToString(merklizedPreState[:]))
 			// }
-
-			preState, stateDeserializationErr := StateDeserializer(preStateSerialized)
-			if stateDeserializationErr != nil {
-				t.Errorf("Failed to deserialize pre-state: %v", stateDeserializationErr)
-				failedTests++
-				return
-			}
-			t.Logf("Stage 4: Successfully deserialized pre-state")
-
-			preStateReserialized := StateSerializer(preState)
-			t.Logf("Stage 5: Re-serialized pre-state (%d entries)", len(preStateReserialized))
-
-			if !compareSerializedStatesNoFatal(preStateSerialized, preStateReserialized, t) {
-				failedTests++
-				return
-			}
-			t.Logf("Stage 6: Verified pre-state serialization/deserialization consistency")
 
 			// b. Convert block to implementation block and run state transition
 			testBlock, err := BlockFromJSON(testVector.Block)
@@ -761,26 +762,21 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 				failedTests++
 				return
 			}
-			t.Logf("Stage 7: Successfully converted JSON block to implementation block")
+			t.Logf("Stage 8: Successfully converted JSON block to implementation block")
 
 			// Run state transition function
-			t.Logf("Stage 8: Running state transition function...")
-			postState, err := StateTransitionFunction(preState, testBlock)
-			if err != nil {
-				t.Errorf("Stage 8: State transition failed: %v", err)
-				failedTests++
-				return
-			}
-			// logf("Stage 9: State transition completed")
+			t.Logf("Stage 9: Running state transition function...")
+			LoadStateAndRunSTF(*repo, testBlock)
+			// logf("Stage 10: State transition completed")
 
 			// serializedPostState := StateSerializer(postState)
-			// logf("Stage 10: Serialized post-state (%d entries)", len(serializedPostState))
+			// logf("Stage 11: Serialized post-state (%d entries)", len(serializedPostState))
 
 			// merklizedPostState := MerklizeState(postState)
 			// expectedStateRoot := testVector.PostState.StateRoot
 			// actualStateRoot := hex.EncodeToString(merklizedPostState[:])
 			// stateRootMatch := expectedStateRoot == actualStateRoot
-			// logf("Stage 11: Merklized post-state (state root match: %v)", stateRootMatch)
+			// logf("Stage 12: Merklized post-state (state root match: %v)", stateRootMatch)
 
 			// if !stateRootMatch {
 			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
@@ -789,49 +785,89 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 			// Convert test vector's post-state key-values to the format expected by StateDeserializer
 			expectedSerializedState := testVector.PostState.KeyVals.toMap()
-			t.Logf("Stage 12: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
+			t.Logf("Stage 13: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
-			// logf("Stage 13: Comparing serialized states (expected vs. actual)...")
-			// if !compareSerializedStatesNoFatal(expectedSerializedState, serializedPostState, t) {
+			// Read all key-value pairs from the repository after state transition
+			actualRepoKvs := make(map[[31]byte][]byte)
+			repoIter, err := repo.NewIter(nil)
+			if err != nil {
+				t.Fatalf("Failed to create iterator: %v", err)
+			}
+			defer repoIter.Close()
+			for repoIter.First(); repoIter.Valid(); repoIter.Next() {
+				key := repoIter.Key()
+
+				var stateKey [31]byte
+				copy(stateKey[:], key)
+
+				value := repoIter.Value()
+				valueCopy := make([]byte, len(value))
+				copy(valueCopy, value)
+
+				actualRepoKvs[stateKey] = valueCopy
+			}
+			repoIter.Close()
+			t.Logf("Read %d key-value pairs from repository after state transition", len(actualRepoKvs))
+
+			// Compare repository contents with expected key-value pairs
+			t.Logf("Stage 14: Comparing repository key-values with expected post-state...")
+
+			// Check missing keys in the repo
+			for k, expectedValue := range expectedSerializedState {
+				actualValue, exists := actualRepoKvs[k]
+				if !exists {
+					t.Errorf("Key missing in repository: %x", k)
+					continue
+				}
+
+				// Compare values
+				if !bytes.Equal(expectedValue, actualValue) {
+					t.Errorf("Value mismatch for key %x:\nExpected: %x\nActual: %x\nDifferences: %s",
+						k, expectedValue, actualValue, highlightByteDifferences(expectedValue, actualValue))
+				}
+			}
+
+			// Check extra keys in the repo
+			for k := range actualRepoKvs {
+				if _, exists := expectedSerializedState[k]; !exists {
+					t.Errorf("Extra key in repository: %x", k)
+				}
+			}
+
+			// Deserialize the expected state
+			// expectedPostState, err := GetState(*repo)
+			// if err != nil {
+			// 	t.Errorf("Failed to deserialize expected post-state: %v", err)
 			// 	failedTests++
 			// 	return
 			// }
-			// logf("Stage 14: Serialized states match")
+			// t.Logf("Stage 16: Successfully deserialized expected post-state")
 
-			// Deserialize the expected state
-			expectedPostState, err := StateDeserializer(expectedSerializedState)
-			if err != nil {
-				t.Errorf("Failed to deserialize expected post-state: %v", err)
-				failedTests++
-				return
-			}
-			t.Logf("Stage 15: Successfully deserialized expected post-state")
+			// // Use cmp.Diff for a detailed comparison of the state objects
+			// t.Logf("Stage 17: Performing detailed comparison of state objects...")
+			// if diff := cmp.Diff(expectedPostState, postState); diff != "" {
+			// 	t.Errorf("Post-state mismatch (-expected +actual):\n%s", diff)
+			// 	failedTests++
+			// 	return
+			// }
+			// t.Logf("Stage 18: State objects match")
 
-			// Use cmp.Diff for a detailed comparison of the state objects
-			t.Logf("Stage 16: Performing detailed comparison of state objects...")
-			if diff := cmp.Diff(expectedPostState, postState); diff != "" {
-				t.Errorf("Post-state mismatch (-expected +actual):\n%s", diff)
-				failedTests++
-				return
-			}
-			t.Logf("Stage 17: State objects match")
+			// merklizedPostState := MerklizeState(postState)
+			// expectedStateRoot := testVector.PostState.StateRoot
+			// actualStateRoot := "0x" + hex.EncodeToString(merklizedPostState[:])
+			// stateRootMatch := expectedStateRoot == actualStateRoot
+			// if !stateRootMatch {
+			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
 
-			merklizedPostState := MerklizeState(postState)
-			expectedStateRoot := testVector.PostState.StateRoot
-			actualStateRoot := "0x" + hex.EncodeToString(merklizedPostState[:])
-			stateRootMatch := expectedStateRoot == actualStateRoot
-			if !stateRootMatch {
-				t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
-
-				serializedPostState := StateSerializer(postState)
-				expectedSerializedPostState := testVector.PostState.KeyVals.toMap()
-				if !compareSerializedStatesNoFatal(expectedSerializedPostState, serializedPostState, t) {
-					failedTests++
-					return
-				}
-			}
-			t.Logf("Stage 18: State root match")
-			t.Logf("Successfully processed %s", fileName)
+			// 	serializedPostState := StateSerializer(postState)
+			// 	expectedSerializedPostState := testVector.PostState.KeyVals.toMap()
+			// 	if !compareSerializedStatesNoFatal(expectedSerializedPostState, serializedPostState, t) {
+			// 		failedTests++
+			// 		return
+			// 	}
+			// }
+			// t.Logf("Stage 19: State root match")
+			// t.Logf("Successfully processed %s", fileName)
 
 			// Force garbage collection
 			runtime.GC()

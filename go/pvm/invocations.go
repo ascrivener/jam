@@ -8,6 +8,7 @@ import (
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
 	wp "github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
@@ -56,13 +57,13 @@ type HostFunctionContext[T any] struct {
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
 // TODO: needs work. for m2
-func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
+func Refine(repo staterepository.PebbleStateRepository, workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		switch n {
 		case HistoricalLookupID:
-			return HistoricalLookup(ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
+			return HistoricalLookup(repo, ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
 		case FetchID:
 			panic("not implemented")
 			// TODO: Figure out how to compute the blobs introduced for a work item
@@ -96,7 +97,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	if !ok {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
-	preimage := historicallookup.HistoricalLookup(serviceAccount, workPackage.RefinementContext.Timeslot, workItem.CodeHash)
+	preimage := historicallookup.HistoricalLookup(repo, serviceAccount, workPackage.RefinementContext.Timeslot, workItem.CodeHash)
 	if preimage == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
@@ -276,21 +277,21 @@ func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAcc
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
+func Accumulate(repo staterepository.PebbleStateRepository, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		switch n {
 		case ReadID:
-			return Read(&HostFunctionContext[struct{}]{
+			return Read(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
 		case WriteID:
-			return Write(&HostFunctionContext[struct{}]{
+			return Write(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex)
 		case LookupID:
-			return Lookup(&HostFunctionContext[struct{}]{
+			return Lookup(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
@@ -314,23 +315,23 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case CheckpointID:
 			return Checkpoint(ctx)
 		case NewID:
-			return New(ctx)
+			return New(repo, ctx)
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:
 			return Transfer(ctx)
 		case EjectID:
-			return Eject(ctx, timeslot)
+			return Eject(repo, ctx, timeslot)
 		case QueryID:
-			return Query(ctx)
+			return Query(repo, ctx)
 		case SolicitID:
-			return Solicit(ctx, timeslot)
+			return Solicit(repo, ctx, timeslot)
 		case ForgetID:
-			return Forget(ctx, timeslot)
+			return Forget(repo, ctx, timeslot)
 		case YieldID:
 			return Yield(ctx)
 		case ProvideID:
-			return Provide(ctx, serviceIndex)
+			return Provide(repo, ctx, serviceIndex)
 		default:
 			ctx.State.Registers[7] = types.Register(HostCallWhat)
 			return NewSimpleExitReason(ExitGo)
@@ -341,7 +342,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	if !ok {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}
 	}
-	_, code := serviceAccount.MetadataAndCode()
+	_, code := serviceAccount.MetadataAndCode(repo)
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}
 	}
@@ -373,21 +374,21 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions
 }
 
-func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
+func OnTransfer(repo staterepository.PebbleStateRepository, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) ExitReason {
 		switch n {
 		case LookupID:
-			return Lookup(&HostFunctionContext[struct{}]{
+			return Lookup(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument, serviceIndex, serviceAccounts)
 		case ReadID:
-			return Read(&HostFunctionContext[struct{}]{
+			return Read(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument, serviceIndex, serviceAccounts)
 		case WriteID:
-			return Write(&HostFunctionContext[struct{}]{
+			return Write(repo, &HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, ctx.Argument, serviceIndex)
@@ -417,7 +418,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
-	_, code := serviceAccount.MetadataAndCode()
+	_, code := serviceAccount.MetadataAndCode(repo)
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return serviceAccount, 0
 	}

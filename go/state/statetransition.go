@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/ascrivener/jam/sealingkeysequence"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/validatorstatistics"
@@ -58,11 +60,63 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
+func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, block block.Block) error {
+	// Begin a transaction for all repository operations
+	if err := repo.BeginTransaction(); err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Declare err variable for use in the defer function
+	var err error
+
+	// Defer a function that either commits or rolls back based on error status
+	defer func() {
+		if err != nil {
+			repo.RollbackTransaction()
+		} else {
+			err = repo.CommitTransaction()
+		}
+	}()
+
+	// Load state
+	state, err := GetState(repo)
+	if err != nil {
+		return fmt.Errorf("failed to load state: %w", err)
+	}
+
+	priorStateServiceIndices := make(map[types.ServiceIndex]struct{})
+	for serviceIndex := range state.ServiceAccounts {
+		priorStateServiceIndices[serviceIndex] = struct{}{}
+	}
+
+	// Run state transition function
+	postState, err := StateTransitionFunction(repo, state, block)
+	if err != nil {
+		return fmt.Errorf("failed to run state transition function: %w", err)
+	}
+
+	// After state transition function runs
+	for serviceIndex := range priorStateServiceIndices {
+		if _, exists := postState.ServiceAccounts[serviceIndex]; !exists {
+			// Service account was deleted
+			if err := repo.DeleteServiceAccount(serviceIndex); err != nil {
+				return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
+			}
+		}
+	}
+
+	// Save state
+	if err := postState.Set(repo); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	return nil
+}
+
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func StateTransitionFunction(priorState State, block block.Block) (State, error) {
-
+func StateTransitionFunction(repo staterepository.PebbleStateRepository, priorState State, block block.Block) (State, error) {
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(block.Header)
 
 	intermediateRecentBlocks := computeIntermediateRecentBlocks(block.Header, priorState.RecentBlocks)
@@ -84,6 +138,7 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics := accumulateAndIntegrate(
+		repo,
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
 		accumulatableWorkReports,
@@ -98,7 +153,7 @@ func StateTransitionFunction(priorState State, block block.Block) (State, error)
 	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	computeServiceAccounts(block.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
+	computeServiceAccounts(repo, block.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
 
 	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
@@ -340,20 +395,20 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
-func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
+func computeServiceAccounts(repo staterepository.PebbleStateRepository, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex]
-		if _, exists := serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)]; exists {
+		if _, exists := serviceAccount.GetPreimageForHash(repo, hash); exists {
 			continue
 		}
-		if availabilityTimeslots, exists := serviceAccount.PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(preimage.Data)))]; !exists {
+		if availabilityTimeslots, exists := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(len(preimage.Data)), hash); !exists {
 			continue
 		} else if len(availabilityTimeslots) > 0 {
 			continue
 		}
-		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)] = preimage.Data
-		(*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex].PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(preimage.Data)))] = []types.Timeslot{posteriorMostRecentBlockTimeslot}
+		serviceAccount.SetPreimageForHash(repo, hash, preimage.Data)
+		serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot})
 	}
 }
 
@@ -496,6 +551,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 }
 
 func accumulateAndIntegrate(
+	repo staterepository.PebbleStateRepository,
 	priorState *State,
 	posteriorMostRecentBlockTimeslot types.Timeslot,
 	accumulatableWorkReports []workreport.WorkReport,
@@ -503,7 +559,7 @@ func accumulateAndIntegrate(
 	posteriorEntropyAccumulator [4][32]byte,
 ) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(repo, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
@@ -544,7 +600,7 @@ func accumulateAndIntegrate(
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			_, gasUsed := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
+			_, gasUsed := pvm.OnTransfer(repo, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
 				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{

@@ -9,6 +9,7 @@ import (
 	"github.com/ascrivener/jam/ram"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/util"
 	wp "github.com/ascrivener/jam/workpackage"
@@ -96,7 +97,7 @@ func Gas(ctx *HostFunctionContext[struct{}], args ...any) ExitReason {
 // VerifyAndReturnStateForAccessor implements the state lookup host function
 // as specified in the graypaper. It verifies access, computes a key hash,
 // and returns data from state if available.
-func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
+func Read(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 
 		// Determine s* based on ω7
@@ -143,7 +144,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			copy(keyArray[:], h[:])
 
 			// Look up in state if available
-			if val, ok := a.StorageDictionary[serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)]; ok {
+			if val, ok := a.GetServiceStorageItem(repo, keyArray); ok {
 				byteSlice := []byte(val)
 				preImage = &byteSlice
 			}
@@ -176,7 +177,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 	})
 }
 
-func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex) ExitReason {
+func Write(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		// Extract [ko, kz, vo, vz] from registers ω7⋅⋅⋅+4
 		ko := ctx.State.Registers[7]  // Key offset
@@ -198,35 +199,33 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		h := blake2b.Sum256(combinedBytes)
 		copy(keyArray[:], h[:])
 
-		key := serviceaccount.StorageDictionaryKeyFromFullKey(keyArray)
-
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
-		if val, ok := serviceAccount.StorageDictionary[key]; ok {
+		if val, ok := serviceAccount.GetServiceStorageItem(repo, keyArray); ok {
 			l = types.Register(len(val))
 		} else {
 			l = types.Register(HostCallNone)
 		}
 
-		oldValue, ok := serviceAccount.StorageDictionary[key]
+		oldValue, ok := serviceAccount.GetServiceStorageItem(repo, keyArray)
 
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			delete(serviceAccount.StorageDictionary, key)
+			serviceAccount.DeleteServiceStorageItem(repo, keyArray)
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			serviceAccount.StorageDictionary[key] = valueBytes
+			serviceAccount.SetServiceStorageItem(repo, keyArray, valueBytes)
 		}
 
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			if !ok {
-				delete(serviceAccount.StorageDictionary, key)
+				serviceAccount.DeleteServiceStorageItem(repo, keyArray)
 			} else {
-				serviceAccount.StorageDictionary[key] = oldValue
+				serviceAccount.SetServiceStorageItem(repo, keyArray, oldValue)
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 		} else {
@@ -276,8 +275,8 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 				ThresholdBalanceNeeded:   types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
 				MinimumGasForAccumulate:  types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
 				MinimumGasForOnTransfer:  types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
-				TotalOctetsUsedInStorage: types.GenericNum(targetAccount.TotalOctetsUsedInStorage()),
-				StorageItems:             types.GenericNum(targetAccount.TotalItemsUsedInStorage()),
+				TotalOctetsUsedInStorage: types.GenericNum(targetAccount.TotalOctetsUsedInStorage),
+				StorageItems:             types.GenericNum(targetAccount.TotalItemsUsedInStorage),
 			}
 
 			// Serialize the account information
@@ -443,7 +442,7 @@ func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReaso
 	})
 }
 
-func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+func New(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Get parameters from registers [o, l, g, m] = ω7⋅⋅⋅+4
 		offset := ctx.State.Registers[7]               // o - memory offset for code hash
@@ -461,19 +460,11 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var codeHash [32]byte
 		copy(codeHash[:], codeHashBytes)
 
-		// Create preimage history map with the code hash and label length as key
-		preimageHistory := make(map[serviceaccount.PreimageLookupHistoricalStatusKey][]types.Timeslot)
-		key := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(codeHash, types.BlobLength(labelLength))
-		preimageHistory[key] = []types.Timeslot{}
-
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
-			CodeHash:                       codeHash,
-			StorageDictionary:              make(map[serviceaccount.StorageDictionaryKey]types.Blob),
-			PreimageLookupHistoricalStatus: preimageHistory,
-			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
-			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
-			PreimageLookup:                 make(map[serviceaccount.PreimageLookupKey]types.Blob),
+			CodeHash:                codeHash,
+			MinimumGasForAccumulate: types.GasValue(minGasForAccumulate),
+			MinimumGasForOnTransfer: types.GasValue(minGasForOnTransfer),
 		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
@@ -494,6 +485,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 
 		// Get current service accounts and update them
 		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[currentDerivedServiceIndex] = newAccount
+		newAccount.SetPreimageLookupHistoricalStatus(repo, uint32(labelLength), codeHash, []types.Timeslot{})
 
 		ctx.State.Registers[7] = types.Register(currentDerivedServiceIndex)
 		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, &ctx.Argument.AccumulationResultContext.StateComponents)
@@ -610,7 +602,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason 
 	})
 }
 
-func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+func Eject(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract parameters from registers [d, o] = ω7,8
 		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
@@ -652,17 +644,14 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 
 		// 3. Check interface type and if hash/lock pair exists in list
 		// (di ≠ 2 ∨ (h, l) ~∈ dl)
-		if destinationAccount.TotalItemsUsedInStorage() != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
+		if destinationAccount.TotalItemsUsedInStorage != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		length := max(81, destinationAccount.TotalOctetsUsedInStorage()) - 81
+		length := max(81, destinationAccount.TotalOctetsUsedInStorage) - 81
 
-		// Create the key for lookup
-		lookupKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(length))
-
-		historicalStatus, exists := destinationAccount.PreimageLookupHistoricalStatus[lookupKey]
+		historicalStatus, exists := destinationAccount.GetPreimageLookupHistoricalStatus(repo, uint32(length), hash)
 		if !exists || length > uint64(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo)
@@ -693,7 +682,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 	})
 }
 
-func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+func Query(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -709,7 +698,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().PreimageLookupHistoricalStatus[serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))]
+		historicalStatus, ok := ctx.Argument.AccumulatingServiceAccount().GetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash)
 
 		if !ok || z > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
@@ -742,7 +731,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	})
 }
 
-func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+func Solicit(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -758,20 +747,17 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
-
 		// Get the accumulating service account (xs)
 		serviceAccount := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		originalStatus, originalExists := serviceAccount.PreimageLookupHistoricalStatus[histKey]
+		originalStatus, originalExists := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash)
 
 		// Make the changes directly to the service account
 		if !originalExists || z > types.Register(^uint32(0)) {
-			serviceAccount.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{}
+			serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash, []types.Timeslot{})
 		} else if len(originalStatus) == 2 {
-			serviceAccount.PreimageLookupHistoricalStatus[histKey] = append(originalStatus, timeslot)
+			serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash, append(originalStatus, timeslot))
 		} else {
 			// Key exists but doesn't have exactly two elements
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -782,9 +768,9 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		if serviceAccount.Balance < serviceAccount.ThresholdBalanceNeeded() {
 			// Revert the changes
 			if !originalExists {
-				delete(serviceAccount.PreimageLookupHistoricalStatus, histKey)
+				serviceAccount.DeletePreimageLookupHistoricalStatus(repo, uint32(z), keyHash)
 			} else {
-				serviceAccount.PreimageLookupHistoricalStatus[histKey] = originalStatus
+				serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash, originalStatus)
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 			return NewSimpleExitReason(ExitGo)
@@ -795,7 +781,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 	})
 }
 
-func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
+func Forget(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -811,14 +797,11 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		// Prepare the key for looking up historical status
-		histKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(keyHash, types.BlobLength(z))
-
 		// Get the accumulating service account (xs)
 		xs := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		historicalStatus, exists := xs.PreimageLookupHistoricalStatus[histKey]
+		historicalStatus, exists := xs.GetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash)
 		if !exists || z > types.Register(^uint32(0)) {
 			// Key doesn't exist, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -831,16 +814,16 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		// Handle different cases based on historical status length and values
 		if len(historicalStatus) == 0 || (len(historicalStatus) == 2 && historicalStatus[1] < cutoffTime) {
 			// Remove the key if status is [] or [x, y] with y < t - D
-			delete(xs.PreimageLookupHistoricalStatus, histKey)
+			xs.DeletePreimageLookupHistoricalStatus(repo, uint32(z), keyHash)
 
 			// Also remove the key from PreimageLookup if it exists
-			delete(xs.PreimageLookup, serviceaccount.PreimageLookupKeyFromFullKey(keyHash))
+			xs.DeletePreimageForHash(repo, keyHash)
 		} else if len(historicalStatus) == 1 {
 			// Replace [x] with [x, t] if status is [x]
-			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[0], timeslot}
+			xs.SetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash, []types.Timeslot{historicalStatus[0], timeslot})
 		} else if len(historicalStatus) == 3 && historicalStatus[1] < cutoffTime {
 			// Replace [x, y, w] with [w, t] if status is [x, y, w] and y < t - D
-			xs.PreimageLookupHistoricalStatus[histKey] = []types.Timeslot{historicalStatus[2], timeslot}
+			xs.SetPreimageLookupHistoricalStatus(repo, uint32(z), keyHash, []types.Timeslot{historicalStatus[2], timeslot})
 		} else {
 			// For any other case, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -878,7 +861,7 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	})
 }
 
-func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex types.ServiceIndex) ExitReason {
+func Provide(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex types.ServiceIndex) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract offset o from register ω8
 		o := ctx.State.Registers[8] // Offset
@@ -904,9 +887,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex
 			return NewSimpleExitReason(ExitGo)
 		}
 
-		preimageLookupHistoricalStatusKey := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(blake2b.Sum256(i), types.BlobLength(z))
-
-		historicalStatus, ok := serviceAccount.PreimageLookupHistoricalStatus[preimageLookupHistoricalStatusKey]
+		historicalStatus, ok := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(z), blake2b.Sum256(i))
 
 		if !ok || len(historicalStatus) > 0 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
@@ -1414,7 +1395,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReas
 	})
 }
 
-func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
+func Lookup(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) ExitReason {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1437,9 +1418,8 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 		if a != nil {
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
-			if v, ok := a.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(keyArray)]; ok {
-				byteSlice := []byte(v)
-				preImage = &byteSlice
+			if v, ok := a.GetPreimageForHash(repo, keyArray); ok {
+				preImage = &v
 			}
 		}
 
@@ -1476,7 +1456,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 }
 
 // HistoricalLookup retrieves a historical value for a key from a service account
-func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) ExitReason {
+func HistoricalLookup(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) ExitReason {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1501,7 +1481,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 
-			preImage = historicallookup.HistoricalLookup(a, timeslot, keyArray)
+			preImage = historicallookup.HistoricalLookup(repo, a, timeslot, keyArray)
 		}
 
 		// Calculate preimage length, offset and length to copy
