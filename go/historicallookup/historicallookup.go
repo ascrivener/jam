@@ -4,17 +4,20 @@ package historicallookup
 
 import (
 	"github.com/ascrivener/jam/serviceaccount"
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
 )
 
-func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
-	p, ok := serviceAccount.PreimageLookup[serviceaccount.PreimageLookupKeyFromFullKey(hash)]
+func HistoricalLookup(repo staterepository.PebbleStateRepository, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
+	p, ok := serviceAccount.GetPreimageForHash(repo, hash)
 	if !ok {
 		return nil
 	}
 
-	key := serviceaccount.PreimageLookupHistoricalStatusKeyFromFullKey(hash, types.BlobLength(len(p)))
-	historicalStatus := serviceAccount.PreimageLookupHistoricalStatus[key]
+	historicalStatus, ok := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(types.BlobLength(len(p))), hash)
+	if !ok {
+		return nil
+	}
 
 	switch len(historicalStatus) {
 	case 0:
