@@ -120,14 +120,11 @@ func MakeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32,
 
 // Get retrieves a value from the database
 func (r *PebbleStateRepository) Get(key []byte) ([]byte, io.Closer, error) {
-	// If there's an active batch, try to read from it first
+	// If there's an active batch, use it exclusively
 	if r.batch != nil {
-		// Check if the key is in the pending batch changes
-		value, closer, err := r.batch.Get(key)
-		if err != pebble.ErrNotFound {
-			return value, closer, err
-		}
-		// Fall through to DB if not found in batch
+		// Use the indexed batch for ALL reads when it's active
+		// This will show deletions correctly as NotFound
+		return r.batch.Get(key)
 	}
 	return r.db.Get(key)
 }
