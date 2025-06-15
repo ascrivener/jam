@@ -76,8 +76,11 @@ func (s *ServiceAccount) GetServiceStorageItem(repo staterepository.PebbleStateR
 	// Create the key
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
 
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
 	// Fetch the value
-	value, closer, err := repo.Get(dbKey[:])
+	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
 		return nil, false // Return nil for non-existent keys
 	} else if err != nil {
@@ -118,7 +121,11 @@ func (s *ServiceAccount) SetServiceStorageItem(repo staterepository.PebbleStateR
 
 	// Set the storage item
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
-	if err := batch.Set(dbKey[:], value, nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Set(prefixedKey, value, nil); err != nil {
 		panic(fmt.Errorf("failed to set storage item for service %d: %w", s.ServiceIndex, err))
 	}
 
@@ -153,7 +160,11 @@ func (s *ServiceAccount) DeleteServiceStorageItem(repo staterepository.PebbleSta
 
 	// Delete the storage item
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
-	if err := batch.Delete(dbKey[:], nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Delete(prefixedKey, nil); err != nil {
 		panic(fmt.Errorf("failed to delete storage item for service %d: %w", s.ServiceIndex, err))
 	}
 
@@ -170,8 +181,11 @@ func (s *ServiceAccount) GetPreimageForHash(repo staterepository.PebbleStateRepo
 	// Create the key
 	dbKey := staterepository.MakePreimageKey(s.ServiceIndex, hash)
 
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
 	// Fetch the value
-	value, closer, err := repo.Get(dbKey[:])
+	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
 		return nil, false // Return nil for non-existent keys
 	} else if err != nil {
@@ -198,7 +212,11 @@ func (s *ServiceAccount) SetPreimageForHash(repo staterepository.PebbleStateRepo
 
 	// Set the preimage
 	dbKey := staterepository.MakePreimageKey(s.ServiceIndex, hash)
-	if err := batch.Set(dbKey[:], preimage, nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Set(prefixedKey, preimage, nil); err != nil {
 		panic(fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err))
 	}
 
@@ -222,7 +240,11 @@ func (s *ServiceAccount) DeletePreimageForHash(repo staterepository.PebbleStateR
 
 	// Delete the preimage
 	dbKey := staterepository.MakePreimageKey(s.ServiceIndex, hash)
-	if err := batch.Delete(dbKey[:], nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Delete(prefixedKey, nil); err != nil {
 		panic(fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err))
 	}
 
@@ -239,8 +261,11 @@ func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(repo staterepository.
 	// Create the key
 	dbKey := staterepository.MakeHistoricalStatusKey(s.ServiceIndex, blobLength, hashedPreimage)
 
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
 	// Fetch the value
-	value, closer, err := repo.Get(dbKey[:])
+	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
 		return nil, false // Return nil for non-existent keys
 	} else if err != nil {
@@ -282,7 +307,11 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(repo staterepository.
 
 	// Set the historical status
 	dbKey := staterepository.MakeHistoricalStatusKey(s.ServiceIndex, blobLength, hashedPreimage)
-	if err := batch.Set(dbKey[:], serializer.Serialize(status), nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Set(prefixedKey, serializer.Serialize(status), nil); err != nil {
 		panic(fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err))
 	}
 
@@ -318,7 +347,11 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(repo statereposito
 
 	// Delete the status
 	dbKey := staterepository.MakeHistoricalStatusKey(s.ServiceIndex, blobLength, hashedPreimage)
-	if err := batch.Delete(dbKey[:], nil); err != nil {
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Delete(prefixedKey, nil); err != nil {
 		panic(fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err))
 	}
 

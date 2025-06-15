@@ -1,4 +1,4 @@
-package state
+package statetransition
 
 import (
 	"bytes"
@@ -19,6 +19,7 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
+	"github.com/ascrivener/jam/workreport"
 
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
@@ -69,7 +70,7 @@ type GuaranteeSignatureJSON struct {
 }
 
 type GuaranteeJSON struct {
-	Report     WorkReport               `json:"report"`
+	Report     WorkReportJSON           `json:"report"`
 	Slot       uint64                   `json:"slot"`
 	Signatures []GuaranteeSignatureJSON `json:"signatures"`
 }
@@ -680,11 +681,6 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 		// Process each file sequentially
 		func() {
-			fileStart := time.Now()
-			defer func() {
-				fileEnd := time.Now()
-				fmt.Printf("Processed %s in %v\n", fileName, fileEnd.Sub(fileStart))
-			}()
 
 			// Load and parse test vector
 			testVectorPath := filepath.Join(vectorsDir, fileName)
@@ -728,7 +724,9 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Store all key-value pairs into the repository
 			batch := repo.GetBatch()
 			for k, v := range preStateSerialized {
-				if err := batch.Set(k[:], v, nil); err != nil {
+				// Add state: prefix to match production code
+				prefixedKey := append([]byte("state:"), k[:]...)
+				if err := batch.Set(prefixedKey, v, nil); err != nil {
 					t.Fatalf("Failed to store key-value pair: %v", err)
 				}
 			}
@@ -766,7 +764,10 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 			// Run state transition function
 			t.Logf("Stage 9: Running state transition function...")
+			fileStart := time.Now()
 			LoadStateAndRunSTF(*repo, testBlock)
+			fileEnd := time.Now()
+			fmt.Printf("Stage 9: State transition completed in %v\n", fileEnd.Sub(fileStart))
 			// logf("Stage 10: State transition completed")
 
 			// serializedPostState := StateSerializer(postState)
@@ -797,8 +798,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			for repoIter.First(); repoIter.Valid(); repoIter.Next() {
 				key := repoIter.Key()
 
+				// Skip non-state keys or keys that are too short to have state: prefix + data
+				if len(key) < 6 || !bytes.HasPrefix(key, []byte("state:")) {
+					continue
+				}
+
+				// Remove the state: prefix for comparison with test vector data
+				unprefixedKey := key[len("state:"):]
+
 				var stateKey [31]byte
-				copy(stateKey[:], key)
+				copy(stateKey[:], unprefixedKey)
 
 				value := repoIter.Value()
 				valueCopy := make([]byte, len(value))
@@ -1191,3 +1200,223 @@ func convertEpochMark(epochMarkJSON *EpochMark) *header.EpochMarker {
 		ValidatorKeys:          validatorKeys,
 	}
 }
+
+// hexToBytesMust converts a hex string to bytes, panicking on error
+func hexToBytesMust(hexStr string) []byte {
+	// Remove 0x prefix if present
+	if strings.HasPrefix(hexStr, "0x") {
+		hexStr = hexStr[2:]
+	}
+
+	bytes, err := hex.DecodeString(hexStr)
+	if err != nil {
+		panic(fmt.Sprintf("invalid hex string: %s", err))
+	}
+
+	return bytes
+}
+
+// hexToHashMust panics if the hash cannot be converted
+func hexToHashMust(hexStr string) [32]byte {
+	hash, err := hexToHash(hexStr)
+	if err != nil {
+		panic(fmt.Sprintf("invalid hash: %s", err))
+	}
+	return hash
+}
+
+// convertJSONReportToImplReport converts a workreport from the JSON to the implementation's WorkReport type
+func convertJSONReportToImplReport(workReportJSON WorkReportJSON) workreport.WorkReport {
+	var report workreport.WorkReport
+
+	// Set CoreIndex
+	report.CoreIndex = types.GenericNum(workReportJSON.CoreIndex)
+
+	// Convert results
+	for _, result := range workReportJSON.Results {
+		codeHash := hexToHashMust(string(result.CodeHash))
+		payloadHash := hexToHashMust(string(result.PayloadHash))
+
+		workDigest := workreport.WorkDigest{
+			ServiceIndex:                 types.ServiceIndex(result.ServiceId),
+			ServiceCodeHash:              codeHash,
+			PayloadHash:                  payloadHash,
+			AccumulateGasLimit:           types.GasValue(result.AccumulateGas),
+			WorkResult:                   types.ExecutionExitReason{},
+			ActualRefinementGasUsed:      types.GenericGasValue(result.RefineLoad.GasUsed),
+			NumSegmentsImportedFrom:      types.GenericNum(result.RefineLoad.Imports),
+			NumExtrinsicsUsed:            types.GenericNum(result.RefineLoad.ExtrinsicCount),
+			SizeInOctetsOfExtrinsicsUsed: types.GenericNum(result.RefineLoad.ExtrinsicSize),
+			NumSegmentsExportedInto:      types.GenericNum(result.RefineLoad.Exports),
+		}
+
+		if result.Result.OK != nil {
+			// If OK is present, convert hex string to binary
+			workDigest.WorkResult = types.NewExecutionExitReasonBlob(hexToBytesMust(string(*result.Result.OK)))
+		}
+
+		report.WorkDigests = append(report.WorkDigests, workDigest)
+	}
+
+	// Set package spec
+	packageSpecHash := hexToHashMust(string(workReportJSON.PackageSpec.Hash))
+	erasureRoot := hexToHashMust(string(workReportJSON.PackageSpec.ErasureRoot))
+	exportsRoot := hexToHashMust(string(workReportJSON.PackageSpec.ExportsRoot))
+
+	report.WorkPackageSpecification = workreport.AvailabilitySpecification{
+		WorkPackageHash:  packageSpecHash,                                     // h
+		WorkBundleLength: types.BlobLength(workReportJSON.PackageSpec.Length), // l
+		ErasureRoot:      erasureRoot,                                         // u
+		SegmentRoot:      exportsRoot,                                         // e - ExportsRoot maps to SegmentRoot
+		SegmentCount:     uint16(workReportJSON.PackageSpec.ExportsCount),     // n - ExportsCount maps to SegmentCount
+	}
+
+	// Set refinement context
+	anchorHash := hexToHashMust(string(workReportJSON.Context.Anchor))
+	stateRoot := hexToHashMust(string(workReportJSON.Context.StateRoot))
+	beefyRoot := hexToHashMust(string(workReportJSON.Context.BeefyRoot))
+	lookupAnchor := hexToHashMust(string(workReportJSON.Context.LookupAnchor))
+
+	// Convert prerequisites to map of [32]byte
+	prereqMap := make(map[[32]byte]struct{})
+	for _, prereq := range workReportJSON.Context.Prerequisites {
+		hash := hexToHashMust(string(prereq))
+		prereqMap[hash] = struct{}{}
+	}
+
+	report.RefinementContext = workreport.RefinementContext{
+		AnchorHeaderHash:              anchorHash,                                              // a
+		PosteriorStateRoot:            stateRoot,                                               // s
+		PosteriorBEEFYRoot:            beefyRoot,                                               // b
+		LookupAnchorHeaderHash:        lookupAnchor,                                            // l
+		Timeslot:                      types.Timeslot(workReportJSON.Context.LookupAnchorSlot), // t
+		PrerequisiteWorkPackageHashes: prereqMap,                                               // p
+	}
+
+	// Set AuthorizerHash (a)
+	authorizerHash := hexToHashMust(string(workReportJSON.AuthorizerHash))
+	report.AuthorizerHash = authorizerHash
+
+	// Set Output (o) - properly decode the hex string ByteSequence to bytes
+	if workReportJSON.AuthOutput != "" {
+		output := hexToBytesMust(string(workReportJSON.AuthOutput))
+		report.Output = output
+	} else {
+		report.Output = []byte{}
+	}
+
+	// Set SegmentRootLookup (l)
+	report.SegmentRootLookup = make(map[[32]byte][32]byte)
+	for _, item := range workReportJSON.SegmentRootLookup {
+		key := hexToHashMust(string(item.WorkPackageHash))
+		val := hexToHashMust(string(item.SegmentTreeRoot))
+		report.SegmentRootLookup[key] = val
+	}
+
+	// Set IsAuthorizedGasConsumption from AuthGasUsed
+	report.IsAuthorizedGasConsumption = types.GenericGasValue(workReportJSON.AuthGasUsed)
+
+	return report
+}
+
+// Helper functions for hash conversion
+func hexToHash(hexStr string) ([32]byte, error) {
+	var result [32]byte
+
+	// Remove 0x prefix if present
+	if strings.HasPrefix(hexStr, "0x") {
+		hexStr = hexStr[2:]
+	}
+
+	// Check length
+	if len(hexStr) != 64 {
+		return result, fmt.Errorf("invalid hash length: %d", len(hexStr))
+	}
+
+	// Convert from hex
+	bytes, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return result, err
+	}
+
+	// Copy to result
+	copy(result[:], bytes)
+	return result, nil
+}
+
+// RefineContext represents a context for refinement
+type RefineContext struct {
+	Anchor           string   `json:"anchor"`
+	StateRoot        string   `json:"state_root"`
+	BeefyRoot        string   `json:"beefy_root"`
+	LookupAnchor     string   `json:"lookup_anchor"`
+	LookupAnchorSlot uint64   `json:"lookup_anchor_slot"`
+	Prerequisites    []string `json:"prerequisites"`
+}
+
+// WorkExecResult represents the result of work execution (OK or error)
+type WorkExecResult struct {
+	OK *string `json:"ok,omitempty"`
+}
+
+// Import specification
+type ImportSpec struct {
+	// Add fields if needed
+}
+
+// Extrinsic specification
+type ExtrinsicSpec struct {
+	// Add fields if needed
+}
+
+// Authorizer type
+type Authorizer string
+
+// WorkReport represents a work report
+type WorkReportJSON struct {
+	PackageSpec       WorkPackageSpec   `json:"package_spec"`
+	Context           RefineContext     `json:"context"`
+	CoreIndex         uint64            `json:"core_index"`
+	AuthorizerHash    string            `json:"authorizer_hash"`
+	AuthOutput        string            `json:"auth_output"`
+	SegmentRootLookup SegmentRootLookup `json:"segment_root_lookup"`
+	Results           []WorkDigest      `json:"results"`
+	AuthGasUsed       uint64            `json:"auth_gas_used"`
+}
+
+// RefineLoad represents the load statistics for refinement
+type RefineLoad struct {
+	GasUsed        uint64 `json:"gas_used"`
+	Imports        uint64 `json:"imports"`
+	ExtrinsicCount uint64 `json:"extrinsic_count"`
+	ExtrinsicSize  uint64 `json:"extrinsic_size"`
+	Exports        uint64 `json:"exports"`
+}
+
+// WorkDigest represents the result of work execution
+type WorkDigest struct {
+	ServiceId     uint64         `json:"service_id"`
+	CodeHash      string         `json:"code_hash"`
+	PayloadHash   string         `json:"payload_hash"`
+	AccumulateGas uint64         `json:"accumulate_gas"`
+	Result        WorkExecResult `json:"result"`
+	RefineLoad    RefineLoad     `json:"refine_load"`
+}
+
+// WorkPackageSpec represents a specification of a work package
+type WorkPackageSpec struct {
+	Hash         string `json:"hash"`
+	Length       uint64 `json:"length"`
+	ErasureRoot  string `json:"erasure_root"`
+	ExportsRoot  string `json:"exports_root"`
+	ExportsCount uint64 `json:"exports_count"`
+}
+
+// SegmentRootLookupItem represents a lookup item for segment roots
+type SegmentRootLookupItem struct {
+	WorkPackageHash string `json:"work_package_hash"`
+	SegmentTreeRoot string `json:"segment_tree_root"`
+}
+
+// SegmentRootLookup represents a collection of segment root lookup items
+type SegmentRootLookup []SegmentRootLookupItem
