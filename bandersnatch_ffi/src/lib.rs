@@ -1,14 +1,82 @@
+use ark_vrf::ietf::Verifier;
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::suites::bandersnatch::{
     BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
 };
 use ark_vrf::Suite;
-use ark_vrf::{codec, Error};
+use ark_vrf::{codec, ietf, Error, Input, Output, Public};
 use once_cell::sync::OnceCell;
 use std::fs::File;
 use std::io::Read;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub fn verify_signature_ffi<S: Suite>(
+    public_key: &[u8],
+    message: &[u8],
+    context: &[u8],
+    proof: &[u8],
+) -> Result<bool, Error> {
+    // 1. Decode the public key into a curve point
+    let pk_point = codec::point_decode::<S>(public_key).map_err(|_| Error::InvalidData)?;
+    let public = Public(pk_point);
+
+    // 2. Create input from message by hashing to a point first
+    let input = Input::new(message).ok_or(Error::InvalidData)?;
+
+    // 3. Extract the gamma/output from the proof (first 32 bytes)
+    if proof.len() < 32 {
+        return Err(Error::InvalidData);
+    }
+    let gamma_bytes = &proof[..32];
+    let pt = codec::point_decode::<S>(gamma_bytes).map_err(|_| Error::InvalidData)?;
+    let output = Output(pt);
+
+    // 4. Decode proof components (c and s) - skip the gamma/output part
+    let deserialized_proof = ietf::Proof::<S>::deserialize_compressed(&mut &proof[32..])
+        .map_err(|_| Error::InvalidData)?;
+
+    // 5. Verify the proof
+    match public.verify(input, output, context, &deserialized_proof) {
+        Ok(()) => Ok(true),
+        Err(Error::VerificationFailure) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn verify_signature(
+    public_key_ptr: *const u8,
+    public_key_len: usize,
+    message_ptr: *const u8,
+    message_len: usize,
+    context_ptr: *const u8,
+    context_len: usize,
+    proof_ptr: *const u8,
+    proof_len: usize,
+) -> i32 {
+    // Input validation
+    if public_key_ptr.is_null() || message_ptr.is_null() || proof_ptr.is_null() {
+        return -1; // Invalid input pointers
+    }
+
+    // Convert raw pointers to slices
+    let public_key = unsafe { slice::from_raw_parts(public_key_ptr, public_key_len) };
+    let message = unsafe { slice::from_raw_parts(message_ptr, message_len) };
+    let context = if context_ptr.is_null() {
+        &[] // Empty context if null
+    } else {
+        unsafe { slice::from_raw_parts(context_ptr, context_len) }
+    };
+    let proof = unsafe { slice::from_raw_parts(proof_ptr, proof_len) };
+
+    // Call the internal verification function
+    match verify_signature_ffi::<BandersnatchSha512Ell2>(public_key, message, context, proof) {
+        Ok(true) => 1,  // Signature valid
+        Ok(false) => 0, // Signature invalid
+        Err(_) => -2,   // Error processing inputs
+    }
+}
 
 pub fn ietf_vrf_output_ffi<S: Suite>(proof: &[u8]) -> Result<[u8; 32], Error> {
     // For Bandersnatch IETF proof, the format is:

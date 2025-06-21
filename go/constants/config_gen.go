@@ -33,7 +33,7 @@ type ConstantMapping struct {
 var constantMappings = map[string]ConstantMapping{
 	"TotalValidators":             {"NumValidators", "uint16", "V"},
 	"TotalCores":                  {"NumCores", "uint16", "C"},
-	"TicketEntriesPerValidator":   {"NumTicketEntries", "int", ""},
+	"TicketEntriesPerValidator":   {"NumTicketEntries", "int", "N"},
 	"EpochLength":                 {"NumTimeslotsPerEpoch", "uint32", "E"},
 	"TicketSubmissionEndSlot":     {"TicketSubmissionEndingSlotPhaseNumber", "uint32", "Y"},
 	"MaxTicketsPerExtrinsic":      {"MaxTicketsPerExtrinsic", "uint16", "K"},
@@ -71,6 +71,7 @@ var additionalConstants = map[string]map[string]string{
 	"MaxExportsInWorkPackage":           {"type": "uint32", "value": "3072", "comment": "W_X"},
 	"LookupAnchorMaxAgeTimeslots":       {"type": "uint32", "value": "14400", "comment": "L"},
 	"SlotPeriodInSeconds":               {"type": "uint16", "value": "6", "comment": "P"},
+	"JamCommonEraStartUnixTime":         {"type": "int64", "value": "1735732800", "comment": "JCE epoch (2025-01-01 12:00 UTC)"},
 }
 
 func main() {

@@ -2,12 +2,17 @@ package block
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/ascrivener/jam/bandersnatch"
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serializer"
+	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/staterepository"
+	"github.com/ascrivener/jam/types"
 	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
@@ -25,6 +30,20 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
 		return fmt.Errorf("failed to get parent block: %w", err)
 	}
 
+	// (5.4)
+	if b.Header.ExtrinsicHash != b.Extrinsics.MerkleCommitment() {
+		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
+	}
+
+	// (5.7)
+	if b.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
+		return fmt.Errorf("time slot is not greater than parent block time slot")
+	}
+
+	if b.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
+		return fmt.Errorf("block timestamp is in the future relative to current time")
+	}
+
 	// (5.8)
 	merklizedState := merklizer.MerklizeState(repo)
 
@@ -32,11 +51,43 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
 		return fmt.Errorf("parent block state root does not match merklized state")
 	}
 
-	// (5.4)
-	if b.Header.ExtrinsicHash != b.Extrinsics.MerkleCommitment() {
-		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
-	}
+	return nil
+}
 
+func (b Block) VerifyPostStateTransition(postState state.State) error {
+	// Calculate time slot position within epoch (shared between both verification paths)
+	slotIndexInEpoch := b.Header.TimeSlot % types.Timeslot(constants.NumTimeslotsPerEpoch)
+
+	if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
+		// (6.15)
+		// Verify block seal matches the expected ticket's VRF output
+		expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
+		actualVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(b.Header.BlockSeal)
+		if err != nil {
+			return fmt.Errorf("failed to extract VRF output from block seal: %w", err)
+		}
+
+		if expectedTicket.VerifiablyRandomIdentifier != actualVRFOutput {
+			return fmt.Errorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
+		}
+	} else {
+		// (6.16)
+		// Verify block author matches the expected Bandersnatch key
+		expectedKey := postState.SafroleBasicState.SealingKeySequence.BandersnatchKeys[slotIndexInEpoch]
+		authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()
+
+		if expectedKey != authorKey {
+			return fmt.Errorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
+		}
+
+		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), b.Header.SerializeUnsigned(), b.Header.BlockSeal)
+		if err != nil {
+			return fmt.Errorf("failed to verify block seal: %w", err)
+		}
+		if !verified {
+			return fmt.Errorf("block seal verification failed")
+		}
+	}
 	return nil
 }
 

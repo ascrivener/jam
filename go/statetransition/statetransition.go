@@ -108,7 +108,10 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	posteriorDisputes := computeDisputes(curBlock.Extrinsics.Disputes, priorState.Disputes)
 
-	posteriorSafroleBasicState := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
+	posteriorSafroleBasicState, err := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
+	if err != nil {
+		return fmt.Errorf("failed to compute safrole basic state: %w", err)
+	}
 
 	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
 
@@ -157,6 +160,11 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 		ValidatorStatistics:        validatorStatistics,
 		AccumulationQueue:          posteriorAccumulationQueue,
 		AccumulationHistory:        posteriorAccumulationHistory,
+	}
+
+	// Post-transition validation
+	if err := curBlock.VerifyPostStateTransition(postState); err != nil {
+		return fmt.Errorf("failed to verify state: %w", err)
 	}
 
 	// TODO: detect service account deletion and handle (??)
@@ -305,20 +313,23 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 	return updatedRecentBlocks
 }
 
-func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState state.SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) state.SafroleBasicState {
+func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState state.SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) (state.SafroleBasicState, error) {
 	var posteriorValidatorKeysetsPending types.ValidatorKeysets
 	var posteriorEpochTicketSubmissionsRoot types.BandersnatchRingRoot
 	var posteriorSealingKeySequence sealingkeysequence.SealingKeySequence
 	posteriorTicketAccumulator := make([]ticket.Ticket, 0)
-	// TODO: verify here if the tickets given are actually ordered by vrf output
 	for _, extrinsicTicket := range tickets {
 		vrfOutput, err := bandersnatch.BandersnatchRingVRFProofOutput(extrinsicTicket.ValidityProof)
 		if err != nil {
-			return state.SafroleBasicState{}
+			return state.SafroleBasicState{}, err
+		}
+		ticketEntryIndex, err := types.NewTicketEntryIndex(uint64(extrinsicTicket.EntryIndex))
+		if err != nil {
+			return state.SafroleBasicState{}, err
 		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
-			EntryIndex:                 types.TicketEntryIndex(extrinsicTicket.EntryIndex),
+			EntryIndex:                 ticketEntryIndex,
 		})
 	}
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
@@ -391,7 +402,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		EpochTicketSubmissionsRoot: posteriorEpochTicketSubmissionsRoot,
 		SealingKeySequence:         posteriorSealingKeySequence,
 		TicketAccumulator:          posteriorTicketAccumulator[:int(math.Min(float64(len(posteriorTicketAccumulator)), float64(constants.NumTimeslotsPerEpoch)))],
-	}
+	}, nil
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly

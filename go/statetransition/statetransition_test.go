@@ -1034,6 +1034,11 @@ func highlightByteDifferences(expected, actual []byte) string {
 // BlockFromJSON parses a JSON block representation directly into a block.Block
 func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 
+	ticketsMark, err := convertTicketsMark(blockJSON.Header.TicketsMark)
+	if err != nil {
+		return block.Block{}, err
+	}
+
 	// Build the header
 	blockHeader := header.Header{
 		ParentHash:                   hexToHashMust(blockJSON.Header.Parent),
@@ -1044,7 +1049,7 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.EntropySource)),
 		BlockSeal:                    types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
 		EpochMarker:                  convertEpochMark(blockJSON.Header.EpochMark),
-		WinningTicketsMarker:         convertTicketsMark(blockJSON.Header.TicketsMark),
+		WinningTicketsMarker:         ticketsMark,
 		OffendersMarker:              []types.Ed25519PublicKey{},
 	}
 
@@ -1052,12 +1057,16 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		panic("Offenders marker not implemented")
 	}
 
+	tickets, err := convertTickets(blockJSON.Extrinsic.Tickets)
+	if err != nil {
+		return block.Block{}, err
+	}
 	// Convert extrinsic part (simplified for now)
 	extrinsics := extrinsics.Extrinsics{
 		Guarantees: convertGuarantees(blockJSON.Extrinsic.Guarantees),
 		Assurances: convertAssurances(blockJSON.Extrinsic.Assurances),
 		Disputes:   convertDisputes(blockJSON.Extrinsic.Disputes),
-		Tickets:    convertTickets(blockJSON.Extrinsic.Tickets),
+		Tickets:    tickets,
 		Preimages:  convertPreimages(blockJSON.Extrinsic.Preimages),
 	}
 
@@ -1140,7 +1149,7 @@ func convertAssurances(assurancesJSON []Assurance) extrinsics.Assurances {
 	return assurances
 }
 
-func convertTickets(ticketsJSON []Ticket) extrinsics.Tickets {
+func convertTickets(ticketsJSON []Ticket) (extrinsics.Tickets, error) {
 	tickets := extrinsics.Tickets{}
 
 	for _, t := range ticketsJSON {
@@ -1148,13 +1157,17 @@ func convertTickets(ticketsJSON []Ticket) extrinsics.Tickets {
 		if len(bytes) != 784 {
 			panic("signature wrong length")
 		}
+		ticketEntryIndex, err := types.NewTicketEntryIndex(t.Attempt)
+		if err != nil {
+			return nil, err
+		}
 		tickets = append(tickets, extrinsics.Ticket{
-			EntryIndex:    types.GenericNum(types.TicketEntryIndex(t.Attempt)),
+			EntryIndex:    types.GenericNum(ticketEntryIndex),
 			ValidityProof: types.BandersnatchRingVRFProof(bytes),
 		})
 	}
 
-	return tickets
+	return tickets, nil
 }
 
 func convertPreimages(preimagesJSON []Preimage) extrinsics.Preimages {
@@ -1181,21 +1194,25 @@ func convertDisputes(disputesJSON Disputes) extrinsics.Disputes {
 	}
 }
 
-func convertTicketsMark(ticketsMarkJSON *[]TicketMark) *([constants.NumTimeslotsPerEpoch]header.Ticket) {
+func convertTicketsMark(ticketsMarkJSON *[]TicketMark) (*[constants.NumTimeslotsPerEpoch]header.Ticket, error) {
 	tickets := [constants.NumTimeslotsPerEpoch]header.Ticket{}
 
 	if ticketsMarkJSON == nil {
-		return nil
+		return nil, nil
 	}
 
 	for i, t := range *ticketsMarkJSON {
+		ticketEntryIndex, err := types.NewTicketEntryIndex(t.Attempt)
+		if err != nil {
+			return nil, err
+		}
 		tickets[i] = header.Ticket{
-			EntryIndex:                 types.TicketEntryIndex(t.Attempt),
+			EntryIndex:                 ticketEntryIndex,
 			VerifiablyRandomIdentifier: hexToHashMust(t.ID),
 		}
 	}
 
-	return &tickets
+	return &tickets, nil
 }
 
 func convertEpochMark(epochMarkJSON *EpochMark) *header.EpochMarker {

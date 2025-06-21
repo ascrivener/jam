@@ -22,9 +22,9 @@ func node(blobs [][]byte, hash func([]byte) [32]byte) []byte {
 
 	// Concatenate prefix with both halves and hash
 	var buffer bytes.Buffer
-	buffer.Write([]byte("$node")) // Add $node prefix
-	buffer.Write(leftHalf)        // Add N(v...⌈∣v∣/2⌉, H)
-	buffer.Write(rightHalf)       // Add N(v⌈∣v∣/2⌉..., H)
+	buffer.Write([]byte("node")) // Add $node prefix
+	buffer.Write(leftHalf)       // Add N(v...⌈∣v∣/2⌉, H)
+	buffer.Write(rightHalf)      // Add N(v⌈∣v∣/2⌉..., H)
 
 	// Hash the result: H($node ⌢ N(left) ⌢ N(right))
 	hashResult := hash(buffer.Bytes())

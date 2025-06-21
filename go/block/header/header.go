@@ -2,6 +2,7 @@ package header
 
 import (
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -16,6 +17,11 @@ type Header struct {
 	BandersnatchBlockAuthorIndex types.ValidatorIndex                      // i
 	VRFSignature                 types.BandersnatchVRFSignature            // v
 	BlockSeal                    types.BandersnatchVRFSignature            // s
+}
+
+func (h Header) SerializeUnsigned() []byte {
+	serialized := serializer.Serialize(h)
+	return serialized[:len(serialized)-len(h.BlockSeal)]
 }
 
 type EpochMarker struct {
