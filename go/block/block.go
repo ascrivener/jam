@@ -5,6 +5,7 @@ import (
 
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
+	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/cockroachdb/pebble"
@@ -17,19 +18,25 @@ type Block struct {
 }
 
 func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
-	// parentBlock, err := Get(repo, b.Header.ParentHash)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get parent block: %w", err)
-	// }
 
-	// priorState, err := state.GetState(repo)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get state: %w", err)
-	// }
+	parentBlock, err := Get(repo, b.Header.ParentHash)
+	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
+	if err != nil {
+		return fmt.Errorf("failed to get parent block: %w", err)
+	}
 
-	// merklizedState := state.MerklizeState(priorState.ToLeaves())
+	// (5.8)
+	merklizedState := merklizer.MerklizeState(repo)
 
-	// TODO (5.2) block header parent hash is the hash of the serialized parent block (maybe just look up the parent hash in the block store?)
+	if parentBlock.Info.PosteriorStateRoot != merklizedState {
+		return fmt.Errorf("parent block state root does not match merklized state")
+	}
+
+	// (5.4)
+	if b.Header.ExtrinsicHash != b.Extrinsics.MerkleCommitment() {
+		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
+	}
+
 	return nil
 }
 
@@ -65,7 +72,7 @@ func Get(repo staterepository.PebbleStateRepository, headerHash [32]byte) (*Bloc
 	return &blockWithInfo, nil
 }
 
-func (block *BlockWithInfo) Set(repo staterepository.PebbleStateRepository) error {
+func (block BlockWithInfo) Set(repo staterepository.PebbleStateRepository) error {
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil

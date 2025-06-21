@@ -61,7 +61,7 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
-func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, block block.Block) error {
+func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
 	// Begin a transaction for all repository operations
 	if err := repo.BeginTransaction(); err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -79,55 +79,44 @@ func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, block block.
 		}
 	}()
 
-	// Load state
-	state, err := state.GetState(repo)
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
-	}
-
 	// Run state transition function
-	postState, err := StateTransitionFunction(repo, state, block)
-	if err != nil {
-		return fmt.Errorf("failed to run state transition function: %w", err)
-	}
-
-	// TODO: detect service account deletion and handle (??)
-	// Save state
-	if err := postState.Set(repo); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
-	}
-
-	return nil
+	return stateTransitionFunction(repo, curBlock)
 }
 
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func StateTransitionFunction(repo staterepository.PebbleStateRepository, priorState state.State, block block.Block) (state.State, error) {
+func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
 	// Verify block
-	if err := block.Verify(repo); err != nil {
-		return state.State{}, fmt.Errorf("failed to verify block: %w", err)
+	if err := curBlock.Verify(repo); err != nil {
+		return fmt.Errorf("failed to verify block: %w", err)
 	}
 
-	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(block.Header)
+	// Load state
+	priorState, err := state.GetState(repo)
+	if err != nil {
+		return fmt.Errorf("failed to load state: %w", err)
+	}
 
-	intermediateRecentBlocks := computeIntermediateRecentBlocks(block.Header, priorState.RecentBlocks)
+	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(curBlock.Header)
 
-	posteriorEntropyAccumulator := computeEntropyAccumulator(block.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
+	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentBlocks)
 
-	posteriorValidatorKeysetsActive := computeValidatorKeysetsActive(block.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState)
+	posteriorEntropyAccumulator := computeEntropyAccumulator(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
 
-	posteriorDisputes := computeDisputes(block.Extrinsics.Disputes, priorState.Disputes)
+	posteriorValidatorKeysetsActive := computeValidatorKeysetsActive(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState)
 
-	posteriorSafroleBasicState := computeSafroleBasicState(block.Header, priorState.MostRecentBlockTimeslot, block.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
+	posteriorDisputes := computeDisputes(curBlock.Extrinsics.Disputes, priorState.Disputes)
 
-	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(block.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
+	posteriorSafroleBasicState := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
 
-	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(block.Extrinsics.Disputes, priorState.PendingReports)
+	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
 
-	availableReports := computeAvailableReports(postJudgementIntermediatePendingReports, block.Extrinsics.Assurances)
+	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(curBlock.Extrinsics.Disputes, priorState.PendingReports)
 
-	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(block.Header, block.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
+	availableReports := computeAvailableReports(postJudgementIntermediatePendingReports, curBlock.Extrinsics.Assurances)
+
+	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics := accumulateAndIntegrate(
 		repo,
@@ -138,20 +127,20 @@ func StateTransitionFunction(repo staterepository.PebbleStateRepository, priorSt
 		posteriorEntropyAccumulator,
 	)
 
-	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(block.Header, block.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
+	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(curBlock.Header, curBlock.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
 
-	posteriorPendingReports := computePendingReports(block.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
+	posteriorPendingReports := computePendingReports(curBlock.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 
-	posteriorRecentBlocks := computeRecentBlocks(block.Header, block.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
+	posteriorRecentBlocks := computeRecentBlocks(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	computeServiceAccounts(repo, block.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
+	computeServiceAccounts(repo, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
 
-	authorizersPool := computeAuthorizersPool(block.Header, block.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
+	authorizersPool := computeAuthorizersPool(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
-	validatorStatistics := computeValidatorStatistics(block.Extrinsics.Guarantees, block.Extrinsics.Preimages, block.Extrinsics.Assurances, block.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, block.Header, availableReports, deferredTransferStatistics, accumulationStatistics)
+	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, deferredTransferStatistics, accumulationStatistics)
 
-	return state.State{
+	postState := state.State{
 		AuthorizersPool:            authorizersPool,
 		RecentBlocks:               posteriorRecentBlocks,
 		SafroleBasicState:          posteriorSafroleBasicState,
@@ -168,7 +157,26 @@ func StateTransitionFunction(repo staterepository.PebbleStateRepository, priorSt
 		ValidatorStatistics:        validatorStatistics,
 		AccumulationQueue:          posteriorAccumulationQueue,
 		AccumulationHistory:        posteriorAccumulationHistory,
-	}, nil
+	}
+
+	// TODO: detect service account deletion and handle (??)
+	// Save state
+	if err := postState.Set(repo); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	blockWithInfo := block.BlockWithInfo{
+		Block: curBlock,
+		Info: block.BlockInfo{
+			PosteriorStateRoot: merklizer.MerklizeState(repo),
+		},
+	}
+
+	if err := blockWithInfo.Set(repo); err != nil {
+		return fmt.Errorf("failed to save block with info: %w", err)
+	}
+
+	return nil
 }
 
 func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingReport, assurances extrinsics.Assurances) []workreport.WorkReport {
@@ -310,7 +318,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
-			EntryIndex:                 extrinsicTicket.EntryIndex,
+			EntryIndex:                 types.TicketEntryIndex(extrinsicTicket.EntryIndex),
 		})
 	}
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
@@ -390,7 +398,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 func computeServiceAccounts(repo staterepository.PebbleStateRepository, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[preimage.ServiceIndex]
+		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
 		if _, exists := serviceAccount.GetPreimageForHash(repo, hash); exists {
 			continue
 		}
@@ -735,7 +743,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		}
 	}
 	for _, preimage := range preimages {
-		trackedServiceIndices[preimage.ServiceIndex] = struct{}{}
+		trackedServiceIndices[types.ServiceIndex(preimage.ServiceIndex)] = struct{}{}
 	}
 	for serviceIndex, _ := range deferredTransferStatistics {
 		trackedServiceIndices[serviceIndex] = struct{}{}
@@ -758,7 +766,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 			}
 		}
 		for _, preimage := range preimages {
-			if preimage.ServiceIndex == serviceIndex {
+			if types.ServiceIndex(preimage.ServiceIndex) == serviceIndex {
 				serviceStatistics.PreimageExtrinsicSize.ExtrinsicCount++
 				serviceStatistics.PreimageExtrinsicSize.TotalSizeInOctets += types.GenericNum(len(preimage.Data))
 			}

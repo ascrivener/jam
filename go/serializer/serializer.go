@@ -96,6 +96,11 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 			buf.Write(EncodeLength(reflect.ValueOf(bs.ToBytesLSB())))
 			buf.Write(bs.ToBytesLSB())
 			return
+		case reflect.TypeOf(bitsequence.CoreBitMask{}):
+			// For CoreBitMask, we don't encode the length since it's fixed at NumCores
+			cm := v.Interface().(bitsequence.CoreBitMask)
+			buf.Write(cm.ToBytesLSB())
+			return
 		default:
 			// For other structs, iterate over all fields.
 			for i := 0; i < v.NumField(); i++ {
@@ -247,13 +252,31 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			buf.Next(n)
 
 			// Now read only the required bytes for the BitSequence
-			dataBytes := make([]byte, seqLength)
+			requiredBytes := (seqLength + 7) / 8
+			dataBytes := make([]byte, requiredBytes)
 			if _, err := buf.Read(dataBytes); err != nil {
 				return fmt.Errorf("failed to read BitSequence data: %w", err)
 			}
 
-			bs := bitsequence.FromBytes(dataBytes)
-			v.Set(reflect.ValueOf(bs))
+			bs, err := bitsequence.FromBytesLSBWithLength(dataBytes, int(seqLength))
+			if err != nil {
+				return fmt.Errorf("failed to create BitSequence from bytes: %w", err)
+			}
+			v.Set(reflect.ValueOf(*bs))
+			return nil
+
+		case reflect.TypeOf(bitsequence.CoreBitMask{}):
+			// For CoreBitMask, we don't encode the length since it's fixed at NumCores
+			dataBytes := make([]byte, (constants.NumCores+7)/8)
+			if _, err := buf.Read(dataBytes); err != nil {
+				return fmt.Errorf("failed to read CoreBitMask data: %w", err)
+			}
+
+			cm, err := bitsequence.CoreBitMaskFromBytesLSB(dataBytes)
+			if err != nil {
+				return fmt.Errorf("failed to create CoreBitMask from bytes: %w", err)
+			}
+			v.Set(reflect.ValueOf(*cm))
 			return nil
 
 		default:

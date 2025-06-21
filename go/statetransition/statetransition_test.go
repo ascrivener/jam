@@ -19,9 +19,9 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
+	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/workreport"
 
-	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -642,6 +642,74 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		return
 	}
 
+	testVectorPath := filepath.Join(vectorsDir, "00000000.json")
+	testVectorData, err := os.ReadFile(testVectorPath)
+	if err != nil {
+		t.Errorf("Failed to load test vector file: %v", err)
+		return
+	}
+
+	var initVector TestVector
+	if err := json.Unmarshal(testVectorData, &initVector); err != nil {
+		t.Errorf("Failed to parse test vector JSON: %v", err)
+		return
+	}
+
+	initBlock, err := BlockFromJSON(initVector.Block)
+	if err != nil {
+		t.Errorf("Failed to parse block JSON: %v", err)
+		return
+	}
+
+	// a. Deserialize pre-state from test vector
+	initStateSerialized := initVector.PostState.KeyVals.toMap()
+	t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(initStateSerialized))
+
+	// Create a temporary in-memory PebbleDB repository
+	tempDir, err := os.MkdirTemp("", "jam-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	repo, err := staterepository.NewPebbleStateRepository(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create repository: %v", err)
+	}
+	defer repo.Close()
+
+	// Start transaction for batch operations
+	if err := repo.BeginTransaction(); err != nil {
+		t.Fatalf("Failed to begin transaction: %v", err)
+	}
+
+	// Store all key-value pairs into the repository
+	batch := repo.GetBatch()
+	for k, v := range initStateSerialized {
+		// Add state: prefix to match production code
+		prefixedKey := append([]byte("state:"), k[:]...)
+		if err := batch.Set(prefixedKey, v, nil); err != nil {
+			t.Fatalf("Failed to store key-value pair: %v", err)
+		}
+	}
+
+	blockWithInfo := block.BlockWithInfo{
+		Block: initBlock,
+		Info: block.BlockInfo{
+			PosteriorStateRoot: merklizer.MerklizeState(*repo),
+		},
+	}
+
+	if err := blockWithInfo.Set(*repo); err != nil {
+		t.Fatalf("Failed to store block: %v", err)
+	}
+
+	// Commit the transaction
+	if err := repo.CommitTransaction(); err != nil {
+		t.Fatalf("Failed to commit transaction: %v", err)
+	}
+	t.Logf("Stage 3: Stored %d key-value pairs in repository", len(initStateSerialized))
+
 	// Sort files by name to ensure proper sequence
 	var fileNames []string
 	for _, fileInfo := range vectorFiles {
@@ -699,54 +767,6 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			}
 			t.Logf("Stage 1: Successfully loaded and parsed test vector from %s", fileName)
 
-			// a. Deserialize pre-state from test vector
-			preStateSerialized := testVector.PreState.KeyVals.toMap()
-			t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(preStateSerialized))
-
-			// Create a temporary in-memory PebbleDB repository
-			tempDir, err := os.MkdirTemp("", "jam-test-*")
-			if err != nil {
-				t.Fatalf("Failed to create temporary directory: %v", err)
-			}
-			defer os.RemoveAll(tempDir)
-
-			repo, err := staterepository.NewPebbleStateRepository(tempDir)
-			if err != nil {
-				t.Fatalf("Failed to create repository: %v", err)
-			}
-			defer repo.Close()
-
-			// Start transaction for batch operations
-			if err := repo.BeginTransaction(); err != nil {
-				t.Fatalf("Failed to begin transaction: %v", err)
-			}
-
-			// Store all key-value pairs into the repository
-			batch := repo.GetBatch()
-			for k, v := range preStateSerialized {
-				// Add state: prefix to match production code
-				prefixedKey := append([]byte("state:"), k[:]...)
-				if err := batch.Set(prefixedKey, v, nil); err != nil {
-					t.Fatalf("Failed to store key-value pair: %v", err)
-				}
-			}
-
-			// Commit the transaction
-			if err := repo.CommitTransaction(); err != nil {
-				t.Fatalf("Failed to commit transaction: %v", err)
-			}
-			t.Logf("Stage 3: Stored %d key-value pairs in repository", len(preStateSerialized))
-
-			// Create BitSeqKey map for merklization if needed for verification
-			bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
-			for k, v := range preStateSerialized {
-				bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
-					OriginalKey: k,
-					Value:       v,
-				}
-			}
-			t.Logf("Stage 4: Created BitSeqKey map for merklization (%d entries)", len(bitSeqKeyMap))
-
 			// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
 
 			// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
@@ -765,7 +785,11 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Run state transition function
 			t.Logf("Stage 9: Running state transition function...")
 			fileStart := time.Now()
-			LoadStateAndRunSTF(*repo, testBlock)
+			if err := LoadStateAndRunSTF(*repo, testBlock); err != nil {
+				t.Errorf("Failed to run state transition function: %v", err)
+				failedTests++
+				return
+			}
 			fileEnd := time.Now()
 			fmt.Printf("Stage 9: State transition completed in %v\n", fileEnd.Sub(fileStart))
 			// logf("Stage 10: State transition completed")
@@ -1092,7 +1116,7 @@ func convertAssurances(assurancesJSON []Assurance) extrinsics.Assurances {
 		bytes := hexToBytesMust(a.Bitfield)
 
 		// Convert bitfield string to BitSequence
-		bitfield, err := bitsequence.FromBytesLSBWithLength(bytes, int(constants.NumCores))
+		bitfield, err := bitsequence.CoreBitMaskFromBytesLSB(bytes)
 		if err != nil {
 			panic(err)
 		}
@@ -1125,7 +1149,7 @@ func convertTickets(ticketsJSON []Ticket) extrinsics.Tickets {
 			panic("signature wrong length")
 		}
 		tickets = append(tickets, extrinsics.Ticket{
-			EntryIndex:    types.TicketEntryIndex(t.Attempt),
+			EntryIndex:    types.GenericNum(types.TicketEntryIndex(t.Attempt)),
 			ValidityProof: types.BandersnatchRingVRFProof(bytes),
 		})
 	}
@@ -1138,7 +1162,7 @@ func convertPreimages(preimagesJSON []Preimage) extrinsics.Preimages {
 
 	for _, p := range preimagesJSON {
 		preimages = append(preimages, extrinsics.Preimage{
-			ServiceIndex: types.ServiceIndex(p.ServiceIndex),
+			ServiceIndex: types.GenericNum(types.ServiceIndex(p.ServiceIndex)),
 			Data:         hexToBytesMust(p.Data),
 		})
 	}

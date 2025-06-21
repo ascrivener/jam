@@ -11,7 +11,7 @@ type Assurances []Assurance
 
 type Assurance struct {
 	ParentHash                    [32]byte // Must be equal to ParentHash field of header
-	CoreAvailabilityContributions bitsequence.BitSequence
+	CoreAvailabilityContributions bitsequence.CoreBitMask
 	ValidatorIndex                types.ValidatorIndex
 	Signature                     types.Ed25519Signature
 }

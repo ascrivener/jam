@@ -122,7 +122,6 @@ type ExecutionErrorType int
 const (
 	ExecutionErrorOutOfGas ExecutionErrorType = iota + 1
 	ExecutionErrorPanic
-	ExecutionErrorInvalidNumExports
 	ExecutionErrorOversize
 	ExecutionErrorBAD
 	ExecutionErrorBIG

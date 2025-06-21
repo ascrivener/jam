@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/constants"
-	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/staterepository"
@@ -65,18 +63,6 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	} else {
 		(*a)[len(*a)-1] = newLast
 	}
-}
-
-func MerklizeState(leaves map[[31]byte][]byte) [32]byte {
-	bitSeqKeyMap := make(map[bitsequence.BitSeqKey]merklizer.StateKV)
-	for k, v := range leaves {
-		bitSeqKeyMap[bitsequence.FromBytes(k[:]).Key()] = merklizer.StateKV{
-			OriginalKey: k,
-			Value:       v,
-		}
-	}
-
-	return merklizer.MerklizeStateRecurser(bitSeqKeyMap)
 }
 
 func GetState(repo staterepository.PebbleStateRepository) (State, error) {
