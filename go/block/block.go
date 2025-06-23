@@ -57,6 +57,7 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
 func (b Block) VerifyPostStateTransition(postState state.State) error {
 	// Calculate time slot position within epoch (shared between both verification paths)
 	slotIndexInEpoch := b.Header.TimeSlot % types.Timeslot(constants.NumTimeslotsPerEpoch)
+	authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()
 
 	if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
 		// (6.15)
@@ -70,17 +71,24 @@ func (b Block) VerifyPostStateTransition(postState state.State) error {
 		if expectedTicket.VerifiablyRandomIdentifier != actualVRFOutput {
 			return fmt.Errorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
 		}
+
+		verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
+		if err != nil {
+			return fmt.Errorf("failed to verify block seal: %w", err)
+		}
+		if !verified {
+			return fmt.Errorf("block seal verification failed")
+		}
 	} else {
 		// (6.16)
 		// Verify block author matches the expected Bandersnatch key
 		expectedKey := postState.SafroleBasicState.SealingKeySequence.BandersnatchKeys[slotIndexInEpoch]
-		authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()
 
 		if expectedKey != authorKey {
 			return fmt.Errorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
 		}
 
-		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), b.Header.SerializeUnsigned(), b.Header.BlockSeal)
+		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
 		if err != nil {
 			return fmt.Errorf("failed to verify block seal: %w", err)
 		}

@@ -1039,18 +1039,19 @@ func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
 		return block.Block{}, err
 	}
 
-	// Build the header
 	blockHeader := header.Header{
-		ParentHash:                   hexToHashMust(blockJSON.Header.Parent),
-		PriorStateRoot:               hexToHashMust(blockJSON.Header.ParentStateRoot),
-		ExtrinsicHash:                hexToHashMust(blockJSON.Header.ExtrinsicHash),
-		TimeSlot:                     types.Timeslot(blockJSON.Header.Slot),
-		BandersnatchBlockAuthorIndex: types.ValidatorIndex(blockJSON.Header.AuthorIndex),
-		VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.EntropySource)),
-		BlockSeal:                    types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
-		EpochMarker:                  convertEpochMark(blockJSON.Header.EpochMark),
-		WinningTicketsMarker:         ticketsMark,
-		OffendersMarker:              []types.Ed25519PublicKey{},
+		UnsignedHeader: header.UnsignedHeader{
+			ParentHash:                   hexToHashMust(blockJSON.Header.Parent),
+			PriorStateRoot:               hexToHashMust(blockJSON.Header.ParentStateRoot),
+			ExtrinsicHash:                hexToHashMust(blockJSON.Header.ExtrinsicHash),
+			TimeSlot:                     types.Timeslot(blockJSON.Header.Slot),
+			BandersnatchBlockAuthorIndex: types.ValidatorIndex(blockJSON.Header.AuthorIndex),
+			VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.EntropySource)),
+			EpochMarker:                  convertEpochMark(blockJSON.Header.EpochMark),
+			WinningTicketsMarker:         ticketsMark,
+			OffendersMarker:              []types.Ed25519PublicKey{},
+		},
+		BlockSeal: types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
 	}
 
 	if len(blockJSON.Header.OffendersMark) > 0 {
@@ -1175,7 +1176,7 @@ func convertPreimages(preimagesJSON []Preimage) extrinsics.Preimages {
 
 	for _, p := range preimagesJSON {
 		preimages = append(preimages, extrinsics.Preimage{
-			ServiceIndex: types.GenericNum(types.ServiceIndex(p.ServiceIndex)),
+			ServiceIndex: types.ServiceIndex(p.ServiceIndex),
 			Data:         hexToBytesMust(p.Data),
 		})
 	}

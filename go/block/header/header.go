@@ -2,11 +2,11 @@ package header
 
 import (
 	"github.com/ascrivener/jam/constants"
-	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
 )
 
-type Header struct {
+// UnsignedHeader contains all header fields except the BlockSeal
+type UnsignedHeader struct {
 	ParentHash                   [32]byte                                  // p
 	PriorStateRoot               [32]byte                                  // r
 	ExtrinsicHash                [32]byte                                  // x
@@ -16,12 +16,11 @@ type Header struct {
 	OffendersMarker              []types.Ed25519PublicKey                  // o
 	BandersnatchBlockAuthorIndex types.ValidatorIndex                      // i
 	VRFSignature                 types.BandersnatchVRFSignature            // v
-	BlockSeal                    types.BandersnatchVRFSignature            // s
 }
 
-func (h Header) SerializeUnsigned() []byte {
-	serialized := serializer.Serialize(h)
-	return serialized[:len(serialized)-len(h.BlockSeal)]
+type Header struct {
+	UnsignedHeader
+	BlockSeal types.BandersnatchVRFSignature // s
 }
 
 type EpochMarker struct {

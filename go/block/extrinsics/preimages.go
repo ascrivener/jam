@@ -5,7 +5,7 @@ import "github.com/ascrivener/jam/types"
 type Preimages []Preimage
 
 type Preimage struct {
-	ServiceIndex types.GenericNum
+	ServiceIndex types.ServiceIndex
 	Data         []byte
 }
 
