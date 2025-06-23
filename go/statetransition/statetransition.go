@@ -163,7 +163,7 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 	}
 
 	// Post-transition validation
-	if err := curBlock.VerifyPostStateTransition(postState); err != nil {
+	if err := curBlock.VerifyPostStateTransition(priorState, postState); err != nil {
 		return fmt.Errorf("failed to verify state: %w", err)
 	}
 

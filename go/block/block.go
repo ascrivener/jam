@@ -54,16 +54,16 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
 	return nil
 }
 
-func (b Block) VerifyPostStateTransition(postState state.State) error {
+func (b Block) VerifyPostStateTransition(priorState state.State, postState state.State) error {
 	// Calculate time slot position within epoch (shared between both verification paths)
 	slotIndexInEpoch := b.Header.TimeSlot % types.Timeslot(constants.NumTimeslotsPerEpoch)
 	authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()
+	actualVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(b.Header.BlockSeal)
 
 	if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
 		// (6.15)
 		// Verify block seal matches the expected ticket's VRF output
 		expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
-		actualVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(b.Header.BlockSeal)
 		if err != nil {
 			return fmt.Errorf("failed to extract VRF output from block seal: %w", err)
 		}
@@ -96,6 +96,41 @@ func (b Block) VerifyPostStateTransition(postState state.State) error {
 			return fmt.Errorf("block seal verification failed")
 		}
 	}
+
+	// (6.17)
+	verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_entropy"), actualVRFOutput[:]...), []byte{}, b.Header.VRFSignature)
+	if err != nil {
+		return fmt.Errorf("failed to verify block VRF signature: %w", err)
+	}
+	if !verified {
+		return fmt.Errorf("block VRF signature verification failed")
+	}
+
+	// (6.27)
+	if b.Header.TimeSlot.EpochIndex() > priorState.MostRecentBlockTimeslot.EpochIndex() {
+		if b.Header.EpochMarker == nil {
+			return fmt.Errorf("epoch marker should not be nil")
+		}
+		if b.Header.EpochMarker.CurrentEpochRandomness != priorState.EntropyAccumulator[0] {
+			return fmt.Errorf("epoch marker current epoch randomness does not match post state current epoch randomness")
+		}
+		if b.Header.EpochMarker.TicketsRandomness != priorState.EntropyAccumulator[1] {
+			return fmt.Errorf("epoch marker tickets randomness does not match post state tickets randomness")
+		}
+		for idx, validatorKey := range b.Header.EpochMarker.ValidatorKeys {
+			if validatorKey.BandersnatchPublicKey != postState.ValidatorKeysetsActive[idx].ToBandersnatchPublicKey() {
+				return fmt.Errorf("epoch marker validator key does not match post state validator key")
+			}
+			if validatorKey.Ed25519PublicKey != postState.ValidatorKeysetsActive[idx].ToEd25519PublicKey() {
+				return fmt.Errorf("epoch marker validator key does not match post state validator key")
+			}
+		}
+	} else {
+		if b.Header.EpochMarker != nil {
+			return fmt.Errorf("epoch marker should be nil")
+		}
+	}
+
 	return nil
 }
 
