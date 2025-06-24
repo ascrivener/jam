@@ -102,7 +102,10 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentBlocks)
 
-	posteriorEntropyAccumulator := computeEntropyAccumulator(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
+	posteriorEntropyAccumulator, err := computeEntropyAccumulator(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
+	if err != nil {
+		return fmt.Errorf("failed to compute entropy accumulator: %w", err)
+	}
 
 	posteriorValidatorKeysetsActive := computeValidatorKeysetsActive(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState)
 
@@ -323,14 +326,34 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		if err != nil {
 			return state.SafroleBasicState{}, err
 		}
-		ticketEntryIndex, err := types.NewTicketEntryIndex(uint64(extrinsicTicket.EntryIndex))
-		if err != nil {
-			return state.SafroleBasicState{}, err
-		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
-			EntryIndex:                 ticketEntryIndex,
+			EntryIndex:                 extrinsicTicket.EntryIndex,
 		})
+	}
+	for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
+		// if not in new tickets, then add
+		for _, newTicket := range posteriorTicketAccumulator {
+			if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
+				return state.SafroleBasicState{}, fmt.Errorf("duplicate ticket: %v", priorTicket.VerifiablyRandomIdentifier)
+			}
+		}
+	}
+	sort.Slice(posteriorTicketAccumulator, func(i, j int) bool {
+		return bytes.Compare(posteriorTicketAccumulator[i].VerifiablyRandomIdentifier[:], posteriorTicketAccumulator[j].VerifiablyRandomIdentifier[:]) < 0
+	})
+	// Remove duplicate tickets (tickets with the same VerifiablyRandomIdentifier)
+	if len(posteriorTicketAccumulator) > 1 {
+		uniqueTickets := make([]ticket.Ticket, 0, len(posteriorTicketAccumulator))
+		uniqueTickets = append(uniqueTickets, posteriorTicketAccumulator[0])
+
+		for i := 1; i < len(posteriorTicketAccumulator); i++ {
+			// If this ticket's identifier is different from the previous one, add it
+			if !bytes.Equal(posteriorTicketAccumulator[i].VerifiablyRandomIdentifier[:], posteriorTicketAccumulator[i-1].VerifiablyRandomIdentifier[:]) {
+				uniqueTickets = append(uniqueTickets, posteriorTicketAccumulator[i])
+			}
+		}
+		posteriorTicketAccumulator = uniqueTickets
 	}
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
 		// posteriorValidatorKeysetsPending
@@ -345,23 +368,10 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 
 		// posteriorSealingKeySequence
 		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= int(constants.TicketSubmissionEndingSlotPhaseNumber) && len(priorSafroleBasicState.TicketAccumulator) == int(constants.NumTimeslotsPerEpoch) {
-			var reorderedTickets [constants.NumTimeslotsPerEpoch]ticket.Ticket
-			index := 0
-			// outside-in
-			for i, j := 0, int(constants.NumTimeslotsPerEpoch)-1; i <= j; i, j = i+1, j-1 {
-				if i == j {
-					// When both indices meet, assign the middle element only once.
-					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[i]
-					index++
-				} else {
-					// Assign first the element from the start then from the end.
-					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[i]
-					index++
-					reorderedTickets[index] = priorSafroleBasicState.TicketAccumulator[j]
-					index++
-				}
-			}
-			posteriorSealingKeySequence = sealingkeysequence.NewSealKeyTicketSeries(reorderedTickets)
+			reorderedSlice := ticket.ReorderTicketsOutsideIn(priorSafroleBasicState.TicketAccumulator[:])
+			var reorderedArray [constants.NumTimeslotsPerEpoch]ticket.Ticket
+			copy(reorderedArray[:], reorderedSlice)
+			posteriorSealingKeySequence = sealingkeysequence.NewSealKeyTicketSeries(reorderedArray)
 		} else {
 			var bandersnatchKeys [constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey
 			for i := range constants.NumTimeslotsPerEpoch {
@@ -379,19 +389,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 
 		posteriorSealingKeySequence = priorSafroleBasicState.SealingKeySequence
 
-		for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
-			// if not in new tickets, then add
-			alreadyInNewTickets := false
-			for _, newTicket := range posteriorTicketAccumulator {
-				if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
-					alreadyInNewTickets = true
-					break
-				}
-			}
-			if !alreadyInNewTickets {
-				posteriorTicketAccumulator = append(posteriorTicketAccumulator, priorTicket)
-			}
-		}
+		posteriorTicketAccumulator = append(posteriorTicketAccumulator, priorSafroleBasicState.TicketAccumulator...)
 		sort.Slice(posteriorTicketAccumulator, func(i, j int) bool {
 			return bytes.Compare(posteriorTicketAccumulator[i].VerifiablyRandomIdentifier[:], posteriorTicketAccumulator[j].VerifiablyRandomIdentifier[:]) < 0
 		})
@@ -423,11 +421,11 @@ func computeServiceAccounts(repo staterepository.PebbleStateRepository, preimage
 	}
 }
 
-func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) [4][32]byte {
+func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
 	posteriorEntropyAccumulator := [4][32]byte{}
 	randomVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(header.VRFSignature)
 	if err != nil {
-		panic(err)
+		return posteriorEntropyAccumulator, err
 	}
 	posteriorEntropyAccumulator[0] = blake2b.Sum256(append(priorEntropyAccumulator[0][:], randomVRFOutput[:]...))
 	if header.TimeSlot.EpochIndex() > mostRecentBlockTimeslot.EpochIndex() {
@@ -439,7 +437,7 @@ func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot typ
 		posteriorEntropyAccumulator[2] = priorEntropyAccumulator[2]
 		posteriorEntropyAccumulator[3] = priorEntropyAccumulator[3]
 	}
-	return posteriorEntropyAccumulator
+	return posteriorEntropyAccumulator, nil
 }
 
 func computeValidatorKeysetsActive(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorValidatorKeysetsActive types.ValidatorKeysets, priorSafroleBasicState state.SafroleBasicState) types.ValidatorKeysets {

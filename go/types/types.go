@@ -38,15 +38,6 @@ func NewValidatorIndex(value uint16) (ValidatorIndex, error) {
 	return ValidatorIndex(value), nil
 }
 
-type TicketEntryIndex uint8
-
-func NewTicketEntryIndex(value uint64) (TicketEntryIndex, error) {
-	if value >= uint64(constants.NumTicketEntries) {
-		return 0, fmt.Errorf("invalid ticket entry index value: must be less than %d", constants.NumTicketEntries)
-	}
-	return TicketEntryIndex(value), nil
-}
-
 type BlobLength uint32
 
 type CoreIndex uint16

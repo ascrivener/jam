@@ -1158,12 +1158,9 @@ func convertTickets(ticketsJSON []Ticket) (extrinsics.Tickets, error) {
 		if len(bytes) != 784 {
 			panic("signature wrong length")
 		}
-		ticketEntryIndex, err := types.NewTicketEntryIndex(t.Attempt)
-		if err != nil {
-			return nil, err
-		}
+
 		tickets = append(tickets, extrinsics.Ticket{
-			EntryIndex:    types.GenericNum(ticketEntryIndex),
+			EntryIndex:    types.GenericNum(t.Attempt),
 			ValidityProof: types.BandersnatchRingVRFProof(bytes),
 		})
 	}
@@ -1203,12 +1200,8 @@ func convertTicketsMark(ticketsMarkJSON *[]TicketMark) (*[constants.NumTimeslots
 	}
 
 	for i, t := range *ticketsMarkJSON {
-		ticketEntryIndex, err := types.NewTicketEntryIndex(t.Attempt)
-		if err != nil {
-			return nil, err
-		}
 		tickets[i] = header.Ticket{
-			EntryIndex:                 ticketEntryIndex,
+			EntryIndex:                 types.GenericNum(t.Attempt),
 			VerifiablyRandomIdentifier: hexToHashMust(t.ID),
 		}
 	}

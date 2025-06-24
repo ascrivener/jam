@@ -1,7 +1,8 @@
 use ark_vrf::ietf::Verifier;
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_vrf::ring;
 use ark_vrf::suites::bandersnatch::{
-    BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProofParams,
+    BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProof, RingProofParams,
 };
 use ark_vrf::Suite;
 use ark_vrf::{codec, ietf, Error, Input, Output, Public};
@@ -256,6 +257,98 @@ pub extern "C" fn kzg_commitment(
     }
 
     0
+}
+
+pub fn verify_ring_signature_ffi(
+    ring_commitment: &[u8],
+    ring_size: usize,
+    message: &[u8],
+    context: &[u8],
+    proof: &[u8],
+) -> Result<bool, Error> {
+    // 1. Get the initialized PCS parameters
+    let pcs_params = get_pcs_params()?;
+
+    // 2. Decode the ring commitment
+    let commitment = CanonicalDeserialize::deserialize_compressed(&mut &ring_commitment[..])
+        .map_err(|_| Error::InvalidData)?;
+
+    // 3. Create input from message by hashing to a point first
+    let input = Input::new(message).ok_or(Error::InvalidData)?;
+
+    // 4. Extract the gamma/output from the proof (first 32 bytes)
+    if proof.len() < 32 {
+        return Err(Error::InvalidData);
+    }
+    let gamma_bytes = &proof[..32];
+    let pt = codec::point_decode::<BandersnatchSha512Ell2>(gamma_bytes)
+        .map_err(|_| Error::InvalidData)?;
+    let output = Output(pt);
+
+    // 5. Decode proof components - skip the gamma/output part
+    let deserialized_proof =
+        RingProof::deserialize_compressed(&mut &proof[32..]).map_err(|_| Error::InvalidData)?;
+
+    // 6. Create ring parameters using ring_size
+    // Clone the parameters since from_pcs_params likely takes ownership
+    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params.clone()) {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(Error::InvalidData);
+        }
+    };
+
+    // 7. Create a verifier for the commitment
+    let verifier_key = ring_proof_params.verifier_key_from_commitment(commitment);
+    let verifier = ring_proof_params.verifier(verifier_key);
+
+    // 8. Verify the proof using the EXPLICIT ring::Verifier trait implementation for Public
+    match <Public<BandersnatchSha512Ell2> as ring::Verifier<BandersnatchSha512Ell2>>::verify(
+        input,
+        output,
+        context,
+        &deserialized_proof,
+        &verifier,
+    ) {
+        Ok(()) => Ok(true),
+        Err(Error::VerificationFailure) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn verify_ring_signature(
+    commitment_ptr: *const u8,
+    commitment_len: usize,
+    ring_size: usize,
+    message_ptr: *const u8,
+    message_len: usize,
+    context_ptr: *const u8,
+    context_len: usize,
+    proof_ptr: *const u8,
+    proof_len: usize,
+) -> i32 {
+    // Input validation
+    if commitment_ptr.is_null() || message_ptr.is_null() || proof_ptr.is_null() || ring_size == 0 {
+        return -1; // Invalid input pointers or ring size
+    }
+
+    // Convert raw pointers to slices
+    let commitment = unsafe { slice::from_raw_parts(commitment_ptr, commitment_len) };
+    let message = unsafe { slice::from_raw_parts(message_ptr, message_len) };
+    let context = if context_ptr.is_null() {
+        &[] // Empty context if null
+    } else {
+        unsafe { slice::from_raw_parts(context_ptr, context_len) }
+    };
+    let proof = unsafe { slice::from_raw_parts(proof_ptr, proof_len) };
+
+    // Call the internal verification function
+    match verify_ring_signature_ffi(commitment, ring_size, message, context, proof) {
+        Ok(true) => 1,  // Signature valid
+        Ok(false) => 0, // Signature invalid
+        Err(_) => -2,   // Error processing inputs
+    }
 }
 
 #[cfg(test)]

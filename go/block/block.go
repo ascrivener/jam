@@ -12,6 +12,7 @@ import (
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/state"
 	"github.com/ascrivener/jam/staterepository"
+	"github.com/ascrivener/jam/ticket"
 	"github.com/ascrivener/jam/types"
 	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
@@ -128,6 +129,50 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	} else {
 		if b.Header.EpochMarker != nil {
 			return fmt.Errorf("epoch marker should be nil")
+		}
+	}
+	// (6.28)
+	if b.Header.TimeSlot.EpochIndex() == priorState.MostRecentBlockTimeslot.EpochIndex() && uint32(priorState.MostRecentBlockTimeslot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber && uint32(postState.MostRecentBlockTimeslot.SlotPhaseIndex()) >= constants.TicketSubmissionEndingSlotPhaseNumber && uint32(len(priorState.SafroleBasicState.TicketAccumulator)) == constants.NumTimeslotsPerEpoch {
+		if b.Header.WinningTicketsMarker == nil {
+			return fmt.Errorf("winning tickets marker should not be nil")
+		}
+		if len(b.Header.WinningTicketsMarker) != len(priorState.SafroleBasicState.TicketAccumulator) {
+			return fmt.Errorf("winning tickets marker should have %d tickets", len(priorState.SafroleBasicState.TicketAccumulator))
+		}
+		for idx, ticket := range ticket.ReorderTicketsOutsideIn(priorState.SafroleBasicState.TicketAccumulator) {
+			if ticket.VerifiablyRandomIdentifier != b.Header.WinningTicketsMarker[idx].VerifiablyRandomIdentifier {
+				return fmt.Errorf("winning tickets marker ticket does not match post state ticket")
+			}
+			if ticket.EntryIndex != b.Header.WinningTicketsMarker[idx].EntryIndex {
+				return fmt.Errorf("winning tickets marker ticket does not match post state ticket")
+			}
+		}
+	} else {
+		if b.Header.WinningTicketsMarker != nil {
+			return fmt.Errorf("winning tickets marker should be nil")
+		}
+	}
+	// (6.29)
+	for _, ticket := range b.Extrinsics.Tickets {
+		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+			return fmt.Errorf("ticket entry index should be less than %d", constants.NumTicketEntries)
+		}
+		verified, err := bandersnatch.VerifyRingSignature(postState.SafroleBasicState.EpochTicketSubmissionsRoot, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(ticket.EntryIndex)), []byte{}, ticket.ValidityProof)
+		if err != nil {
+			return fmt.Errorf("failed to verify ticket signature: %w", err)
+		}
+		if !verified {
+			return fmt.Errorf("ticket signature verification failed")
+		}
+	}
+	// (6.30)
+	if uint32(postState.MostRecentBlockTimeslot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber {
+		if len(b.Extrinsics.Tickets) > int(constants.MaxTicketsPerExtrinsic) {
+			return fmt.Errorf("extrinsics should have at most %d tickets", constants.MaxTicketsPerExtrinsic)
+		}
+	} else {
+		if len(b.Extrinsics.Tickets) != 0 {
+			return fmt.Errorf("extrinsics should have no tickets")
 		}
 	}
 

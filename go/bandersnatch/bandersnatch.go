@@ -12,6 +12,11 @@ int verify_signature(const unsigned char *public_key_ptr, size_t public_key_len,
                      const unsigned char *message_ptr, size_t message_len,
                      const unsigned char *context_ptr, size_t context_len,
                      const unsigned char *proof_ptr, size_t proof_len);
+int verify_ring_signature(const unsigned char *commitment_ptr, size_t commitment_len,
+                         size_t ring_size,
+                         const unsigned char *message_ptr, size_t message_len,
+                         const unsigned char *context_ptr, size_t context_len,
+                         const unsigned char *proof_ptr, size_t proof_len);
 */
 import "C"
 import (
@@ -19,6 +24,7 @@ import (
 	"log"
 	"unsafe"
 
+	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/types"
 )
 
@@ -122,5 +128,47 @@ func VerifySignature(
 		return false, nil // Signature invalid
 	default:
 		return false, errors.New("error processing signature verification")
+	}
+}
+
+// VerifyRingSignature verifies a Bandersnatch ring VRF signature
+// Returns:
+//   - true if the signature is valid
+//   - false if the signature is invalid
+//   - error if there was a problem processing the inputs
+func VerifyRingSignature(
+	ringCommitment types.BandersnatchRingRoot,
+	message []byte,
+	context []byte,
+	signature types.BandersnatchRingVRFProof,
+) (bool, error) {
+	// Call the Rust FFI function
+	var contextPtr *C.uchar
+	var contextLen C.size_t
+
+	if len(context) > 0 {
+		contextPtr = (*C.uchar)(unsafe.Pointer(&context[0]))
+		contextLen = C.size_t(len(context))
+	}
+
+	ret := C.verify_ring_signature(
+		(*C.uchar)(unsafe.Pointer(&ringCommitment[0])),
+		C.size_t(len(ringCommitment)),
+		C.size_t(constants.NumValidators),
+		(*C.uchar)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		contextPtr,
+		contextLen,
+		(*C.uchar)(unsafe.Pointer(&signature[0])),
+		C.size_t(len(signature)),
+	)
+
+	switch ret {
+	case 1:
+		return true, nil // Signature valid
+	case 0:
+		return false, nil // Signature invalid
+	default:
+		return false, errors.New("error processing ring signature verification")
 	}
 }
