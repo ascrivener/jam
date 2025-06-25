@@ -7,9 +7,9 @@ import (
 
 // todo: validate disputes
 type Disputes struct {
-	Verdicts []Verdict
-	Culprits []Culprit
-	Faults   []Fault
+	Verdicts []Verdict // v
+	Culprits []Culprit // c
+	Faults   []Fault   // f
 }
 
 func (d Disputes) ToSumOfValidJudgementsMap() map[[32]byte]int {
@@ -21,9 +21,9 @@ func (d Disputes) ToSumOfValidJudgementsMap() map[[32]byte]int {
 }
 
 type Verdict struct {
-	WorkReportHash [32]byte
-	EpochIndex     uint32 // TODO: must be epoch index of the prior state or 1 less
-	Judgements     [constants.NumValidatorSafetyThreshold]Judgement
+	WorkReportHash [32]byte                                         // r
+	EpochIndex     uint32                                           // a
+	Judgements     [constants.NumValidatorSafetyThreshold]Judgement // j
 }
 
 func (v Verdict) SumOfValidJudgements() int {
@@ -37,20 +37,20 @@ func (v Verdict) SumOfValidJudgements() int {
 }
 
 type Judgement struct {
-	Valid          bool
-	ValidatorIndex types.ValidatorIndex
-	Signature      types.Ed25519Signature
+	Valid          bool                   // v
+	ValidatorIndex types.ValidatorIndex   // i
+	Signature      types.Ed25519Signature // s
 }
 
 type Culprit struct {
-	InvalidWorkReportHash [32]byte
-	ValidatorKey          types.Ed25519PublicKey
-	Signature             types.Ed25519Signature
+	InvalidWorkReportHash [32]byte               // r
+	ValidatorKey          types.Ed25519PublicKey // k
+	Signature             types.Ed25519Signature // s
 }
 
 type Fault struct {
-	WorkReportHash    [32]byte
-	IncorrectValidity bool
-	ValidatorKey      types.Ed25519PublicKey
-	Signature         types.Ed25519Signature
+	WorkReportHash  [32]byte               // r
+	CorrectValidity bool                   // v
+	ValidatorKey    types.Ed25519PublicKey // k
+	Signature       types.Ed25519Signature // s
 }

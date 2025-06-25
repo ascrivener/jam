@@ -635,7 +635,7 @@ func hexToBytes(hexStr string) []byte {
 func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)

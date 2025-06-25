@@ -57,10 +57,12 @@ type SignedGasValue int64
 
 type ValidatorKeyset [336]byte
 
+// b
 func (v ValidatorKeyset) ToBandersnatchPublicKey() BandersnatchPublicKey {
 	return BandersnatchPublicKey(v[:32])
 }
 
+// e
 func (v ValidatorKeyset) ToEd25519PublicKey() Ed25519PublicKey {
 	return Ed25519PublicKey(v[32:64])
 }
@@ -93,10 +95,10 @@ func (v ValidatorKeysetSlice) ContainsKeyset(keyset ValidatorKeyset) bool {
 type Balance uint64
 
 type Disputes struct {
-	WorkReportHashesGood  map[[32]byte]struct{}
-	WorkReportHashesBad   map[[32]byte]struct{}
-	WorkReportHashesWonky map[[32]byte]struct{}
-	ValidatorPunishes     map[Ed25519PublicKey]struct{}
+	WorkReportHashesGood  map[[32]byte]struct{}         // g
+	WorkReportHashesBad   map[[32]byte]struct{}         // b
+	WorkReportHashesWonky map[[32]byte]struct{}         // w
+	ValidatorPunishes     map[Ed25519PublicKey]struct{} // o
 }
 
 func (d Disputes) PunishEd25519Key(key Ed25519PublicKey) bool {

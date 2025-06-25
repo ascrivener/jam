@@ -1,6 +1,7 @@
 package block
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ascrivener/jam/types"
 	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/ed25519"
 )
 
 type Block struct {
@@ -23,7 +25,7 @@ type Block struct {
 	Extrinsics extrinsics.Extrinsics
 }
 
-func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
+func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState state.State) error {
 
 	parentBlock, err := Get(repo, b.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
@@ -50,6 +52,116 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository) error {
 
 	if parentBlock.Info.PosteriorStateRoot != merklizedState {
 		return fmt.Errorf("parent block state root does not match merklized state")
+	}
+
+	// (10.7)
+	for i := 1; i < len(b.Extrinsics.Disputes.Verdicts); i++ {
+		comparison := bytes.Compare(b.Extrinsics.Disputes.Verdicts[i].WorkReportHash[:],
+			b.Extrinsics.Disputes.Verdicts[i-1].WorkReportHash[:])
+		if comparison <= 0 {
+			return fmt.Errorf("verdicts must be strictly ordered by WorkReportHash")
+		}
+		// (10.10)
+		for j := 1; j < len(b.Extrinsics.Disputes.Verdicts[i].Judgements); j++ {
+			if b.Extrinsics.Disputes.Verdicts[i].Judgements[j].ValidatorIndex <= b.Extrinsics.Disputes.Verdicts[i].Judgements[j-1].ValidatorIndex {
+				return fmt.Errorf("judgements must be strictly ordered by ValidatorIndex")
+			}
+		}
+	}
+
+	// (10.8)
+	for i := 1; i < len(b.Extrinsics.Disputes.Culprits); i++ {
+		comparison := bytes.Compare(b.Extrinsics.Disputes.Culprits[i].ValidatorKey[:],
+			b.Extrinsics.Disputes.Culprits[i-1].ValidatorKey[:])
+		if comparison <= 0 {
+			return fmt.Errorf("culprits must be strictly ordered by ValidatorKey")
+		}
+	}
+
+	for i := 1; i < len(b.Extrinsics.Disputes.Faults); i++ {
+		comparison := bytes.Compare(b.Extrinsics.Disputes.Faults[i].ValidatorKey[:],
+			b.Extrinsics.Disputes.Faults[i-1].ValidatorKey[:])
+		if comparison <= 0 {
+			return fmt.Errorf("faults must be strictly ordered by ValidatorKey")
+		}
+	}
+
+	for _, verdict := range b.Extrinsics.Disputes.Verdicts {
+		// (10.9)
+		if _, ok := priorState.Disputes.WorkReportHashesGood[verdict.WorkReportHash]; ok {
+			return fmt.Errorf("work report hash %x is already in good disputes", verdict.WorkReportHash)
+		}
+		if _, ok := priorState.Disputes.WorkReportHashesBad[verdict.WorkReportHash]; ok {
+			return fmt.Errorf("work report hash %x is already in bad disputes", verdict.WorkReportHash)
+		}
+		if _, ok := priorState.Disputes.WorkReportHashesWonky[verdict.WorkReportHash]; ok {
+			return fmt.Errorf("work report hash %x is already in wonky disputes", verdict.WorkReportHash)
+		}
+		// (10.3)
+		var validatorKeysets types.ValidatorKeysets
+		if verdict.EpochIndex == uint32(priorState.MostRecentBlockTimeslot.EpochIndex()) {
+			validatorKeysets = priorState.ValidatorKeysetsActive
+		} else if verdict.EpochIndex == uint32(priorState.MostRecentBlockTimeslot.EpochIndex()-1) {
+			validatorKeysets = priorState.ValidatorKeysetsPriorEpoch
+		} else { // (10.2)
+			return fmt.Errorf("verdict epoch index does not match prior state most recent block timeslot epoch index or previous")
+		}
+		for _, judgement := range verdict.Judgements {
+			key := validatorKeysets[judgement.ValidatorIndex].ToEd25519PublicKey()
+			var message []byte
+			if judgement.Valid {
+				message = append(message, []byte("jam_valid")...)
+			} else {
+				message = append(message, []byte("jam_invalid")...)
+			}
+			message = append(message, verdict.WorkReportHash[:]...)
+			if !ed25519.Verify(key[:], message, judgement.Signature[:]) {
+				return fmt.Errorf("invalid signature from validator %d", judgement.ValidatorIndex)
+			}
+		}
+	}
+
+	for verdict, positiveJudgments := range b.Extrinsics.Disputes.ToSumOfValidJudgementsMap() {
+		// (10.13)
+		if positiveJudgments == int(constants.NumValidatorSafetyThreshold) {
+			foundCorrespondingFault := false
+			for _, fault := range b.Extrinsics.Disputes.Faults {
+				if fault.WorkReportHash == verdict {
+					foundCorrespondingFault = true
+					break
+				}
+			}
+			if !foundCorrespondingFault {
+				return fmt.Errorf("no corresponding fault for verdict %x", verdict)
+			}
+		} else if positiveJudgments == 0 {
+			culpritCount := 0
+			for _, culprit := range b.Extrinsics.Disputes.Culprits {
+				if culprit.InvalidWorkReportHash == verdict {
+					culpritCount++
+				}
+			}
+			if culpritCount < 2 {
+				return fmt.Errorf("culprit count for verdict %x is less than 2: %d", verdict, culpritCount)
+			}
+		} else if positiveJudgments == int(constants.OneThirdNumValidators) {
+		} else { // (10.11)
+			return fmt.Errorf("sum of valid judgements for verdict %x is invalid: %d", verdict, positiveJudgments)
+		}
+	}
+
+	// (10.20)
+	concatCulpritAndFaultKeys := make([]types.Ed25519PublicKey, 0)
+	for _, culprit := range b.Extrinsics.Disputes.Culprits {
+		concatCulpritAndFaultKeys = append(concatCulpritAndFaultKeys, culprit.ValidatorKey)
+	}
+	for _, fault := range b.Extrinsics.Disputes.Faults {
+		concatCulpritAndFaultKeys = append(concatCulpritAndFaultKeys, fault.ValidatorKey)
+	}
+	for index, key := range b.Header.UnsignedHeader.OffendersMarker {
+		if key != concatCulpritAndFaultKeys[index] {
+			return fmt.Errorf("offender key %d does not match expected key", index)
+		}
 	}
 
 	return nil
@@ -173,6 +285,53 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	} else {
 		if len(b.Extrinsics.Tickets) != 0 {
 			return fmt.Errorf("extrinsics should have no tickets")
+		}
+	}
+
+	reportableKeys := make(map[types.Ed25519PublicKey]struct{})
+	for _, keyset := range priorState.ValidatorKeysetsActive {
+		reportableKeys[keyset.ToEd25519PublicKey()] = struct{}{}
+	}
+	for _, keyset := range priorState.ValidatorKeysetsPriorEpoch {
+		reportableKeys[keyset.ToEd25519PublicKey()] = struct{}{}
+	}
+	for key := range reportableKeys {
+		if _, ok := priorState.Disputes.ValidatorPunishes[key]; ok {
+			delete(reportableKeys, key)
+		}
+	}
+	// (10.5)
+	for _, culprit := range b.Extrinsics.Disputes.Culprits {
+		if _, ok := postState.Disputes.WorkReportHashesBad[culprit.InvalidWorkReportHash]; !ok {
+			return fmt.Errorf("culprit invalid work report hash is not in bad set")
+		}
+		if _, ok := reportableKeys[culprit.ValidatorKey]; !ok {
+			return fmt.Errorf("culprit validator key is not in reportable keyset")
+		}
+		var message = append([]byte("jam_guarantee"), culprit.InvalidWorkReportHash[:]...)
+		if !ed25519.Verify(culprit.ValidatorKey[:], message, culprit.Signature[:]) {
+			return fmt.Errorf("invalid signature from validator %d", culprit.ValidatorKey)
+		}
+	}
+	// (10.6)
+	for _, fault := range b.Extrinsics.Disputes.Faults {
+		_, reportIsBad := postState.Disputes.WorkReportHashesBad[fault.WorkReportHash]
+		_, reportIsGood := postState.Disputes.WorkReportHashesGood[fault.WorkReportHash]
+		if (reportIsBad == reportIsGood) || (reportIsBad != fault.CorrectValidity) {
+			return fmt.Errorf("inconsistent work report hash")
+		}
+		if _, ok := reportableKeys[fault.ValidatorKey]; !ok {
+			return fmt.Errorf("fault validator key is not in reportable keyset")
+		}
+		var message []byte
+		if fault.CorrectValidity {
+			message = append(message, []byte("jam_valid")...)
+		} else {
+			message = append(message, []byte("jam_invalid")...)
+		}
+		message = append(message, fault.WorkReportHash[:]...)
+		if !ed25519.Verify(fault.ValidatorKey[:], message, fault.Signature[:]) {
+			return fmt.Errorf("invalid signature from validator %d", fault.ValidatorKey)
 		}
 	}
 

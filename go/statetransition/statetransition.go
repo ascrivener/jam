@@ -87,15 +87,16 @@ func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, curBlock blo
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
 func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
-	// Verify block
-	if err := curBlock.Verify(repo); err != nil {
-		return fmt.Errorf("failed to verify block: %w", err)
-	}
 
 	// Load state
 	priorState, err := state.GetState(repo)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
+	}
+
+	// Verify block
+	if err := curBlock.Verify(repo, priorState); err != nil {
+		return fmt.Errorf("failed to verify block: %w", err)
 	}
 
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(curBlock.Header)
@@ -332,7 +333,6 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		})
 	}
 	for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
-		// if not in new tickets, then add
 		for _, newTicket := range posteriorTicketAccumulator {
 			if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
 				return state.SafroleBasicState{}, fmt.Errorf("duplicate ticket: %v", priorTicket.VerifiablyRandomIdentifier)
