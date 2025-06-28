@@ -264,6 +264,14 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 		if refinementContext.Timeslot < minAcceptableTimeslot {
 			return fmt.Errorf("refinement context timeslot is too old")
 		}
+
+		anchorBlock, err := GetAnchorBlock(repo, b.Header, refinementContext.AnchorHeaderHash)
+		if err != nil {
+			return fmt.Errorf("failed to get anchor block: %w", err)
+		}
+		if anchorBlock.Block.Header.TimeSlot != refinementContext.Timeslot {
+			return fmt.Errorf("refinement context timeslot does not match anchor block timeslot")
+		}
 	}
 
 	return nil
@@ -497,6 +505,29 @@ func Get(repo staterepository.PebbleStateRepository, headerHash [32]byte) (*Bloc
 	}
 
 	return &blockWithInfo, nil
+}
+
+func GetAnchorBlock(repo staterepository.PebbleStateRepository, header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
+	currentHeaderHash := header.ParentHash
+	for {
+		// Get the current block
+		blockWithInfo, err := Get(repo, currentHeaderHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get block in chain with hash %x: %w", currentHeaderHash, err)
+		}
+
+		// Check if the block is too old (more than 24 hours)
+		slotsIn24Hours := types.Timeslot(uint32(24*60*60) / uint32(constants.SlotPeriodInSeconds))
+		if header.TimeSlot > blockWithInfo.Block.Header.TimeSlot+slotsIn24Hours {
+			return nil, fmt.Errorf("anchor block is too old (more than 24 hours before current block)")
+		}
+
+		if currentHeaderHash == targetAnchorHeaderHash {
+			return blockWithInfo, nil
+		}
+
+		currentHeaderHash = blockWithInfo.Block.Header.ParentHash
+	}
 }
 
 func (block BlockWithInfo) Set(repo staterepository.PebbleStateRepository) error {
