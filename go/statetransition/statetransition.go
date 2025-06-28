@@ -103,6 +103,24 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentBlocks)
 
+	// (11.33)
+	for _, refinementContext := range curBlock.Extrinsics.Guarantees.RefinementContexts() {
+		found := false
+		for _, recentBlock := range intermediateRecentBlocks {
+			if refinementContext.AnchorHeaderHash != recentBlock.HeaderHash {
+				continue
+			}
+			if refinementContext.PosteriorStateRoot != recentBlock.StateRoot {
+				continue
+			}
+			found = true
+			// TODO: finish here
+		}
+		if !found {
+			return fmt.Errorf("refinement context work package hash not found in recent blocks")
+		}
+	}
+
 	posteriorEntropyAccumulator, err := computeEntropyAccumulator(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
 	if err != nil {
 		return fmt.Errorf("failed to compute entropy accumulator: %w", err)
@@ -138,6 +156,23 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 	)
 
 	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(curBlock.Header, curBlock.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
+
+	for _, guarantee := range curBlock.Extrinsics.Guarantees {
+		// (11.29)
+		if postguaranteesExtrinsicIntermediatePendingReports[guarantee.WorkReport.CoreIndex] != nil {
+			return fmt.Errorf("duplicate guarantee for core %d", guarantee.WorkReport.CoreIndex)
+		}
+		authorizersPoolHasWorkReport := false
+		for _, authorizer := range priorState.AuthorizersPool[guarantee.WorkReport.CoreIndex] {
+			if authorizer == guarantee.WorkReport.AuthorizerHash {
+				authorizersPoolHasWorkReport = true
+				break
+			}
+		}
+		if !authorizersPoolHasWorkReport {
+			return fmt.Errorf("authorizer %s not in authorizers pool for core %d", guarantee.WorkReport.AuthorizerHash, guarantee.WorkReport.CoreIndex)
+		}
+	}
 
 	posteriorPendingReports := computePendingReports(curBlock.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 

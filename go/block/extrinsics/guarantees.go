@@ -43,6 +43,24 @@ type GuarantorAssignments struct {
 	ValidatorKeysets [constants.NumValidators]types.ValidatorKeyset
 }
 
+// x
+func (g Guarantees) RefinementContexts() []workreport.RefinementContext {
+	contexts := make([]workreport.RefinementContext, 0)
+	for _, guarantee := range g {
+		contexts = append(contexts, guarantee.WorkReport.RefinementContext)
+	}
+	return contexts
+}
+
+// p
+func (g Guarantees) WorkPackageHashes() map[[32]byte]struct{} {
+	hashes := make(map[[32]byte]struct{}, 0)
+	for _, guarantee := range g {
+		hashes[guarantee.WorkReport.WorkPackageSpecification.WorkPackageHash] = struct{}{}
+	}
+	return hashes
+}
+
 func (g Guarantee) GuarantorAssignments(posteriorEntropyAccumulator [4][32]byte, posteriorTimeSlot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, posteriorDisputes types.Disputes) GuarantorAssignments {
 	if posteriorTimeSlot.CoreAssignmentRotationIndex() == g.Timeslot.CoreAssignmentRotationIndex() {
 		coreIndices := permute(posteriorEntropyAccumulator[2], posteriorTimeSlot)

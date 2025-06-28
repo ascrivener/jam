@@ -234,6 +234,23 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 				return fmt.Errorf("credentials must be strictly ordered by ValidatorIndex")
 			}
 		}
+
+		// (11.30)
+		totalAccumulateGasLimit := types.GasValue(0)
+		for _, workDigest := range guarantee.WorkReport.WorkDigests {
+			totalAccumulateGasLimit += workDigest.AccumulateGasLimit
+			if workDigest.AccumulateGasLimit < priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate {
+				return fmt.Errorf("accumulate gas limit %d less than minimum gas for accumulate %d", workDigest.AccumulateGasLimit, priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate)
+			}
+		}
+		if totalAccumulateGasLimit > types.GasValue(constants.SingleAccumulationAllocatedGas) {
+			return fmt.Errorf("total accumulate gas limit %d greater than single accumulation allocated gas %d", totalAccumulateGasLimit, constants.SingleAccumulationAllocatedGas)
+		}
+	}
+
+	// (11.32)
+	if len(b.Extrinsics.Guarantees.WorkPackageHashes()) != len(b.Extrinsics.Guarantees) {
+		return fmt.Errorf("number of work package hashes does not match number of guarantees")
 	}
 
 	return nil
