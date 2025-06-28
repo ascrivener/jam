@@ -253,6 +253,19 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 		return fmt.Errorf("number of work package hashes does not match number of guarantees")
 	}
 
+	for _, refinementContext := range b.Extrinsics.Guarantees.RefinementContexts() {
+		// (11.34)
+		var minAcceptableTimeslot types.Timeslot
+		if priorState.MostRecentBlockTimeslot >= types.Timeslot(constants.LookupAnchorMaxAgeTimeslots) {
+			minAcceptableTimeslot = priorState.MostRecentBlockTimeslot - types.Timeslot(constants.LookupAnchorMaxAgeTimeslots)
+		} else {
+			minAcceptableTimeslot = 0
+		}
+		if refinementContext.Timeslot < minAcceptableTimeslot {
+			return fmt.Errorf("refinement context timeslot is too old")
+		}
+	}
+
 	return nil
 }
 

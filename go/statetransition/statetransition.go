@@ -103,9 +103,9 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentBlocks)
 
-	// (11.33)
 	for _, refinementContext := range curBlock.Extrinsics.Guarantees.RefinementContexts() {
 		found := false
+		// (11.33)
 		for _, recentBlock := range intermediateRecentBlocks {
 			if refinementContext.AnchorHeaderHash != recentBlock.HeaderHash {
 				continue
@@ -113,8 +113,10 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 			if refinementContext.PosteriorStateRoot != recentBlock.StateRoot {
 				continue
 			}
+			if refinementContext.PosteriorBEEFYRoot != merklizer.MMRSuperPeak(recentBlock.AccumulationResultMMR) {
+				continue
+			}
 			found = true
-			// TODO: finish here
 		}
 		if !found {
 			return fmt.Errorf("refinement context work package hash not found in recent blocks")

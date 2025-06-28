@@ -72,3 +72,28 @@ func WellBalancedBinaryMerkle(blobs [][]byte, hash func([]byte) [32]byte) [32]by
 	}
 	return [32]byte(node(blobs, hash))
 }
+
+func MMRSuperPeak(mmrRange MMRRange) [32]byte {
+	nonNullBelt := make([][32]byte, 0)
+	for _, node := range mmrRange {
+		if node != nil {
+			nonNullBelt = append(nonNullBelt, *node)
+		}
+	}
+	return mmrSuperPeakHelper(nonNullBelt)
+}
+
+func mmrSuperPeakHelper(blobs [][32]byte) [32]byte {
+	if len(blobs) == 0 {
+		return [32]byte{}
+	}
+	if len(blobs) == 1 {
+		return blobs[0]
+	}
+	var buffer bytes.Buffer
+	buffer.Write([]byte("peak"))
+	mmrSuperPeak := mmrSuperPeakHelper(blobs[:len(blobs)-1])
+	buffer.Write(mmrSuperPeak[:])
+	buffer.Write(blobs[len(blobs)-1][:])
+	return Keccak256Hash(buffer.Bytes())
+}

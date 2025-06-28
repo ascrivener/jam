@@ -1,5 +1,7 @@
 package merklizer
 
+import "golang.org/x/crypto/sha3"
+
 // MMRNode represents a node in the Merkle Mountain Range
 // nil value represents an empty node
 type MMRNode *[32]byte
@@ -69,4 +71,13 @@ func appendHelper(r MMRRange, l [32]byte, n int, hash func([]byte) [32]byte) MMR
 
 func replaceAtIndex[T any](r []T, idx int, value T) {
 	r[idx] = value
+}
+
+func Keccak256Hash(data []byte) [32]byte {
+	var result [32]byte
+	hash := sha3.NewLegacyKeccak256()
+	hash.Write(data)
+	sum := hash.Sum(nil)
+	copy(result[:], sum[:])
+	return result
 }
