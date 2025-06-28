@@ -121,7 +121,10 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	postJudgementIntermediatePendingReports := computePostJudgementIntermediatePendingReports(curBlock.Extrinsics.Disputes, priorState.PendingReports)
 
-	availableReports := computeAvailableReports(postJudgementIntermediatePendingReports, curBlock.Extrinsics.Assurances)
+	availableReports, err := computeAvailableReports(postJudgementIntermediatePendingReports, curBlock.Extrinsics.Assurances)
+	if err != nil {
+		return fmt.Errorf("failed to compute available reports: %w", err)
+	}
 
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
@@ -145,7 +148,7 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	authorizersPool := computeAuthorizersPool(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
-	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, deferredTransferStatistics, accumulationStatistics)
+	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, deferredTransferStatistics, accumulationStatistics, posteriorEntropyAccumulator, posteriorDisputes)
 
 	postState := state.State{
 		AuthorizersPool:            authorizersPool,
@@ -191,7 +194,15 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 	return nil
 }
 
-func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingReport, assurances extrinsics.Assurances) []workreport.WorkReport {
+func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingReport, assurances extrinsics.Assurances) ([]workreport.WorkReport, error) {
+	// (11.15)
+	for _, assurance := range assurances {
+		for coreIndex := range constants.NumCores {
+			if assurance.CoreAvailabilityContributions.BitAt(int(coreIndex)) && pendingReports[coreIndex] == nil {
+				return nil, fmt.Errorf("assurance for core %d is missing", coreIndex)
+			}
+		}
+	}
 	var availableReports []workreport.WorkReport
 	for coreIndex := range constants.NumCores {
 		if pendingReports[coreIndex] == nil {
@@ -202,7 +213,7 @@ func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingRe
 		}
 		availableReports = append(availableReports, pendingReports[coreIndex].WorkReport)
 	}
-	return availableReports
+	return availableReports, nil
 }
 
 // Now, update each compute function to return (result, error).
@@ -676,7 +687,7 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics validatorstatistics.ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics validatorstatistics.TransferStatistics, accumulationStatistics validatorstatistics.AccumulationStatistics) validatorstatistics.ValidatorStatistics {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics validatorstatistics.ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics validatorstatistics.TransferStatistics, accumulationStatistics validatorstatistics.AccumulationStatistics, posteriorEntropyAccumulator [4][32]byte, posteriorDisputes types.Disputes) validatorstatistics.ValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]validatorstatistics.SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
@@ -698,8 +709,8 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].OctetsIntroduced += uint32(preimages.TotalDataSize())
 		}
 		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].ReportsGuaranteed = vStats.ReportsGuaranteed
-		r := guarantees.ReporterValidatorKeysets(header.TimeSlot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch)
-		if r.ContainsKeyset(posteriorValidatorKeysetsActive[vIndex]) {
+		r := guarantees.ReporterValidatorKeysets(posteriorEntropyAccumulator, header.TimeSlot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, posteriorDisputes)
+		if _, ok := r[posteriorValidatorKeysetsActive[vIndex].ToEd25519PublicKey()]; ok {
 			posteriorValidatorStatistics.AccumulatorStatistics[vIndex].ReportsGuaranteed++
 		}
 		posteriorValidatorStatistics.AccumulatorStatistics[vIndex].AvailabilityAssurances = vStats.AvailabilityAssurances

@@ -164,6 +164,78 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 		}
 	}
 
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		workReport := guarantee.WorkReport
+		// (11.2)
+		if len(workReport.WorkDigests) == 0 {
+			return fmt.Errorf("work report has no work digests")
+		}
+		if len(workReport.WorkDigests) > int(constants.MaxWorkItemsInPackage) {
+			return fmt.Errorf("work report has too many work digests")
+		}
+		// (11.3)
+		if len(workReport.SegmentRootLookup)+len(workReport.RefinementContext.PrerequisiteWorkPackageHashes) > int(constants.MaxSumDependencyItemsInReport) {
+			return fmt.Errorf("sum of segment root lookup and prerequisite work package hashes is greater than max sum dependency items in report")
+		}
+
+		// (11.8)
+		totalOutputBlobSize := 0
+		for _, workDigest := range workReport.WorkDigests {
+			workResult := workDigest.WorkResult
+			if workResult.IsError() {
+				continue
+			}
+			totalOutputBlobSize += len(*workResult.Blob)
+		}
+		if totalOutputBlobSize+len(workReport.Output) > int(constants.MaxTotalSizeWorkReportBlobs) {
+			return fmt.Errorf("total output blob size is greater than max total size work report blobs")
+		}
+	}
+
+	// (11.10)
+	if len(b.Extrinsics.Assurances) > int(constants.NumValidators) {
+		return fmt.Errorf("too many assurances. Expected at most %d, got %d", constants.NumValidators, len(b.Extrinsics.Assurances))
+	}
+
+	for idx, assurance := range b.Extrinsics.Assurances {
+		// (11.11)
+		if assurance.ParentHash != b.Header.ParentHash {
+			return fmt.Errorf("assurance parent hash does not match block parent hash: %x != %x", assurance.ParentHash, b.Header.ParentHash)
+		}
+		// (11.12)
+		if idx > 0 {
+			if b.Extrinsics.Assurances[idx-1].ValidatorIndex >= assurance.ValidatorIndex {
+				return fmt.Errorf("assurance validator index is not strictly ordered: %d >= %d", b.Extrinsics.Assurances[idx-1].ValidatorIndex, assurance.ValidatorIndex)
+			}
+		}
+		// (11.13)
+		messageHash := blake2b.Sum256(append(b.Header.ParentHash[:], serializer.Serialize(assurance.CoreAvailabilityContributions)...))
+		message := append([]byte("jam_available"), messageHash[:]...)
+		key := priorState.ValidatorKeysetsActive[assurance.ValidatorIndex].ToEd25519PublicKey()
+		if !ed25519.Verify(key[:], message, assurance.Signature[:]) {
+			return fmt.Errorf("invalid signature from validator %d", assurance.ValidatorIndex)
+		}
+	}
+
+	// (11.23)
+	if len(b.Extrinsics.Guarantees) > int(constants.NumCores) {
+		return fmt.Errorf("too many assurances. Expected at most %d, got %d", constants.NumCores, len(b.Extrinsics.Guarantees))
+	}
+
+	for i := 1; i < len(b.Extrinsics.Guarantees); i++ {
+		if b.Extrinsics.Guarantees[i].WorkReport.CoreIndex <= b.Extrinsics.Guarantees[i-1].WorkReport.CoreIndex {
+			return fmt.Errorf("guarantees must be strictly ordered by CoreIndex")
+		}
+	}
+
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		for i := 1; i < len(guarantee.Credentials); i++ {
+			if guarantee.Credentials[i].ValidatorIndex <= guarantee.Credentials[i-1].ValidatorIndex {
+				return fmt.Errorf("credentials must be strictly ordered by ValidatorIndex")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -335,6 +407,33 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		}
 	}
 
+	// (11.26)
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		guarantorAssignments := guarantee.GuarantorAssignments(postState.EntropyAccumulator, postState.MostRecentBlockTimeslot, postState.ValidatorKeysetsActive, postState.ValidatorKeysetsPriorEpoch, postState.Disputes)
+		for _, credential := range guarantee.Credentials {
+			hashedWorkReport := blake2b.Sum256(serializer.Serialize(guarantee.WorkReport))
+			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
+			if !ed25519.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
+				return fmt.Errorf("invalid signature from validator %d", credential.ValidatorIndex)
+			}
+			var k uint16
+			rotationIndex := uint16(postState.MostRecentBlockTimeslot.CoreAssignmentRotationIndex())
+			if rotationIndex > 0 {
+				k = constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots * (rotationIndex - 1)
+			} else {
+				k = 0 // If we're in the first rotation period, accept all guarantees
+			}
+			if guarantorAssignments.CoreIndices[credential.ValidatorIndex] != types.CoreIndex(guarantee.WorkReport.CoreIndex) {
+				return fmt.Errorf("guarantee core index does not match work report core index")
+			}
+			if k > uint16(guarantee.Timeslot) {
+				return fmt.Errorf("guarantee timeslot is too old")
+			}
+			if guarantee.Timeslot > postState.MostRecentBlockTimeslot {
+				return fmt.Errorf("guarantee timeslot is too new")
+			}
+		}
+	}
 	return nil
 }
 

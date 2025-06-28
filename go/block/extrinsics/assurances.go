@@ -10,10 +10,10 @@ import (
 type Assurances []Assurance
 
 type Assurance struct {
-	ParentHash                    [32]byte // Must be equal to ParentHash field of header
-	CoreAvailabilityContributions bitsequence.CoreBitMask
-	ValidatorIndex                types.ValidatorIndex
-	Signature                     types.Ed25519Signature
+	ParentHash                    [32]byte                // a
+	CoreAvailabilityContributions bitsequence.CoreBitMask // f
+	ValidatorIndex                types.ValidatorIndex    // v
+	Signature                     types.Ed25519Signature  // s
 }
 
 func (a Assurances) HasValidatorIndex(vIndex types.ValidatorIndex) bool {

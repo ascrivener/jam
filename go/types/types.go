@@ -29,6 +29,10 @@ func (t Timeslot) SlotPhaseIndex() int {
 	return int(t) % int(constants.NumTimeslotsPerEpoch)
 }
 
+func (t Timeslot) CoreAssignmentRotationIndex() int {
+	return int(t) / int(constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots)
+}
+
 type ValidatorIndex uint16
 
 func NewValidatorIndex(value uint16) (ValidatorIndex, error) {
