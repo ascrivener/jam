@@ -455,15 +455,10 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 func computeServiceAccounts(repo staterepository.PebbleStateRepository, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
+		if !postAccumulationIntermediateServiceAccounts.IsNewPreimage(repo, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data))) {
+			continue
+		}
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
-		if _, exists := serviceAccount.GetPreimageForHash(repo, hash); exists {
-			continue
-		}
-		if availabilityTimeslots, exists := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(len(preimage.Data)), hash); !exists {
-			continue
-		} else if len(availabilityTimeslots) > 0 {
-			continue
-		}
 		serviceAccount.SetPreimageForHash(repo, hash, preimage.Data)
 		serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot})
 	}

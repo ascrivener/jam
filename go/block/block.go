@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"maps"
+
 	"github.com/ascrivener/jam/bandersnatch"
 	"github.com/ascrivener/jam/block/extrinsics"
 	"github.com/ascrivener/jam/block/header"
@@ -274,6 +276,119 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 		}
 	}
 
+	// (11.38)
+	existingWorkPackageHashes := make(map[[32]byte]struct{})
+	for _, q := range priorState.AccumulationQueue {
+		for _, wr := range q {
+			for wph := range wr.WorkReport.RefinementContext.PrerequisiteWorkPackageHashes {
+				existingWorkPackageHashes[wph] = struct{}{}
+			}
+		}
+	}
+
+	for _, pendingReport := range priorState.PendingReports {
+		if pendingReport == nil {
+			continue
+		}
+		for wph := range pendingReport.WorkReport.RefinementContext.PrerequisiteWorkPackageHashes {
+			existingWorkPackageHashes[wph] = struct{}{}
+		}
+	}
+
+	for _, recentBlock := range priorState.RecentBlocks {
+		for wph := range recentBlock.WorkPackageHashes {
+			existingWorkPackageHashes[wph] = struct{}{}
+		}
+	}
+
+	for wph := range priorState.AccumulationHistory.ToUnionSet() {
+		existingWorkPackageHashes[wph] = struct{}{}
+	}
+
+	for wph := range b.Extrinsics.Guarantees.WorkPackageHashes() {
+		if _, ok := existingWorkPackageHashes[wph]; ok {
+			return fmt.Errorf("work package hash %x already exists", wph)
+		}
+	}
+
+	// (11.39)
+	recentBlockWorkPackageHashes := make(map[[32]byte]struct{})
+	for _, recentBlock := range priorState.RecentBlocks {
+		for _, wph := range recentBlock.WorkPackageHashes {
+			recentBlockWorkPackageHashes[wph] = struct{}{}
+		}
+	}
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		wphs := make(map[[32]byte]struct{})
+		for wph := range guarantee.WorkReport.RefinementContext.PrerequisiteWorkPackageHashes {
+			wphs[wph] = struct{}{}
+		}
+		for wph := range guarantee.WorkReport.SegmentRootLookup {
+			wphs[wph] = struct{}{}
+		}
+		for wph := range wphs {
+			if _, ok := b.Extrinsics.Guarantees.WorkPackageHashes()[wph]; ok {
+				continue
+			}
+			if _, ok := recentBlockWorkPackageHashes[wph]; ok {
+				continue
+			}
+			return fmt.Errorf("work package hash %x does not exist in extrinsic or recent history", wph)
+		}
+	}
+
+	// (11.41)
+	correctSegmentRootLookup := make(map[[32]byte][32]byte)
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		correctSegmentRootLookup[guarantee.WorkReport.WorkPackageSpecification.WorkPackageHash] = guarantee.WorkReport.WorkPackageSpecification.SegmentRoot
+	}
+	for _, recentBlock := range priorState.RecentBlocks {
+		maps.Copy(correctSegmentRootLookup, recentBlock.WorkPackageHashes)
+	}
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		for key, value := range guarantee.WorkReport.SegmentRootLookup {
+			if _, ok := correctSegmentRootLookup[key]; !ok {
+				return fmt.Errorf("segment root %x does not exist in recent history", key)
+			}
+			if correctSegmentRootLookup[key] != value {
+				return fmt.Errorf("segment root %x does not match recent history", key)
+			}
+		}
+	}
+
+	// (11.42)
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		for _, workDigest := range guarantee.WorkReport.WorkDigests {
+			if workDigest.ServiceCodeHash != priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash {
+				return fmt.Errorf("service code hash %x does not match service account code hash %x", workDigest.ServiceCodeHash, priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash)
+			}
+		}
+	}
+
+	// (12.36)
+	for i := 1; i < len(b.Extrinsics.Preimages); i++ {
+		// First check if ordered by ServiceIndex
+		if b.Extrinsics.Preimages[i].ServiceIndex < b.Extrinsics.Preimages[i-1].ServiceIndex {
+			return fmt.Errorf("preimages must be ordered by ServiceIndex")
+		}
+
+		// If ServiceIndex is equal, check that Data is lexicographically greater
+		if b.Extrinsics.Preimages[i].ServiceIndex == b.Extrinsics.Preimages[i-1].ServiceIndex {
+			// Compare Data bytes lexicographically
+			result := bytes.Compare(b.Extrinsics.Preimages[i].Data, b.Extrinsics.Preimages[i-1].Data)
+			if result <= 0 {
+				return fmt.Errorf("preimages must be strictly ordered lexicographically when ServiceIndex is equal")
+			}
+		}
+	}
+
+	// (12.38)
+	for _, preimage := range b.Extrinsics.Preimages {
+		hash := blake2b.Sum256(preimage.Data)
+		if !priorState.ServiceAccounts.IsNewPreimage(repo, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data))) {
+			return fmt.Errorf("preimage %x already exists", hash)
+		}
+	}
 	return nil
 }
 
@@ -517,8 +632,7 @@ func GetAnchorBlock(repo staterepository.PebbleStateRepository, header header.He
 		}
 
 		// Check if the block is too old (more than 24 hours)
-		slotsIn24Hours := types.Timeslot(uint32(24*60*60) / uint32(constants.SlotPeriodInSeconds))
-		if header.TimeSlot > blockWithInfo.Block.Header.TimeSlot+slotsIn24Hours {
+		if header.TimeSlot > blockWithInfo.Block.Header.TimeSlot+types.Timeslot(constants.LookupAnchorMaxAgeTimeslots) {
 			return nil, fmt.Errorf("anchor block is too old (more than 24 hours before current block)")
 		}
 

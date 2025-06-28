@@ -34,7 +34,7 @@ type State struct {
 }
 
 type PendingReport struct {
-	WorkReport workreport.WorkReport
+	WorkReport workreport.WorkReport // w
 	Timeslot   types.Timeslot
 }
 

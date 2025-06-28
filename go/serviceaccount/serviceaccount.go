@@ -12,6 +12,20 @@ import (
 
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
+// R
+func (s *ServiceAccounts) IsNewPreimage(repo staterepository.PebbleStateRepository, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) bool {
+	serviceAccount := (*s)[serviceIndex]
+	if _, exists := serviceAccount.GetPreimageForHash(repo, hash); exists {
+		return false
+	}
+	if availabilityTimeslots, exists := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(dataLen), hash); !exists {
+		return false
+	} else if len(availabilityTimeslots) > 0 {
+		return false
+	}
+	return true
+}
+
 type PreimageLookupHistoricalStatusKey struct {
 	HashedPreimage [23]byte
 	BlobLength     types.BlobLength
