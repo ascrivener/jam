@@ -771,40 +771,76 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 	return key
 }
 
+type ChainParameters struct {
+	ServiceMinimumBalancePerItem                      uint64
+	ServiceMinimumBalancePerOctet                     uint64
+	ServiceMinimumBalance                             uint64
+	NumCores                                          uint16
+	UnreferencePreimageExpungeTimeslots               uint32
+	NumTimeslotsPerEpoch                              uint32
+	SingleAccumulationAllocatedGas                    uint64
+	IsAuthorizedGasAllocation                         uint64
+	RefineGasAllocation                               uint64
+	AllAccumulationTotalGasAllocation                 uint64
+	RecentHistorySizeBlocks                           uint16
+	MaxWorkItemsInPackage                             uint16
+	MaxSumDependencyItemsInReport                     uint16
+	MaxTicketsPerExtrinsic                            uint16
+	LookupAnchorMaxAgeTimeslots                       uint32
+	NumTicketEntries                                  uint16
+	MaxItemsInAuthorizationsPool                      uint16
+	SlotPeriodInSeconds                               uint16
+	AuthorizerQueueLength                             uint16
+	ValidatorCoreAssignmentsRotationPeriodInTimeslots uint16
+	MaxExtrinsicsInWorkPackage                        uint16
+	UnavailableWorkTimeoutTimeslots                   uint16
+	NumValidators                                     uint16
+	IsAuthorizedCodeMaxSizeOctets                     uint32
+	MaxSizeEncodedWorkPackage                         uint32
+	ServiceCodeMaxSize                                uint32
+	ErasureCodedPiecesSize                            uint32
+	MaxImportsInWorkPackage                           uint32
+	ErasureCodedPiecesInSegment                       uint32
+	MaxTotalSizeWorkReportBlobs                       uint32
+	TransferMemoSize                                  uint32
+	MaxExportsInWorkPackage                           uint32
+	TicketSubmissionEndingSlotPhaseNumber             uint32
+}
+
 func SerializeChainParameters() []byte {
-	return Serialize([]any{
-		constants.ServiceMinimumBalancePerItem,
-		constants.ServiceMinimumBalancePerOctet,
-		constants.ServiceMinimumBalance,
-		constants.NumCores,
-		constants.UnreferencePreimageExpungeTimeslots,
-		constants.NumTimeslotsPerEpoch,
-		constants.SingleAccumulationAllocatedGas,
-		constants.IsAuthorizedGasAllocation,
-		constants.RefineGasAllocation,
-		constants.AllAccumulationTotalGasAllocation,
-		constants.RecentHistorySizeBlocks,
-		constants.MaxWorkItemsInPackage,
-		constants.MaxSumDependencyItemsInReport,
-		constants.LookupAnchorMaxAgeTimeslots,
-		constants.MaxItemsInAuthorizationsPool,
-		constants.SlotPeriodInSeconds,
-		constants.AuthorizerQueueLength,
-		constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots,
-		constants.AccumulationQueueMaxEntries,
-		constants.MaxExtrinsicsInWorkPackage,
-		constants.UnavailableWorkTimeoutTimeslots,
-		constants.NumValidators,
-		constants.IsAuthorizedCodeMaxSizeOctets,
-		constants.MaxSizeEncodedWorkPackage,
-		constants.ServiceCodeMaxSize,
-		constants.ErasureCodedPiecesSize,
-		constants.SegmentSize,
-		constants.MaxImportsInWorkPackage,
-		constants.ErasureCodedPiecesInSegment,
-		constants.MaxTotalSizeWorkReportBlobs,
-		constants.TransferMemoSize,
-		constants.MaxExportsInWorkPackage,
-		constants.TicketSubmissionEndingSlotPhaseNumber,
+	return Serialize(ChainParameters{
+		ServiceMinimumBalancePerItem:                      constants.ServiceMinimumBalancePerItem,
+		ServiceMinimumBalancePerOctet:                     constants.ServiceMinimumBalancePerOctet,
+		ServiceMinimumBalance:                             constants.ServiceMinimumBalance,
+		NumCores:                                          constants.NumCores,
+		UnreferencePreimageExpungeTimeslots:               constants.UnreferencePreimageExpungeTimeslots,
+		NumTimeslotsPerEpoch:                              constants.NumTimeslotsPerEpoch,
+		SingleAccumulationAllocatedGas:                    constants.SingleAccumulationAllocatedGas,
+		IsAuthorizedGasAllocation:                         constants.IsAuthorizedGasAllocation,
+		RefineGasAllocation:                               constants.RefineGasAllocation,
+		AllAccumulationTotalGasAllocation:                 constants.AllAccumulationTotalGasAllocation,
+		RecentHistorySizeBlocks:                           constants.RecentHistorySizeBlocks,
+		MaxWorkItemsInPackage:                             constants.MaxWorkItemsInPackage,
+		MaxSumDependencyItemsInReport:                     constants.MaxSumDependencyItemsInReport,
+		MaxTicketsPerExtrinsic:                            constants.MaxTicketsPerExtrinsic,
+		LookupAnchorMaxAgeTimeslots:                       constants.LookupAnchorMaxAgeTimeslots,
+		NumTicketEntries:                                  constants.NumTicketEntries,
+		MaxItemsInAuthorizationsPool:                      constants.MaxItemsInAuthorizationsPool,
+		SlotPeriodInSeconds:                               constants.SlotPeriodInSeconds,
+		AuthorizerQueueLength:                             constants.AuthorizerQueueLength,
+		ValidatorCoreAssignmentsRotationPeriodInTimeslots: constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots,
+		MaxExtrinsicsInWorkPackage:                        constants.MaxExtrinsicsInWorkPackage,
+		UnavailableWorkTimeoutTimeslots:                   constants.UnavailableWorkTimeoutTimeslots,
+		NumValidators:                                     constants.NumValidators,
+		IsAuthorizedCodeMaxSizeOctets:                     constants.IsAuthorizedCodeMaxSizeOctets,
+		MaxSizeEncodedWorkPackage:                         constants.MaxSizeEncodedWorkPackage,
+		ServiceCodeMaxSize:                                constants.ServiceCodeMaxSize,
+		ErasureCodedPiecesSize:                            constants.ErasureCodedPiecesSize,
+		MaxImportsInWorkPackage:                           constants.MaxImportsInWorkPackage,
+		ErasureCodedPiecesInSegment:                       constants.ErasureCodedPiecesInSegment,
+		MaxTotalSizeWorkReportBlobs:                       constants.MaxTotalSizeWorkReportBlobs,
+		TransferMemoSize:                                  constants.TransferMemoSize,
+		MaxExportsInWorkPackage:                           constants.MaxExportsInWorkPackage,
+		TicketSubmissionEndingSlotPhaseNumber:             constants.TicketSubmissionEndingSlotPhaseNumber,
 	})
 }

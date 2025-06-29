@@ -112,6 +112,12 @@ type TestVector struct {
 	Block     BlockJSON      `json:"block"`
 }
 
+// GenesisVector represents a genesis state transition test vector
+type GenesisVector struct {
+	Header BlockHeader    `json:"header"`
+	State  StateKeyValues `json:"state"`
+}
+
 // // Block represents a block in a test vector
 // type Block struct {
 // 	Header struct {
@@ -635,35 +641,35 @@ func hexToBytes(hexStr string) []byte {
 func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)
 		return
 	}
 
-	testVectorPath := filepath.Join(vectorsDir, "00000000.json")
-	testVectorData, err := os.ReadFile(testVectorPath)
+	genesisVectorPath := filepath.Join(vectorsDir, "genesis.json")
+	genesisVectorData, err := os.ReadFile(genesisVectorPath)
 	if err != nil {
-		t.Errorf("Failed to load test vector file: %v", err)
+		t.Errorf("Failed to load genesis vector file: %v", err)
 		return
 	}
 
-	var initVector TestVector
-	if err := json.Unmarshal(testVectorData, &initVector); err != nil {
-		t.Errorf("Failed to parse test vector JSON: %v", err)
+	var genesisVector GenesisVector
+	if err := json.Unmarshal(genesisVectorData, &genesisVector); err != nil {
+		t.Errorf("Failed to parse genesis vector JSON: %v", err)
 		return
 	}
 
-	initBlock, err := BlockFromJSON(initVector.Block)
+	genesisHeader, err := HeaderFromJSON(genesisVector.Header)
 	if err != nil {
 		t.Errorf("Failed to parse block JSON: %v", err)
 		return
 	}
 
 	// a. Deserialize pre-state from test vector
-	initStateSerialized := initVector.PostState.KeyVals.toMap()
-	t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(initStateSerialized))
+	genesisStateSerialized := genesisVector.State.KeyVals.toMap()
+	t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(genesisStateSerialized))
 
 	// Create a temporary in-memory PebbleDB repository
 	tempDir, err := os.MkdirTemp("", "jam-test-*")
@@ -685,7 +691,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Store all key-value pairs into the repository
 	batch := repo.GetBatch()
-	for k, v := range initStateSerialized {
+	for k, v := range genesisStateSerialized {
 		// Add state: prefix to match production code
 		prefixedKey := append([]byte("state:"), k[:]...)
 		if err := batch.Set(prefixedKey, v, nil); err != nil {
@@ -694,7 +700,9 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	}
 
 	blockWithInfo := block.BlockWithInfo{
-		Block: initBlock,
+		Block: block.Block{
+			Header: genesisHeader,
+		},
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(*repo),
 		},
@@ -708,7 +716,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	if err := repo.CommitTransaction(); err != nil {
 		t.Fatalf("Failed to commit transaction: %v", err)
 	}
-	t.Logf("Stage 3: Stored %d key-value pairs in repository", len(initStateSerialized))
+	t.Logf("Stage 3: Stored %d key-value pairs in repository", len(genesisStateSerialized))
 
 	// Sort files by name to ensure proper sequence
 	var fileNames []string
@@ -724,7 +732,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName == "00000000.json" {
+		if fileName == "genesis.json" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
@@ -738,7 +746,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		// 	}
 		// }
 
-		// // Initialize file logger for the current test vector
+		// Initialize file logger for the current test vector
 		// logFileName := strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".log"
 		// logFilePath := filepath.Join(logDir, logFileName)
 		// if err := pvm.InitFileLogger(logFilePath); err != nil {
@@ -1031,31 +1039,40 @@ func highlightByteDifferences(expected, actual []byte) string {
 // 	return result
 // }
 
-// BlockFromJSON parses a JSON block representation directly into a block.Block
-func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
+func HeaderFromJSON(headerJSON BlockHeader) (header.Header, error) {
 
-	ticketsMark, err := convertTicketsMark(blockJSON.Header.TicketsMark)
+	ticketsMark, err := convertTicketsMark(headerJSON.TicketsMark)
 	if err != nil {
-		return block.Block{}, err
+		return header.Header{}, err
 	}
 
-	blockHeader := header.Header{
+	if len(headerJSON.OffendersMark) > 0 {
+		panic("Offenders marker not implemented")
+	}
+
+	return header.Header{
 		UnsignedHeader: header.UnsignedHeader{
-			ParentHash:                   hexToHashMust(blockJSON.Header.Parent),
-			PriorStateRoot:               hexToHashMust(blockJSON.Header.ParentStateRoot),
-			ExtrinsicHash:                hexToHashMust(blockJSON.Header.ExtrinsicHash),
-			TimeSlot:                     types.Timeslot(blockJSON.Header.Slot),
-			BandersnatchBlockAuthorIndex: types.ValidatorIndex(blockJSON.Header.AuthorIndex),
-			VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.EntropySource)),
-			EpochMarker:                  convertEpochMark(blockJSON.Header.EpochMark),
+			ParentHash:                   hexToHashMust(headerJSON.Parent),
+			PriorStateRoot:               hexToHashMust(headerJSON.ParentStateRoot),
+			ExtrinsicHash:                hexToHashMust(headerJSON.ExtrinsicHash),
+			TimeSlot:                     types.Timeslot(headerJSON.Slot),
+			BandersnatchBlockAuthorIndex: types.ValidatorIndex(headerJSON.AuthorIndex),
+			VRFSignature:                 types.BandersnatchVRFSignature(hexToBytes(headerJSON.EntropySource)),
+			EpochMarker:                  convertEpochMark(headerJSON.EpochMark),
 			WinningTicketsMarker:         ticketsMark,
 			OffendersMarker:              []types.Ed25519PublicKey{},
 		},
-		BlockSeal: types.BandersnatchVRFSignature(hexToBytes(blockJSON.Header.Seal)),
-	}
+		BlockSeal: types.BandersnatchVRFSignature(hexToBytes(headerJSON.Seal)),
+	}, nil
 
-	if len(blockJSON.Header.OffendersMark) > 0 {
-		panic("Offenders marker not implemented")
+}
+
+// BlockFromJSON parses a JSON block representation directly into a block.Block
+func BlockFromJSON(blockJSON BlockJSON) (block.Block, error) {
+
+	blockHeader, err := HeaderFromJSON(blockJSON.Header)
+	if err != nil {
+		return block.Block{}, err
 	}
 
 	tickets, err := convertTickets(blockJSON.Extrinsic.Tickets)
