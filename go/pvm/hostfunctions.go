@@ -671,6 +671,9 @@ func Eject(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[
 				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
 				delete(serviceAccounts, destServiceIndex)
 
+				// IMPORTANT: actually delete the preimage lookup historical status as well
+				destinationAccount.DeletePreimageLookupHistoricalStatus(repo, uint32(length), hash)
+
 				// Set status to OK
 				ctx.State.Registers[7] = types.Register(HostCallOK)
 				return NewSimpleExitReason(ExitGo)
