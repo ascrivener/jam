@@ -376,3 +376,30 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(repo statereposito
 		}
 	}
 }
+
+func DeleteServiceAccountByServiceIndex(repo staterepository.PebbleStateRepository, serviceIndex types.ServiceIndex) {
+	// Create a new batch if one isn't already in progress
+	batch := repo.GetBatch()
+	ownBatch := batch == nil
+	if ownBatch {
+		batch = repo.NewBatch()
+		defer batch.Close()
+	}
+
+	// Delete the service account
+	dbKey := staterepository.StateKeyConstructor(255, serviceIndex)
+
+	// Add state: prefix
+	prefixedKey := append([]byte("state:"), dbKey[:]...)
+
+	if err := batch.Delete(prefixedKey, nil); err != nil {
+		panic(fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err))
+	}
+
+	// If we created our own batch, commit it
+	if ownBatch {
+		if err := batch.Commit(pebble.Sync); err != nil {
+			panic(fmt.Errorf("failed to commit batch for service %d: %w", serviceIndex, err))
+		}
+	}
+}

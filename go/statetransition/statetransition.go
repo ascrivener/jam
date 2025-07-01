@@ -94,6 +94,11 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 		return fmt.Errorf("failed to load state: %w", err)
 	}
 
+	priorServiceIndices := make(map[types.ServiceIndex]struct{})
+	for serviceIndex := range priorState.ServiceAccounts {
+		priorServiceIndices[serviceIndex] = struct{}{}
+	}
+
 	// Verify block
 	if err := curBlock.Verify(repo, priorState); err != nil {
 		return fmt.Errorf("failed to verify block: %w", err)
@@ -214,7 +219,12 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 		return fmt.Errorf("failed to verify state: %w", err)
 	}
 
-	// TODO: detect service account deletion and handle (??)
+	// Detect service account deletion. Guaranteed in eject that this service has already removed all items
+	for serviceIndex := range priorServiceIndices {
+		if _, exists := postState.ServiceAccounts[serviceIndex]; !exists {
+			serviceaccount.DeleteServiceAccountByServiceIndex(repo, serviceIndex)
+		}
+	}
 	// Save state
 	if err := postState.Set(repo); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
