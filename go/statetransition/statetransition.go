@@ -148,7 +148,7 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics := accumulateAndIntegrate(
+	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
 		repo,
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
@@ -156,6 +156,9 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 		queuedExecutionWorkReports,
 		posteriorEntropyAccumulator,
 	)
+	if err != nil {
+		return fmt.Errorf("failed to accumulate and integrate: %w", err)
+	}
 
 	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(curBlock.Header, curBlock.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
 
@@ -609,14 +612,18 @@ func accumulateAndIntegrate(
 	accumulatableWorkReports []workreport.WorkReport,
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
-) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics) {
+) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage := pvm.OuterAccumulation(repo, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(repo, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
 		PrivilegedServices:       priorState.PrivilegedServices,
 	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
+
+	if err != nil {
+		return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+	}
 
 	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
 	for serviceIndex := range o.ServiceAccounts {
@@ -691,7 +698,7 @@ func accumulateAndIntegrate(
 		}
 	}
 
-	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics
+	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, nil
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) types.Timeslot {

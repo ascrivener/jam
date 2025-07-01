@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"errors"
 	"sort"
 	"sync"
 
@@ -45,7 +46,7 @@ type BEEFYCommitment struct {
 func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
-}) {
+}, error) {
 	// Use a map to collect unique service indices to process
 	serviceIndicesMap := make(map[types.ServiceIndex]struct{})
 
@@ -107,6 +108,8 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 	// Map to store preimage provisions by service index
 	allPreimageProvisions := make(PreimageProvisions)
 
+	newServiceIndexCollisionDetected := false
+
 	for _, sIndex := range serviceIndices {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
@@ -142,6 +145,9 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 			for serviceIndex, serviceAccount := range accumulationStateComponentsResult.ServiceAccounts {
 				_, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
 				if serviceIndex == sIndex || !ok {
+					if _, ok := n[serviceIndex]; ok {
+						newServiceIndexCollisionDetected = true
+					}
 					n[serviceIndex] = serviceAccount
 				}
 			}
@@ -158,6 +164,10 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 		}(sIndex)
 	}
 	wg.Wait()
+
+	if newServiceIndexCollisionDetected {
+		return AccumulationStateComponents{}, nil, nil, nil, errors.New("new service index collision detected")
+	}
 
 	// Now combine the deferred transfers in service index order
 	deferredTransfers := make([]DeferredTransfer, 0)
@@ -229,13 +239,13 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 		UpcomingValidatorKeysets: upcomingValidatorKeysets,
 		AuthorizersQueue:         authorizersQueue,
 		PrivilegedServices:       privilegedServices,
-	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage
+	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage, nil
 }
 
 func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
-}) {
+}, error) {
 	// Initialize return values
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
@@ -276,7 +286,7 @@ func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.Gas
 		}
 
 		// Process this batch
-		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage := ParallelizedAccumulation(
+		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage, err := ParallelizedAccumulation(
 			repo,
 			&currentStateComponents,
 			timeslot,
@@ -284,6 +294,10 @@ func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.Gas
 			freeAccumulationServices,
 			posteriorEntropyAccumulator,
 		)
+
+		if err != nil {
+			return -1, AccumulationStateComponents{}, nil, nil, nil, err
+		}
 
 		// Update our state for the next iteration
 		var batchGasUsed types.GasValue
@@ -310,5 +324,5 @@ func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.Gas
 		freeAccumulationServices = make(map[types.ServiceIndex]types.GasValue)
 	}
 
-	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairings, allServiceGasUsage
+	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairings, allServiceGasUsage, nil
 }
