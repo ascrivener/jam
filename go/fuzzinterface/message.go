@@ -77,7 +77,6 @@ const (
 func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 	// Encode the message based on its type
 	var encodedMessage []byte
-	var err error
 	var msgType ResponseMessageType
 
 	switch {
@@ -94,10 +93,6 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 		return nil, fmt.Errorf("unknown message type")
 	}
 
-	if err != nil {
-		return nil, err
-	}
-
 	// Prefix with message type
 	result := append([]byte{byte(msgType)}, encodedMessage...)
 
@@ -109,13 +104,10 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 
 // DecodeMessage decodes a message from bytes
 func DecodeMessage(data []byte) (RequestMessage, error) {
-	// First 4 bytes are the length prefix
-	if len(data) < 5 { // At least 4 bytes for length + 1 for message type
+	// Check minimum message length
+	if len(data) < 1 { // At least 1 byte for message type
 		return RequestMessage{}, fmt.Errorf("message too short")
 	}
-
-	// Skip the length prefix
-	data = data[4:]
 
 	// Get the message type
 	msgType := RequestMessageType(data[0])

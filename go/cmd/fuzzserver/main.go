@@ -13,7 +13,7 @@ import (
 
 func main() {
 	// Parse command line arguments
-	socketPath := flag.String("socket", "/tmp/jam_node.sock", "Path for the Unix domain socket")
+	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
 	dataDir := flag.String("datadir", "./data", "Path to the data directory")
 	flag.Parse()
 

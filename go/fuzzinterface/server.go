@@ -1,7 +1,6 @@
 package fuzzinterface
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,17 +11,14 @@ import (
 
 	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/merklizer"
-	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/statetransition"
 )
 
 // Server represents a fuzzer interface server
 type Server struct {
-	repo     staterepository.PebbleStateRepository
-	peerInfo PeerInfo
-	// Map to store header hash -> state mapping for GetState requests
-	stateMap     map[[32]byte]merklizer.State
+	repo         staterepository.PebbleStateRepository
+	peerInfo     PeerInfo
 	stateMapLock sync.RWMutex
 }
 
@@ -43,7 +39,6 @@ func NewServer(repo staterepository.PebbleStateRepository) *Server {
 				Patch: 6,
 			},
 		},
-		stateMap: make(map[[32]byte]merklizer.State),
 	}
 }
 
@@ -222,15 +217,8 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 	}
 	txSuccess = true
 
-	// Compute header hash and store state mapping
-	headerHash := sha256.Sum256(serializer.Serialize(setState.Header))
-
-	s.stateMapLock.Lock()
-	s.stateMap[headerHash] = setState.StateWithRoot.State
-	s.stateMapLock.Unlock()
-
 	// Compute state root
-	stateRoot := merklizer.MerklizeState(setState.StateWithRoot.State)
+	stateRoot := merklizer.MerklizeState(merklizer.GetState(s.repo))
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
@@ -244,16 +232,7 @@ func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, er
 		return ResponseMessage{}, fmt.Errorf("failed to process block: %w", err)
 	}
 
-	// Compute header hash for storage
-	headerHash := sha256.Sum256(serializer.Serialize(importBlock.Header))
-
-	stateKVs := merklizer.GetState(s.repo)
-	stateRoot := merklizer.MerklizeState(stateKVs)
-
-	// Store state mapping
-	s.stateMapLock.Lock()
-	s.stateMap[headerHash] = stateKVs
-	s.stateMapLock.Unlock()
+	stateRoot := merklizer.MerklizeState(merklizer.GetState(s.repo))
 
 	log.Printf("Block processed successfully for timeslot %d, state root: %x", importBlock.Header.TimeSlot, stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
@@ -261,18 +240,8 @@ func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, er
 
 // handleGetState handles a GetState request
 func (s *Server) handleGetState(getState GetState) (ResponseMessage, error) {
-	// Look up state by header hash
-	headerHash := [32]byte(getState)
+	state := merklizer.GetState(s.repo)
 
-	// Check if we have this state in our map
-	s.stateMapLock.RLock()
-	state, exists := s.stateMap[headerHash]
-	s.stateMapLock.RUnlock()
-
-	if !exists {
-		return ResponseMessage{}, fmt.Errorf("no state found for header hash %x", headerHash)
-	}
-
-	log.Printf("Returning state for header hash %x with %d key-value pairs", headerHash, len(state))
+	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
 	return ResponseMessage{State: &state}, nil
 }
