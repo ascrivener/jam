@@ -97,7 +97,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	log.Printf("Handshake received from fuzzer: %s (App v%d.%d.%d, JAM v%d.%d.%d)",
-		msg.PeerInfo.Name,
+		string(msg.PeerInfo.Name),
 		msg.PeerInfo.AppVersion.Major, msg.PeerInfo.AppVersion.Minor, msg.PeerInfo.AppVersion.Patch,
 		msg.PeerInfo.JamVersion.Major, msg.PeerInfo.JamVersion.Minor, msg.PeerInfo.JamVersion.Patch)
 
@@ -148,9 +148,7 @@ func (s *Server) receiveMessage(conn net.Conn) (RequestMessage, error) {
 		return RequestMessage{}, err
 	}
 
-	// Combine length prefix and message data for decoding
-	completeMessage := append(lengthBytes, messageData...)
-	return DecodeMessage(completeMessage)
+	return DecodeMessage(messageData)
 }
 
 // sendMessage sends a message to the connection
