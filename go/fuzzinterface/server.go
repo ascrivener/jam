@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/merklizer"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/staterepository"
@@ -30,7 +31,7 @@ func NewServer(repo staterepository.PebbleStateRepository) *Server {
 	return &Server{
 		repo: repo,
 		peerInfo: PeerInfo{
-			Name: "jam-node",
+			Name: []byte("jam-node"),
 			AppVersion: Version{
 				Major: 0,
 				Minor: 1,
@@ -101,7 +102,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		msg.PeerInfo.JamVersion.Major, msg.PeerInfo.JamVersion.Minor, msg.PeerInfo.JamVersion.Patch)
 
 	// Send our PeerInfo
-	resp := Message{PeerInfo: &s.peerInfo}
+	resp := ResponseMessage{PeerInfo: &s.peerInfo}
 	if err := s.sendMessage(conn, resp); err != nil {
 		log.Printf("Error sending PeerInfo: %v", err)
 		return
@@ -133,18 +134,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 // receiveMessage reads a message from the connection
-func (s *Server) receiveMessage(conn net.Conn) (Message, error) {
+func (s *Server) receiveMessage(conn net.Conn) (RequestMessage, error) {
 	// Read message length (4 bytes, little-endian)
 	lengthBytes := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lengthBytes); err != nil {
-		return Message{}, err
+		return RequestMessage{}, err
 	}
 	messageLength := binary.LittleEndian.Uint32(lengthBytes)
 
 	// Read message data
 	messageData := make([]byte, messageLength)
 	if _, err := io.ReadFull(conn, messageData); err != nil {
-		return Message{}, err
+		return RequestMessage{}, err
 	}
 
 	// Combine length prefix and message data for decoding
@@ -153,7 +154,7 @@ func (s *Server) receiveMessage(conn net.Conn) (Message, error) {
 }
 
 // sendMessage sends a message to the connection
-func (s *Server) sendMessage(conn net.Conn, msg Message) error {
+func (s *Server) sendMessage(conn net.Conn, msg ResponseMessage) error {
 	data, err := EncodeMessage(msg)
 	if err != nil {
 		return err
@@ -164,10 +165,10 @@ func (s *Server) sendMessage(conn net.Conn, msg Message) error {
 }
 
 // handleMessage processes an incoming message and returns the appropriate response
-func (s *Server) handleMessage(msg Message) (Message, error) {
+func (s *Server) handleMessage(msg RequestMessage) (ResponseMessage, error) {
 	switch {
 	case msg.PeerInfo != nil:
-		return Message{PeerInfo: &s.peerInfo}, nil
+		return ResponseMessage{PeerInfo: &s.peerInfo}, nil
 
 	case msg.SetState != nil:
 		return s.handleSetState(*msg.SetState)
@@ -179,21 +180,16 @@ func (s *Server) handleMessage(msg Message) (Message, error) {
 		return s.handleGetState(*msg.GetState)
 
 	default:
-		return Message{}, fmt.Errorf("unsupported message type")
+		return ResponseMessage{}, fmt.Errorf("unsupported message type")
 	}
 }
 
 // handleSetState handles a SetState request
-func (s *Server) handleSetState(setState SetState) (Message, error) {
-	// Convert fuzzer state to internal state
-	internalState, err := setState.State.ToInternal()
-	if err != nil {
-		return Message{}, fmt.Errorf("failed to convert fuzzer state: %w", err)
-	}
+func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 
 	// Begin a transaction
 	if err := s.repo.BeginTransaction(); err != nil {
-		return Message{}, fmt.Errorf("failed to begin transaction: %w", err)
+		return ResponseMessage{}, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
 	// Use a separate txErr variable to track transaction errors
@@ -205,14 +201,26 @@ func (s *Server) handleSetState(setState SetState) (Message, error) {
 		}
 	}()
 
-	// Store in repository
-	if err := internalState.OverwriteCurrentState(s.repo); err != nil {
-		return Message{}, fmt.Errorf("failed to save state to repository: %w", err)
+	if err := setState.StateWithRoot.State.OverwriteCurrentState(s.repo); err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
+	}
+
+	blockWithInfo := block.BlockWithInfo{
+		Block: block.Block{
+			Header: setState.Header,
+		},
+		Info: block.BlockInfo{
+			PosteriorStateRoot: setState.StateWithRoot.StateRoot,
+		},
+	}
+
+	if err := blockWithInfo.Set(s.repo); err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to store block: %w", err)
 	}
 
 	// Commit the transaction
 	if err := s.repo.CommitTransaction(); err != nil {
-		return Message{}, fmt.Errorf("failed to commit transaction: %w", err)
+		return ResponseMessage{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	txSuccess = true
 
@@ -220,31 +228,26 @@ func (s *Server) handleSetState(setState SetState) (Message, error) {
 	headerHash := sha256.Sum256(serializer.Serialize(setState.Header))
 
 	s.stateMapLock.Lock()
-	s.stateMap[headerHash] = internalState
+	s.stateMap[headerHash] = setState.StateWithRoot.State
 	s.stateMapLock.Unlock()
 
 	// Compute state root
-	stateRoot := merklizer.MerklizeState(internalState)
+	stateRoot := merklizer.MerklizeState(setState.StateWithRoot.State)
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
-	return Message{StateRoot: (*StateRoot)(&stateRoot)}, nil
+	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
 }
 
 // handleImportBlock handles an ImportBlock request
-func (s *Server) handleImportBlock(importBlock Block) (Message, error) {
+func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, error) {
 
-	b, err := importBlock.ToInternal()
+	err := statetransition.STF(s.repo, block.Block(importBlock))
 	if err != nil {
-		return Message{}, fmt.Errorf("failed to convert block: %w", err)
-	}
-
-	err = statetransition.STF(s.repo, b)
-	if err != nil {
-		return Message{}, fmt.Errorf("failed to process block: %w", err)
+		return ResponseMessage{}, fmt.Errorf("failed to process block: %w", err)
 	}
 
 	// Compute header hash for storage
-	headerHash := sha256.Sum256(serializer.Serialize(b.Header))
+	headerHash := sha256.Sum256(serializer.Serialize(importBlock.Header))
 
 	stateKVs := merklizer.GetState(s.repo)
 	stateRoot := merklizer.MerklizeState(stateKVs)
@@ -254,12 +257,12 @@ func (s *Server) handleImportBlock(importBlock Block) (Message, error) {
 	s.stateMap[headerHash] = stateKVs
 	s.stateMapLock.Unlock()
 
-	log.Printf("Block processed successfully for timeslot %d, state root: %x", b.Header.TimeSlot, stateRoot)
-	return Message{StateRoot: (*StateRoot)(&stateRoot)}, nil
+	log.Printf("Block processed successfully for timeslot %d, state root: %x", importBlock.Header.TimeSlot, stateRoot)
+	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
 }
 
 // handleGetState handles a GetState request
-func (s *Server) handleGetState(getState GetState) (Message, error) {
+func (s *Server) handleGetState(getState GetState) (ResponseMessage, error) {
 	// Look up state by header hash
 	headerHash := [32]byte(getState)
 
@@ -269,10 +272,9 @@ func (s *Server) handleGetState(getState GetState) (Message, error) {
 	s.stateMapLock.RUnlock()
 
 	if !exists {
-		return Message{}, fmt.Errorf("no state found for header hash %x", headerHash)
+		return ResponseMessage{}, fmt.Errorf("no state found for header hash %x", headerHash)
 	}
 
 	log.Printf("Returning state for header hash %x with %d key-value pairs", headerHash, len(state))
-	messageState := StateFromInternal(state)
-	return Message{State: &messageState}, nil
+	return ResponseMessage{State: &state}, nil
 }

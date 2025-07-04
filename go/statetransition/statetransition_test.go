@@ -3,7 +3,6 @@ package statetransition
 import (
 	"bytes"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	"github.com/ascrivener/jam/block/header"
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/merklizer"
+	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/workreport"
 
@@ -105,17 +105,21 @@ type BlockJSON struct {
 	Extrinsic Extrinsic   `json:"extrinsic"`
 }
 
-// TestVector represents a complete state transition test vector
-type TestVector struct {
-	PreState  StateKeyValues `json:"pre_state"`
-	PostState StateKeyValues `json:"post_state"`
-	Block     BlockJSON      `json:"block"`
+type StateWithRoot struct {
+	StateRoot [32]byte
+	State     merklizer.State
 }
 
-// GenesisVector represents a genesis state transition test vector
 type GenesisVector struct {
-	Header BlockHeader    `json:"header"`
-	State  StateKeyValues `json:"state"`
+	Header        header.Header
+	StateWithRoot StateWithRoot
+}
+
+// TestVector represents a complete state transition test vector
+type TestVector struct {
+	PreState  StateWithRoot `json:"pre_state"`
+	Block     block.Block   `json:"block"`
+	PostState StateWithRoot `json:"post_state"`
 }
 
 // // Block represents a block in a test vector
@@ -641,14 +645,14 @@ func hexToBytes(hexStr string) []byte {
 func TestStateDeserializerWithTransition(t *testing.T) {
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
+	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0"
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
 		t.Errorf("Failed to read test vectors directory: %v", err)
 		return
 	}
 
-	genesisVectorPath := filepath.Join(vectorsDir, "genesis.json")
+	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
 	genesisVectorData, err := os.ReadFile(genesisVectorPath)
 	if err != nil {
 		t.Errorf("Failed to load genesis vector file: %v", err)
@@ -656,19 +660,13 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	}
 
 	var genesisVector GenesisVector
-	if err := json.Unmarshal(genesisVectorData, &genesisVector); err != nil {
+	if err := serializer.Deserialize(genesisVectorData, &genesisVector); err != nil {
 		t.Errorf("Failed to parse genesis vector JSON: %v", err)
 		return
 	}
 
-	genesisHeader, err := HeaderFromJSON(genesisVector.Header)
-	if err != nil {
-		t.Errorf("Failed to parse block JSON: %v", err)
-		return
-	}
-
 	// a. Deserialize pre-state from test vector
-	genesisStateSerialized := genesisVector.State.KeyVals.toMap()
+	genesisStateSerialized := genesisVector.StateWithRoot.State
 	t.Logf("Stage 2: Converted pre-state key-values to map format (%d entries)", len(genesisStateSerialized))
 
 	// Create a temporary in-memory PebbleDB repository
@@ -689,22 +687,16 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
 
-	// Store all key-value pairs into the repository
-	batch := repo.GetBatch()
-	for k, v := range genesisStateSerialized {
-		// Add state: prefix to match production code
-		prefixedKey := append([]byte("state:"), k[:]...)
-		if err := batch.Set(prefixedKey, v, nil); err != nil {
-			t.Fatalf("Failed to store key-value pair: %v", err)
-		}
+	if err := genesisVector.StateWithRoot.State.OverwriteCurrentState(*repo); err != nil {
+		t.Fatalf("Failed to overwrite current state: %v", err)
 	}
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
-			Header: genesisHeader,
+			Header: genesisVector.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(*repo)),
+			PosteriorStateRoot: genesisVector.StateWithRoot.StateRoot,
 		},
 	}
 
@@ -721,7 +713,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 	// Sort files by name to ensure proper sequence
 	var fileNames []string
 	for _, fileInfo := range vectorFiles {
-		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".json") {
+		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".bin") {
 			continue
 		}
 		fileNames = append(fileNames, fileInfo.Name())
@@ -732,28 +724,10 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 
 	failedTests := 0
 	for _, fileName := range fileNames {
-		if fileName == "genesis.json" {
+		if fileName == "genesis.bin" {
 			continue
 		}
 		t.Logf("Processing test vector file: %s", fileName)
-
-		// Create a directory for logs if it doesn't exist
-		// logDir := "test_logs"
-		// if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		// 	err := os.Mkdir(logDir, 0755)
-		// 	if err != nil {
-		// 		t.Fatalf("Failed to create log directory '%s': %v", logDir, err)
-		// 	}
-		// }
-
-		// Initialize file logger for the current test vector
-		// logFileName := strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".log"
-		// logFilePath := filepath.Join(logDir, logFileName)
-		// if err := pvm.InitFileLogger(logFilePath); err != nil {
-		// 	t.Errorf("Failed to initialize file logger for %s: %v", logFilePath, err)
-		// 	// Decide if you want to continue without logging or skip the test
-		// 	// For now, let's log the error and continue
-		// }
 
 		// Process each file sequentially
 		func() {
@@ -768,56 +742,28 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			}
 
 			var testVector TestVector
-			if err := json.Unmarshal(testVectorData, &testVector); err != nil {
+			if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
 				t.Errorf("Failed to parse test vector JSON: %v", err)
 				failedTests++
 				return
 			}
 			t.Logf("Stage 1: Successfully loaded and parsed test vector from %s", fileName)
 
-			// merklizedPreState := merklizer.MerklizeStateRecurser(bitSeqKeyMap)
-
-			// if testVector.PreState.StateRoot != "0x"+hex.EncodeToString(merklizedPreState[:]) {
-			// 	t.Fatalf("State root mismatch: expected %s, got %s", testVector.PreState.StateRoot, hex.EncodeToString(merklizedPreState[:]))
-			// }
-
-			// b. Convert block to implementation block and run state transition
-			testBlock, err := BlockFromJSON(testVector.Block)
-			if err != nil {
-				t.Errorf("Failed to parse block JSON: %v", err)
-				failedTests++
-				return
-			}
 			t.Logf("Stage 8: Successfully converted JSON block to implementation block")
 
 			// Run state transition function
 			t.Logf("Stage 9: Running state transition function...")
 			fileStart := time.Now()
-			if err := STF(*repo, testBlock); err != nil {
+			if err := STF(*repo, testVector.Block); err != nil {
 				t.Errorf("Failed to run state transition function: %v", err)
 				failedTests++
 				return
 			}
 			fileEnd := time.Now()
 			fmt.Printf("Stage 9: State transition completed in %v\n", fileEnd.Sub(fileStart))
-			// logf("Stage 10: State transition completed")
-
-			// serializedPostState := StateSerializer(postState)
-			// logf("Stage 11: Serialized post-state (%d entries)", len(serializedPostState))
-
-			// merklizedPostState := MerklizeState(postState)
-			// expectedStateRoot := testVector.PostState.StateRoot
-			// actualStateRoot := hex.EncodeToString(merklizedPostState[:])
-			// stateRootMatch := expectedStateRoot == actualStateRoot
-			// logf("Stage 12: Merklized post-state (state root match: %v)", stateRootMatch)
-
-			// if !stateRootMatch {
-			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
-			// 	// Continue execution despite mismatch
-			// }
 
 			// Convert test vector's post-state key-values to the format expected by StateDeserializer
-			expectedSerializedState := testVector.PostState.KeyVals.toMap()
+			expectedSerializedState := testVector.PostState.State
 			t.Logf("Stage 13: Converted expected post-state key-values to map format (%d entries)", len(expectedSerializedState))
 
 			// Read all key-value pairs from the repository after state transition
@@ -854,61 +800,37 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			t.Logf("Stage 14: Comparing repository key-values with expected post-state...")
 
 			// Check missing keys in the repo
-			for k, expectedValue := range expectedSerializedState {
-				actualValue, exists := actualRepoKvs[k]
+			for _, kv := range expectedSerializedState {
+				actualValue, exists := actualRepoKvs[kv.OriginalKey]
 				if !exists {
-					t.Errorf("Key missing in repository: %x", k)
+					t.Errorf("Key missing in repository: %x", kv.OriginalKey)
 					continue
 				}
 
 				// Compare values
-				if !bytes.Equal(expectedValue, actualValue) {
+				if !bytes.Equal(kv.Value, actualValue) {
 					t.Errorf("Value mismatch for key %x:\nExpected: %x\nActual: %x\nDifferences: %s",
-						k, expectedValue, actualValue, highlightByteDifferences(expectedValue, actualValue))
+						kv.OriginalKey, kv.Value, actualValue, highlightByteDifferences(kv.Value, actualValue))
 				}
 			}
 
 			// Check extra keys in the repo
 			for k := range actualRepoKvs {
-				if _, exists := expectedSerializedState[k]; !exists {
+				exists := false
+				for _, kv := range expectedSerializedState {
+					if k == kv.OriginalKey {
+						exists = true
+						break
+					}
+				}
+				if !exists {
 					t.Errorf("Extra key in repository: %x", k)
 				}
 			}
 
-			// Deserialize the expected state
-			// expectedPostState, err := GetState(*repo)
-			// if err != nil {
-			// 	t.Errorf("Failed to deserialize expected post-state: %v", err)
-			// 	failedTests++
-			// 	return
-			// }
-			// t.Logf("Stage 16: Successfully deserialized expected post-state")
-
-			// // Use cmp.Diff for a detailed comparison of the state objects
-			// t.Logf("Stage 17: Performing detailed comparison of state objects...")
-			// if diff := cmp.Diff(expectedPostState, postState); diff != "" {
-			// 	t.Errorf("Post-state mismatch (-expected +actual):\n%s", diff)
-			// 	failedTests++
-			// 	return
-			// }
-			// t.Logf("Stage 18: State objects match")
-
-			// merklizedPostState := MerklizeState(postState)
-			// expectedStateRoot := testVector.PostState.StateRoot
-			// actualStateRoot := "0x" + hex.EncodeToString(merklizedPostState[:])
-			// stateRootMatch := expectedStateRoot == actualStateRoot
-			// if !stateRootMatch {
-			// 	t.Errorf("State root mismatch: expected %s, got %s", expectedStateRoot, actualStateRoot)
-
-			// 	serializedPostState := StateSerializer(postState)
-			// 	expectedSerializedPostState := testVector.PostState.KeyVals.toMap()
-			// 	if !compareSerializedStatesNoFatal(expectedSerializedPostState, serializedPostState, t) {
-			// 		failedTests++
-			// 		return
-			// 	}
-			// }
-			// t.Logf("Stage 19: State root match")
-			// t.Logf("Successfully processed %s", fileName)
+			if testVector.PostState.StateRoot != merklizer.MerklizeState(merklizer.GetState(*repo)) {
+				t.Errorf("State root mismatch: expected %s, got %s", testVector.PostState.StateRoot, merklizer.MerklizeState(merklizer.GetState(*repo)))
+			}
 
 			// Force garbage collection
 			runtime.GC()
