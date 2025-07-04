@@ -704,7 +704,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			Header: genesisHeader,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(*repo),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(*repo)),
 		},
 	}
 
@@ -793,7 +793,7 @@ func TestStateDeserializerWithTransition(t *testing.T) {
 			// Run state transition function
 			t.Logf("Stage 9: Running state transition function...")
 			fileStart := time.Now()
-			if err := LoadStateAndRunSTF(*repo, testBlock); err != nil {
+			if err := STF(*repo, testBlock); err != nil {
 				t.Errorf("Failed to run state transition function: %v", err)
 				failedTests++
 				return

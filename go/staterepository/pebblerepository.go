@@ -167,37 +167,6 @@ func (r *PebbleStateRepository) RollbackTransaction() error {
 	return nil
 }
 
-// DeleteServiceAccount removes a service account and all its associated data
-func (r *PebbleStateRepository) DeleteServiceAccount(serviceIndex types.ServiceIndex) error {
-	// Create a new batch if one isn't already in progress
-	batch := r.batch
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = r.db.NewIndexedBatch()
-		defer batch.Close()
-	}
-
-	key := StateKeyConstructor(255, serviceIndex)
-
-	if err := batch.Delete(key[:], nil); err != nil {
-		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
-	}
-
-	// TODO: Delete all storage items for this service account ?
-	// To do this, we need to iterate through all keys with a specific pattern
-	// This would be easier with prefix scanning, but the current key format doesn't
-	// really allow for this
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // Close closes the database
 func (r *PebbleStateRepository) Close() error {
 	if r.batch != nil {

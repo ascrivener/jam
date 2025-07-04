@@ -50,7 +50,7 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 	}
 
 	// (5.8)
-	merklizedState := merklizer.MerklizeState(repo)
+	merklizedState := merklizer.MerklizeState(merklizer.GetState(repo))
 
 	if parentBlock.Info.PosteriorStateRoot != merklizedState {
 		return fmt.Errorf("parent block state root does not match merklized state")

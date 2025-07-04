@@ -61,32 +61,38 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
-func LoadStateAndRunSTF(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
+func STF(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
 	// Begin a transaction for all repository operations
 	if err := repo.BeginTransaction(); err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
-	// Declare err variable for use in the defer function
-	var err error
-
-	// Defer a function that either commits or rolls back based on error status
+	// Use a success flag to track transaction state
+	var txSuccess bool
 	defer func() {
-		if err != nil {
+		if !txSuccess {
 			repo.RollbackTransaction()
-		} else {
-			err = repo.CommitTransaction()
 		}
 	}()
 
 	// Run state transition function
-	return stateTransitionFunction(repo, curBlock)
+	if err := stfHelper(repo, curBlock); err != nil {
+		return err
+	}
+
+	// Commit the transaction
+	if err := repo.CommitTransaction(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	txSuccess = true
+
+	return nil
 }
 
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
+func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
 
 	// Load state
 	priorState, err := state.GetState(repo)
@@ -222,7 +228,7 @@ func stateTransitionFunction(repo staterepository.PebbleStateRepository, curBloc
 	blockWithInfo := block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(repo),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(repo)),
 		},
 	}
 

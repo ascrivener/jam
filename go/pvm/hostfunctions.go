@@ -667,13 +667,13 @@ func Eject(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[
 				// For simplicity, we're assuming the balance to transfer is associated with the destination account
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
-				// Remove the entry from destination account
-				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
-				delete(serviceAccounts, destServiceIndex)
-
 				// IMPORTANT: actually delete the service account and preimage lookup historical status from state as well
 				serviceaccount.DeleteServiceAccountByServiceIndex(repo, destServiceIndex)
 				destinationAccount.DeletePreimageLookupHistoricalStatus(repo, uint32(length), hash)
+
+				// Remove the entry from destination account
+				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
+				delete(serviceAccounts, destServiceIndex)
 
 				// Set status to OK
 				ctx.State.Registers[7] = types.Register(HostCallOK)

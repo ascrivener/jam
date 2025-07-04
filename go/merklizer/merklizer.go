@@ -5,11 +5,15 @@ import (
 
 	"golang.org/x/crypto/blake2b"
 
+	"fmt"
+
 	"github.com/ascrivener/jam/bitsequence"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/cockroachdb/pebble"
 )
+
+type State []StateKV
 
 type StateKV struct {
 	OriginalKey [31]byte
@@ -75,10 +79,7 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 	return blake2b.Sum256(bs.Bytes())
 }
 
-func MerklizeState(repo staterepository.PebbleStateRepository) [32]byte {
-	// Initialize the map that will hold our leaves
-	bitSeqKeyMap := make(map[bitsequence.BitSeqKey]StateKV)
-
+func GetState(repo staterepository.PebbleStateRepository) State {
 	// Create iterator bounds for keys with "state:" prefix
 	// The upper bound uses semicolon (the next ASCII character after colon)
 	// to ensure we only get keys starting with "state:"
@@ -92,10 +93,11 @@ func MerklizeState(repo staterepository.PebbleStateRepository) [32]byte {
 	})
 	if err != nil {
 		// Return empty hash if we can't create the iterator
-		return [32]byte{}
+		return State{}
 	}
 	defer iter.Close()
 
+	state := State{}
 	// Iterate through all matching keys
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := iter.Key()
@@ -122,11 +124,73 @@ func MerklizeState(repo staterepository.PebbleStateRepository) [32]byte {
 		valueBytes := make([]byte, len(value))
 		copy(valueBytes, value)
 
-		// Add to the map
-		bitSeqKeyMap[bitsequence.FromBytes(keyBytes[:]).Key()] = StateKV{
+		// Add to the state
+		state = append(state, StateKV{
 			OriginalKey: keyBytes,
 			Value:       valueBytes,
+		})
+	}
+
+	return state
+}
+
+func (s State) OverwriteCurrentState(repo staterepository.PebbleStateRepository) error {
+	// Create a new batch
+	batch := repo.GetBatch()
+	ownBatch := batch == nil
+	if ownBatch {
+		batch = repo.NewBatch()
+		defer batch.Close()
+	}
+
+	// Delete all existing state entries by iterating through all keys with "state:" prefix
+	prefix := []byte("state:")
+	iter, err := repo.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: []byte("state;"), // semicolon is the next character after colon in ASCII
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create iterator: %w", err)
+	}
+	defer iter.Close()
+
+	// Delete all existing state entries
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := append([]byte{}, iter.Key()...) // Make a copy of the key
+		if err := batch.Delete(key, nil); err != nil {
+			return fmt.Errorf("failed to delete existing state key: %w", err)
 		}
+	}
+
+	// Check for iterator error
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("iterator error: %w", err)
+	}
+
+	// Insert all state KVs from this state
+	for _, kv := range s {
+		key := append([]byte("state:"), kv.OriginalKey[:]...)
+		if err := batch.Set(key, kv.Value, nil); err != nil {
+			return fmt.Errorf("failed to insert state key-value: %w", err)
+		}
+	}
+
+	// If we created our own batch, commit it
+	if ownBatch {
+		if err := batch.Commit(pebble.Sync); err != nil {
+			return fmt.Errorf("failed to commit batch: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func MerklizeState(state State) [32]byte {
+	// Initialize the map that will hold our leaves
+	bitSeqKeyMap := make(map[bitsequence.BitSeqKey]StateKV)
+
+	for _, stateKV := range state {
+		bitSeqKeyMap[bitsequence.FromBytes(stateKV.OriginalKey[:]).Key()] = stateKV
 	}
 
 	return merklizeStateRecurser(bitSeqKeyMap)
