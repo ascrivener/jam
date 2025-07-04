@@ -228,13 +228,12 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, error) {
 
 	err := statetransition.STF(s.repo, block.Block(importBlock))
-	if err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to process block: %w", err)
-	}
-
 	stateRoot := merklizer.MerklizeState(merklizer.GetState(s.repo))
-
-	log.Printf("Block processed successfully for timeslot %d, state root: %x", importBlock.Header.TimeSlot, stateRoot)
+	if err != nil {
+		log.Printf("Failed to process block: %v", err)
+	} else {
+		log.Printf("Block processed successfully for timeslot %d, state root: %x", importBlock.Header.TimeSlot, stateRoot)
+	}
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
 }
 

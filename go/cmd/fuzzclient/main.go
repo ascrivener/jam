@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -219,18 +220,16 @@ func (fc *FuzzerClient) receiveResponse() (fuzzinterface.ResponseMessage, error)
 }
 
 // RunTests executes a series of tests against the server
-func (fc *FuzzerClient) RunTests() {
+func (fc *FuzzerClient) RunTests(vectorsDir string) {
 	// Run tests
-	fc.testStateTransitions()
+	fc.testStateTransitions(vectorsDir)
 }
 
 // testStateTransitions tests state transitions against test vectors
-func (fc *FuzzerClient) testStateTransitions() {
+func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	log.Println("Testing state transitions using test vectors...")
 
 	// Get all test vectors from the reports-l0 directory
-	vectorsDir := "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1"
-
 	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
 	genesisVectorData, err := os.ReadFile(genesisVectorPath)
 	if err != nil {
@@ -360,19 +359,21 @@ func (fc *FuzzerClient) testStateTransitions() {
 }
 
 func main() {
-	socketPath := "/tmp/jam_target.sock"
-	if len(os.Args) > 1 {
-		socketPath = os.Args[1]
-	}
+	// Parse command line arguments
+	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
+	vectorsDir := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1", "Path to the test vectors directory")
+	flag.Parse()
 
-	log.Printf("Starting fuzzer client, connecting to socket: %s", socketPath)
+	log.Printf("Starting fuzzer client")
+	log.Printf("Socket path: %s", *socketPath)
+	log.Printf("Test vectors: %s", *vectorsDir)
 
-	fuzzer := NewFuzzerClient(socketPath)
+	fuzzer := NewFuzzerClient(*socketPath)
 	if err := fuzzer.Connect(); err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer fuzzer.Disconnect()
 
-	fuzzer.RunTests()
+	fuzzer.RunTests(*vectorsDir)
 	log.Println("All tests completed")
 }
