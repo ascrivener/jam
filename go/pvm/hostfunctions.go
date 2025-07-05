@@ -133,14 +133,9 @@ func Read(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[s
 		var preImage *[]byte
 
 		if a != nil {
-			// Create key by hashing service ID and memory contents
-			serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(sStar))
 			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-			combinedBytes := append(serviceIdBytes, keyBytes...)
-
 			var keyArray [32]byte
-			h := blake2b.Sum256(combinedBytes)
-			copy(keyArray[:], h[:])
+			copy(keyArray[:], keyBytes)
 
 			// Look up in state if available
 			if val, ok := a.GetServiceStorageItem(repo, keyArray); ok {
@@ -189,14 +184,9 @@ func Write(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[
 			return NewSimpleExitReason(ExitPanic)
 		}
 
-		// Compute the key hash
-		serviceIdBytes := serializer.EncodeLittleEndian(4, uint64(serviceIndex))
 		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-		combinedBytes := append(serviceIdBytes, keyBytes...)
-
 		var keyArray [32]byte
-		h := blake2b.Sum256(combinedBytes)
-		copy(keyArray[:], h[:])
+		copy(keyArray[:], keyBytes)
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
