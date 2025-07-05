@@ -28,7 +28,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 		}
 	}
 	authorizationCode := workpackage.AuthorizationCode()
-	if len(authorizationCode) == 0 {
+	if authorizationCode == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), types.GasValue(0)
 	}
 	if len(authorizationCode) > int(constants.IsAuthorizedCodeMaxSizeOctets) {
