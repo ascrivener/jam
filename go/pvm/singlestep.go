@@ -1,7 +1,6 @@
 package pvm
 
 import (
-	"fmt"
 	"log"
 	"math/bits"
 	"os"
@@ -53,11 +52,12 @@ func (pvm *PVM) SingleStep() ExitReason {
 	var exitReason ExitReason
 	var nextIC types.Register
 
-	if handler := dispatchTable[ctx.Instruction]; handler != nil {
-		exitReason, nextIC = handler(pvm, &ctx)
-	} else {
-		panic(fmt.Errorf("unknown instruction: %d", ctx.Instruction))
+	handler := dispatchTable[ctx.Instruction]
+	if handler == nil || !pvm.Opcodes.BitAt(int(pvm.InstructionCounter)) {
+		handler = dispatchTable[0]
 	}
+
+	exitReason, nextIC = handler(pvm, &ctx)
 
 	pvm.State.Gas -= types.SignedGasValue(1)
 

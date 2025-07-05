@@ -27,6 +27,11 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			basicBlockBeginningOpcodes[n+1+skip(types.Register(n), opcodes)] = struct{}{}
 		}
 	}
+	for basicBlockBeginningOpcode := range basicBlockBeginningOpcodes {
+		if basicBlockBeginningOpcode >= len(instructions) || !opcodes.BitAt(basicBlockBeginningOpcode) || dispatchTable[instructions[basicBlockBeginningOpcode]] == nil {
+			delete(basicBlockBeginningOpcodes, basicBlockBeginningOpcode)
+		}
+	}
 	return &PVM{
 		Instructions:               instructions,
 		Opcodes:                    opcodes,
