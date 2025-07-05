@@ -32,13 +32,17 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccount struct {
-	ServiceIndex             types.ServiceIndex
-	CodeHash                 [32]byte       // c
-	Balance                  types.Balance  // b
-	MinimumGasForAccumulate  types.GasValue // g
-	MinimumGasForOnTransfer  types.GasValue // m
-	TotalOctetsUsedInStorage uint64         // o
-	TotalItemsUsedInStorage  uint32         // i
+	ServiceIndex                   types.ServiceIndex
+	CodeHash                       [32]byte           // c
+	Balance                        types.Balance      // b
+	MinimumGasForAccumulate        types.GasValue     // g
+	MinimumGasForOnTransfer        types.GasValue     // m
+	TotalOctetsUsedInStorage       uint64             // o
+	GratisStorageOffset            types.Balance      // f
+	TotalItemsUsedInStorage        uint32             // i
+	CreatedTimeSlot                types.Timeslot     // r
+	MostRecentAccumulationTimeslot types.Timeslot     // a
+	ParentServiceIndex             types.ServiceIndex // p
 }
 
 // // o
@@ -60,7 +64,7 @@ type ServiceAccount struct {
 
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
-	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage) + constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage))
+	return types.Balance(max(0, constants.ServiceMinimumBalance+constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage)+constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage)-uint64(s.GratisStorageOffset)))
 }
 
 // bold m, bold c
@@ -70,7 +74,7 @@ func (s *ServiceAccount) MetadataAndCode(repo staterepository.PebbleStateReposit
 		offset := 0
 		L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 		if !ok {
-			panic("failed to decode metadata length")
+			return nil, nil
 		}
 		offset += n
 		m := preimage[offset : offset+int(L_m)]

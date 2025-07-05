@@ -315,7 +315,7 @@ func Accumulate(repo staterepository.PebbleStateRepository, accumulationStateCom
 		case CheckpointID:
 			return Checkpoint(ctx)
 		case NewID:
-			return New(repo, ctx)
+			return New(repo, ctx, timeslot)
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:

@@ -238,13 +238,17 @@ func Write(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[
 
 // AccountInfo represents the structured account information for serialization
 type AccountInfo struct {
-	CodeHash                 [32]byte              // c
-	Balance                  types.GenericNum      // b
-	ThresholdBalanceNeeded   types.GenericNum      // t
-	MinimumGasForAccumulate  types.GenericGasValue // g
-	MinimumGasForOnTransfer  types.GenericGasValue // m
-	TotalOctetsUsedInStorage types.GenericNum      // o
-	StorageItems             types.GenericNum      // i
+	CodeHash                       [32]byte              // c
+	Balance                        types.GenericNum      // b
+	ThresholdBalanceNeeded         types.GenericNum      // t
+	MinimumGasForAccumulate        types.GenericGasValue // g
+	MinimumGasForOnTransfer        types.GenericGasValue // m
+	TotalOctetsUsedInStorage       types.GenericNum      // o
+	StorageItems                   types.GenericNum      // i
+	GratisStorageOffset            types.GenericNum      // f
+	CreatedTimeSlot                types.GenericNum      // r
+	MostRecentAccumulationTimeslot types.GenericNum      // a
+	ParentServiceIndex             types.GenericNum      // p
 }
 
 func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) ExitReason {
@@ -270,13 +274,17 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 		if targetAccount != nil {
 			// Create struct with account information
 			accountInfo := AccountInfo{
-				CodeHash:                 targetAccount.CodeHash,
-				Balance:                  types.GenericNum(targetAccount.Balance),
-				ThresholdBalanceNeeded:   types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
-				MinimumGasForAccumulate:  types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
-				MinimumGasForOnTransfer:  types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
-				TotalOctetsUsedInStorage: types.GenericNum(targetAccount.TotalOctetsUsedInStorage),
-				StorageItems:             types.GenericNum(targetAccount.TotalItemsUsedInStorage),
+				CodeHash:                       targetAccount.CodeHash,
+				Balance:                        types.GenericNum(targetAccount.Balance),
+				ThresholdBalanceNeeded:         types.GenericNum(targetAccount.ThresholdBalanceNeeded()),
+				MinimumGasForAccumulate:        types.GenericGasValue(targetAccount.MinimumGasForAccumulate),
+				MinimumGasForOnTransfer:        types.GenericGasValue(targetAccount.MinimumGasForOnTransfer),
+				TotalOctetsUsedInStorage:       types.GenericNum(targetAccount.TotalOctetsUsedInStorage),
+				StorageItems:                   types.GenericNum(targetAccount.TotalItemsUsedInStorage),
+				GratisStorageOffset:            types.GenericNum(targetAccount.GratisStorageOffset),
+				CreatedTimeSlot:                types.GenericNum(targetAccount.CreatedTimeSlot),
+				MostRecentAccumulationTimeslot: types.GenericNum(targetAccount.MostRecentAccumulationTimeslot),
+				ParentServiceIndex:             types.GenericNum(targetAccount.ParentServiceIndex),
 			}
 
 			// Serialize the account information
@@ -377,6 +385,7 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Get core index from ω7 and memory offset from ω8
 		coreIndex := ctx.State.Registers[7]
 		offset := ctx.State.Registers[8]
+		assignServiceIndex := ctx.State.Registers[9]
 
 		// Calculate the size of the authorizersQueue array
 		queueLength := constants.AuthorizerQueueLength
@@ -385,6 +394,11 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Check if memory range is accessible (c = ∇)
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), uint64(totalSize), ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
+		}
+
+		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.AssignServiceIndices[coreIndex] {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
 		}
 
 		// Check if core index is within valid range
@@ -406,6 +420,8 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Update the authorizer queue in the accumulation context
 		ctx.Argument.AccumulationResultContext.StateComponents.AuthorizersQueue[coreIndex] = authorizerQueue
 
+		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.AssignServiceIndices[coreIndex] = types.ServiceIndex(assignServiceIndex)
+
 		// Set successful result
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
@@ -425,6 +441,11 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason
 		// Check if memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
+		}
+
+		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.DesignateServiceIndex {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
 		}
 
 		// Read the validator keysets from memory
@@ -456,17 +477,23 @@ func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReaso
 	})
 }
 
-func New(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
+func New(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Get parameters from registers [o, l, g, m] = ω7⋅⋅⋅+4
 		offset := ctx.State.Registers[7]               // o - memory offset for code hash
 		labelLength := ctx.State.Registers[8]          // l - label length
 		minGasForAccumulate := ctx.State.Registers[9]  // g - minimum gas for accumulate
 		minGasForOnTransfer := ctx.State.Registers[10] // m - minimum gas for on transfer
+		gratisStorageOffset := ctx.State.Registers[11] // f - gratis storage offset
 
 		// Check if memory range for code hash is accessible (c = ∇ check)
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) || labelLength > types.Register(^uint32(0)) {
 			return NewSimpleExitReason(ExitPanic)
+		}
+
+		if gratisStorageOffset > types.Register(^uint64(0)) && ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
 		}
 
 		// Read code hash from memory
@@ -476,9 +503,13 @@ func New(repo staterepository.PebbleStateRepository, ctx *HostFunctionContext[Ac
 
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
-			CodeHash:                codeHash,
-			MinimumGasForAccumulate: types.GasValue(minGasForAccumulate),
-			MinimumGasForOnTransfer: types.GasValue(minGasForOnTransfer),
+			CodeHash:                       codeHash,
+			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
+			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
+			GratisStorageOffset:            types.Balance(gratisStorageOffset),
+			CreatedTimeSlot:                timeslot,
+			MostRecentAccumulationTimeslot: 0,
+			ParentServiceIndex:             ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex,
 		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
