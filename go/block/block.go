@@ -295,7 +295,7 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 		}
 	}
 
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for wph := range recentBlock.WorkPackageHashes {
 			existingWorkPackageHashes[wph] = struct{}{}
 		}
@@ -313,7 +313,7 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 
 	// (11.39)
 	recentBlockWorkPackageHashes := make(map[[32]byte]struct{})
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for _, wph := range recentBlock.WorkPackageHashes {
 			recentBlockWorkPackageHashes[wph] = struct{}{}
 		}
@@ -342,7 +342,7 @@ func (b Block) Verify(repo staterepository.PebbleStateRepository, priorState sta
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		correctSegmentRootLookup[guarantee.WorkReport.WorkPackageSpecification.WorkPackageHash] = guarantee.WorkReport.WorkPackageSpecification.SegmentRoot
 	}
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		maps.Copy(correctSegmentRootLookup, recentBlock.WorkPackageHashes)
 	}
 	for _, guarantee := range b.Extrinsics.Guarantees {

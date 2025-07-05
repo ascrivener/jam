@@ -8,7 +8,7 @@ import (
 	"github.com/ascrivener/jam/types"
 )
 
-func HistoricalLookup(repo staterepository.PebbleStateRepository, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
+func HistoricalLookup(repo staterepository.PebbleStateRepository, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) []byte {
 	p, ok := serviceAccount.GetPreimageForHash(repo, hash)
 	if !ok {
 		return nil
@@ -25,17 +25,17 @@ func HistoricalLookup(repo staterepository.PebbleStateRepository, serviceAccount
 	case 1:
 		if historicalStatus[0] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return byteSlice
 		}
 	case 2:
 		if historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return byteSlice
 		}
 	default:
 		if (historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot) || historicalStatus[2] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return byteSlice
 		}
 	}
 

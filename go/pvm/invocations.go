@@ -99,7 +99,7 @@ func Refine(repo staterepository.PebbleStateRepository, workItemIndex int, workP
 	if preimage == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}
 	}
-	if len(*preimage) > int(constants.ServiceCodeMaxSize) {
+	if len(preimage) > int(constants.ServiceCodeMaxSize) {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), [][]byte{}
 	}
 
@@ -114,7 +114,7 @@ func Refine(repo staterepository.PebbleStateRepository, workItemIndex int, workP
 		IntegratedPVMs: map[uint64]IntegratedPVM{},
 		ExportSequence: [][]byte{},
 	}
-	r, _ := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
+	r, _ := ΨM(preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
 	if r.IsError() && *r.ExecutionError == types.ExecutionErrorOutOfGas || *r.ExecutionError == types.ExecutionErrorPanic {
 		return r, [][]byte{}
 	}
