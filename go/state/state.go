@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/pvm"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/staterepository"
@@ -16,7 +17,7 @@ import (
 
 type State struct {
 	AuthorizersPool            [constants.NumCores][][32]byte                                               // α
-	RecentBlocks               []RecentBlock                                                                // β
+	RecentActivity             RecentActivity                                                               // β
 	SafroleBasicState          SafroleBasicState                                                            // γ
 	ServiceAccounts            serviceaccount.ServiceAccounts                                               // δ
 	EntropyAccumulator         [4][32]byte                                                                  // η
@@ -30,7 +31,8 @@ type State struct {
 	Disputes                   types.Disputes                                                               // ψ
 	ValidatorStatistics        validatorstatistics.ValidatorStatistics                                      // π
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
-	AccumulationHistory        AccumulationHistory                                                          // ξ
+	AccumulationHistory        AccumulationHistory
+	AccumulationOutputLog      []pvm.BEEFYCommitment // θ                                                  // ξ
 }
 
 type PendingReport struct {
@@ -77,7 +79,7 @@ func GetState(repo staterepository.PebbleStateRepository) (State, error) {
 	}{
 		{staterepository.MakeComponentKey(1), &state.AuthorizersPool},
 		{staterepository.MakeComponentKey(2), &state.AuthorizerQueue},
-		{staterepository.MakeComponentKey(3), &state.RecentBlocks},
+		{staterepository.MakeComponentKey(3), &state.RecentActivity},
 		{staterepository.MakeComponentKey(4), &state.SafroleBasicState},
 		{staterepository.MakeComponentKey(5), &state.Disputes},
 		{staterepository.MakeComponentKey(6), &state.EntropyAccumulator},
@@ -90,6 +92,7 @@ func GetState(repo staterepository.PebbleStateRepository) (State, error) {
 		{staterepository.MakeComponentKey(13), &state.ValidatorStatistics},
 		{staterepository.MakeComponentKey(14), &state.AccumulationQueue},
 		{staterepository.MakeComponentKey(15), &state.AccumulationHistory},
+		{staterepository.MakeComponentKey(16), &state.AccumulationOutputLog},
 	}
 
 	// Deserialize each basic component
@@ -225,7 +228,7 @@ func (state *State) Set(repo staterepository.PebbleStateRepository) error {
 	}{
 		{staterepository.MakeComponentKey(1), state.AuthorizersPool},
 		{staterepository.MakeComponentKey(2), state.AuthorizerQueue},
-		{staterepository.MakeComponentKey(3), state.RecentBlocks},
+		{staterepository.MakeComponentKey(3), state.RecentActivity},
 		{staterepository.MakeComponentKey(4), state.SafroleBasicState},
 		{staterepository.MakeComponentKey(5), state.Disputes},
 		{staterepository.MakeComponentKey(6), state.EntropyAccumulator},
@@ -238,6 +241,7 @@ func (state *State) Set(repo staterepository.PebbleStateRepository) error {
 		{staterepository.MakeComponentKey(13), state.ValidatorStatistics},
 		{staterepository.MakeComponentKey(14), state.AccumulationQueue},
 		{staterepository.MakeComponentKey(15), state.AccumulationHistory},
+		{staterepository.MakeComponentKey(16), state.AccumulationOutputLog},
 	}
 
 	// Serialize and store each basic component

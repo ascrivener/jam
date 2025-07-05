@@ -8,8 +8,6 @@ import (
 	"sort"
 	"sync"
 
-	"golang.org/x/crypto/sha3"
-
 	"github.com/ascrivener/jam/bandersnatch"
 	"github.com/ascrivener/jam/block"
 	"github.com/ascrivener/jam/block/extrinsics"
@@ -107,7 +105,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(curBlock.Header)
 
-	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentBlocks)
+	intermediateRecentBlocks := computeIntermediateRecentBlocks(curBlock.Header, priorState.RecentActivity.RecentBlocks)
 
 	for _, refinementContext := range curBlock.Extrinsics.Guarantees.RefinementContexts() {
 		found := false
@@ -119,7 +117,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 			if refinementContext.PosteriorStateRoot != recentBlock.StateRoot {
 				continue
 			}
-			if refinementContext.PosteriorBEEFYRoot != merklizer.MMRSuperPeak(recentBlock.AccumulationResultMMR) {
+			if refinementContext.PosteriorBEEFYRoot != recentBlock.MMRSuperPeak {
 				continue
 			}
 			found = true
@@ -154,7 +152,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
+	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
 		repo,
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
@@ -187,7 +185,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 
 	posteriorPendingReports := computePendingReports(curBlock.Extrinsics.Guarantees, postguaranteesExtrinsicIntermediatePendingReports, posteriorMostRecentBlockTimeslot)
 
-	posteriorRecentBlocks := computeRecentBlocks(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
+	posteriorRecentActivity := computeRecentActivity(curBlock.Header, curBlock.Extrinsics.Guarantees, intermediateRecentBlocks, priorState.RecentActivity.AccumulationOutputLog, accumulationOutputSequence)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
 	computeServiceAccounts(repo, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
@@ -198,7 +196,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 
 	postState := state.State{
 		AuthorizersPool:            authorizersPool,
-		RecentBlocks:               posteriorRecentBlocks,
+		RecentActivity:             posteriorRecentActivity,
 		SafroleBasicState:          posteriorSafroleBasicState,
 		ServiceAccounts:            postAccumulationIntermediateServiceAccounts,
 		EntropyAccumulator:         posteriorEntropyAccumulator,
@@ -213,6 +211,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 		ValidatorStatistics:        validatorStatistics,
 		AccumulationQueue:          posteriorAccumulationQueue,
 		AccumulationHistory:        posteriorAccumulationHistory,
+		AccumulationOutputLog:      accumulationOutputSequence,
 	}
 
 	// Post-transition validation
@@ -306,44 +305,19 @@ func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []s
 	return posteriorRecentBlocks
 }
 
-func keccak256Hash(data []byte) [32]byte {
-	var result [32]byte
-	hash := sha3.NewLegacyKeccak256()
-	hash.Write(data)
-	sum := hash.Sum(nil)
-	copy(result[:], sum[:])
-	return result
+func computeAccumulationOutputLog(priorAccumulationOutputLog merklizer.MMBelt, accumulationOutputSequence []pvm.BEEFYCommitment) merklizer.MMBelt {
+
+	blobs := make([][]byte, 0, len(accumulationOutputSequence))
+	for _, commitment := range accumulationOutputSequence {
+		serialized := serializer.Serialize(commitment)
+		blobs = append(blobs, serialized)
+	}
+
+	return merklizer.Append(priorAccumulationOutputLog, merklizer.WellBalancedBinaryMerkle(blobs, merklizer.Keccak256Hash), merklizer.Keccak256Hash)
 }
 
-func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees, priorRecentBlocks []state.RecentBlock, intermediateRecentBlocks []state.RecentBlock, C map[pvm.BEEFYCommitment]struct{}) []state.RecentBlock {
-	// First, collect all commitments into a slice so we can sort them
-	commitments := make([]pvm.BEEFYCommitment, 0, len(C))
-	for commitment := range C {
-		commitments = append(commitments, commitment)
-	}
-
-	// Sort commitments by ServiceIndex
-	sort.Slice(commitments, func(i, j int) bool {
-		return commitments[i].ServiceIndex < commitments[j].ServiceIndex
-	})
-
-	// Create blobs in order
-	blobs := make([][]byte, 0, len(commitments))
-	for _, commitment := range commitments {
-		var buffer bytes.Buffer
-		buffer.Write(serializer.Serialize(commitment.ServiceIndex))
-		buffer.Write(serializer.Serialize(commitment.PreimageResult))
-		blobs = append(blobs, buffer.Bytes())
-	}
-	r := merklizer.WellBalancedBinaryMerkle(blobs, keccak256Hash)
-	// Get the last MMR from the intermediate blocks (or create empty if none)
-	lastMMR := merklizer.MMRRange{}
-	if len(priorRecentBlocks) > 0 {
-		lastMMR = priorRecentBlocks[len(priorRecentBlocks)-1].AccumulationResultMMR.DeepCopy()
-	}
-
-	// Append the new root to the MMR
-	b := merklizer.Append(lastMMR, r, keccak256Hash)
+func computeRecentActivity(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []state.RecentBlock, priorAccumulationOutputLog merklizer.MMBelt, accumulationOutputSequence []pvm.BEEFYCommitment) state.RecentActivity {
+	posteriorAccumulationOutputLog := computeAccumulationOutputLog(priorAccumulationOutputLog, accumulationOutputSequence)
 
 	// Create work package hashes map: p = {((gw)s)h ↦ ((gw)s)e | g ∈ EG}
 	workPackageHashes := make(map[[32]byte][32]byte)
@@ -355,14 +329,13 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 
 	// Create the new recent block
 	newRecentBlock := state.RecentBlock{
-		HeaderHash:            blake2b.Sum256(serializer.Serialize(header)),
-		AccumulationResultMMR: b,
-		StateRoot:             [32]byte{},
-		WorkPackageHashes:     workPackageHashes,
+		HeaderHash:        blake2b.Sum256(serializer.Serialize(header)),
+		MMRSuperPeak:      merklizer.MMRSuperPeak(posteriorAccumulationOutputLog),
+		StateRoot:         [32]byte{},
+		WorkPackageHashes: workPackageHashes,
 	}
 	// Append the new block to the recent blocks list
 	updatedRecentBlocks := append(intermediateRecentBlocks, newRecentBlock)
-
 	// Keep only the most recent H blocks
 	// β′ ≡ β† n where H is RecentHistorySizeBlocks
 	if len(updatedRecentBlocks) > int(constants.RecentHistorySizeBlocks) {
@@ -370,7 +343,10 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-int(constants.RecentHistorySizeBlocks):]
 	}
 
-	return updatedRecentBlocks
+	return state.RecentActivity{
+		AccumulationOutputLog: posteriorAccumulationOutputLog,
+		RecentBlocks:          updatedRecentBlocks,
+	}
 }
 
 func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot types.Timeslot, tickets extrinsics.Tickets, priorSafroleBasicState state.SafroleBasicState, priorValidatorKeysetsStaging types.ValidatorKeysets, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorDisputes types.Disputes, posteriorEntropyAccumulator [4][32]byte) (state.SafroleBasicState, error) {
@@ -617,7 +593,7 @@ func accumulateAndIntegrate(
 	accumulatableWorkReports []workreport.WorkReport,
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
-) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
+) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(repo, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
