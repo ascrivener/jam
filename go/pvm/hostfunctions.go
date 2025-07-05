@@ -304,23 +304,30 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 		// Extract registers: [m, a, v, o, n] = ω7⋅⋅⋅+5
-		mainIndex := ctx.State.Registers[7]   // m - Main service index
-		authIndex := ctx.State.Registers[8]   // a - Authorization service index
-		validIndex := ctx.State.Registers[9]  // v - Validation service index
-		offset := ctx.State.Registers[10]     // o - Memory offset
-		numEntries := ctx.State.Registers[11] // n - Number of entries
+		mainIndex := ctx.State.Registers[7]         // m - Main service index
+		authIndicesOffset := ctx.State.Registers[8] // a - Authorization service indices offset
+		validIndex := ctx.State.Registers[9]        // v - Validation service index
+		offset := ctx.State.Registers[10]           // o - Memory offset
+		numEntries := ctx.State.Registers[11]       // n - Number of entries
 
 		// Check if memory range is accessible
 		entrySize := uint64(12) // Each entry is 12 bytes (4 for service index, 8 for gas value)
 		totalSize := entrySize * uint64(numEntries)
 
-		memoryValid := !ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap)
-		if !memoryValid {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
 			return NewSimpleExitReason(ExitPanic)
 		}
 
-		// Check if m, a, v are valid ServiceIndices
-		if mainIndex > types.Register(^uint32(0)) || authIndex > types.Register(^uint32(0)) || validIndex > types.Register(^uint32(0)) {
+		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(authIndicesOffset), uint64(4*constants.NumCores), ram.NoWrap) {
+			return NewSimpleExitReason(ExitPanic)
+		}
+
+		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
+			return NewSimpleExitReason(ExitGo)
+		}
+
+		if mainIndex > types.Register(^uint32(0)) || validIndex > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return NewSimpleExitReason(ExitGo)
 		}
@@ -345,10 +352,17 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) ExitReason {
 			serviceGasMap[serviceIndex] = gasValue
 		}
 
+		assignIndices := [constants.NumCores]types.ServiceIndex{}
+		for i := uint64(0); i < uint64(constants.NumCores); i++ {
+			entryOffset := uint64(authIndicesOffset) + i*4
+			assignIndicesBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap, false)
+			assignIndices[i] = types.ServiceIndex(serializer.DecodeLittleEndian(assignIndicesBytes))
+		}
+
 		// Update the accumulation context
 		ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices = types.PrivilegedServices{
 			ManagerServiceIndex:             types.ServiceIndex(mainIndex),
-			AssignServiceIndex:              types.ServiceIndex(authIndex),
+			AssignServiceIndices:            assignIndices,
 			DesignateServiceIndex:           types.ServiceIndex(validIndex),
 			AlwaysAccumulateServicesWithGas: serviceGasMap,
 		}
