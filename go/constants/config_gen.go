@@ -1,19 +1,15 @@
 //go:build ignore
 // +build ignore
 
-// run : go run config_gen.go -network tiny
+// run : go run config_gen.go -network tiny -build_tag tiny_constants
 
 package main
 
 import (
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
-	"path/filepath"
-	"strings"
+	"sort"
 )
 
 // ConfigConstants represents a set of constants from a config file
@@ -41,6 +37,20 @@ var tinyConstants = map[string]map[string]string{
 	"ErasureCodedPiecesInSegment":                       {"type": "uint32", "value": "1026", "comment": "W_P"},
 	"ErasureCodedPiecesSize":                            {"type": "uint32", "value": "4", "comment": "W_E"},
 	"UnreferencePreimageExpungeTimeslots":               {"type": "uint32", "value": "32", "comment": "D"},
+}
+
+var fullConstants = map[string]map[string]string{
+	"NumValidators":                         {"type": "uint16", "value": "1023", "comment": "V"},
+	"NumCores":                              {"type": "uint16", "value": "341", "comment": "C"},
+	"SlotPeriodInSeconds":                   {"type": "uint16", "value": "6", "comment": "P"},
+	"NumTimeslotsPerEpoch":                  {"type": "uint32", "value": "600", "comment": "E"},
+	"TicketSubmissionEndingSlotPhaseNumber": {"type": "uint32", "value": "500", "comment": "Y"},
+	"NumTicketEntries":                      {"type": "uint16", "value": "2", "comment": "N"},
+	"MaxTicketsPerExtrinsic":                {"type": "uint16", "value": "16", "comment": "K"},
+	"ValidatorCoreAssignmentsRotationPeriodInTimeslots": {"type": "uint16", "value": "10", "comment": "R"},
+	"ErasureCodedPiecesInSegment":                       {"type": "uint32", "value": "6", "comment": "W_P"},
+	"ErasureCodedPiecesSize":                            {"type": "uint32", "value": "684", "comment": "W_E"},
+	"UnreferencePreimageExpungeTimeslots":               {"type": "uint32", "value": "19200", "comment": "D"},
 }
 
 // Additional constants that might not be in the config file
@@ -78,60 +88,7 @@ func main() {
 
 	flag.Parse()
 
-	// Generate constants.go file
 	generateConstantsFile(*networkFlag, *outputFileFlag)
-}
-
-// parseConfigFile parses a Go file containing constants
-func parseConfigFile(filePath string) (*ConfigConstants, error) {
-	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
-	if err != nil {
-		return nil, err
-	}
-
-	config := &ConfigConstants{
-		Network: filepath.Base(filePath),
-		Values:  make(map[string]interface{}),
-	}
-
-	// Extract constants
-	ast.Inspect(node, func(n ast.Node) bool {
-		if constDecl, ok := n.(*ast.GenDecl); ok && constDecl.Tok == token.CONST {
-			for _, spec := range constDecl.Specs {
-				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-					for i, name := range valueSpec.Names {
-						if name.Name == "Network" {
-							// Extract network name
-							if basicLit, ok := valueSpec.Values[i].(*ast.BasicLit); ok {
-								networkName := strings.Trim(basicLit.Value, "\"")
-								config.Network = networkName
-							}
-						} else if i < len(valueSpec.Values) {
-							// Extract constant value
-							if basicLit, ok := valueSpec.Values[i].(*ast.BasicLit); ok {
-								var value interface{}
-								switch basicLit.Kind {
-								case token.INT:
-									// Parse as integer
-									var intVal int
-									fmt.Sscanf(basicLit.Value, "%d", &intVal)
-									value = intVal
-								case token.STRING:
-									// Parse as string
-									value = strings.Trim(basicLit.Value, "\"")
-								}
-								config.Values[name.Name] = value
-							}
-						}
-					}
-				}
-			}
-		}
-		return true
-	})
-
-	return config, nil
 }
 
 // generateConstantsFile generates the constants.go file
@@ -149,9 +106,28 @@ func generateConstantsFile(network string, outputFile string) {
 	fmt.Fprintln(f, "package constants")
 	fmt.Fprintln(f)
 
+	// Select network constants based on the network parameter
+	var networkConstants map[string]map[string]string
+	if network == "full" {
+		networkConstants = fullConstants
+	} else {
+		// Default to tiny constants
+		networkConstants = tinyConstants
+	}
+
 	// Write config constants
 	fmt.Fprintln(f, "// Config constants")
-	for name, details := range tinyConstants {
+
+	// Sort keys for deterministic output
+	var names []string
+	for name := range networkConstants {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Write constants in sorted order
+	for _, name := range names {
+		details := networkConstants[name]
 		comment := ""
 		if details["comment"] != "" {
 			comment = " // " + details["comment"]
@@ -161,7 +137,17 @@ func generateConstantsFile(network string, outputFile string) {
 
 	// Write additional constants that aren't in the config file
 	fmt.Fprintln(f, "// Additional constants")
-	for name, details := range additionalConstants {
+
+	// Sort keys for additional constants
+	var additionalNames []string
+	for name := range additionalConstants {
+		additionalNames = append(additionalNames, name)
+	}
+	sort.Strings(additionalNames)
+
+	// Write additional constants in sorted order
+	for _, name := range additionalNames {
+		details := additionalConstants[name]
 		comment := ""
 		if details["comment"] != "" {
 			comment = " // " + details["comment"]

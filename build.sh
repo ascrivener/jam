@@ -70,15 +70,41 @@ build_rust_library() {
     echo -e "${GREEN}Successfully built Rust FFI library for ${target}${NC}"
 }
 
+# Generate constants for the specified network
+generate_constants() {
+    local network=$1
+    
+    echo -e "${BLUE}Generating constants for network: ${network}...${NC}"
+    
+    # Navigate to the constants directory
+    cd "${PROJECT_ROOT}/go/constants"
+    
+    # Clean up any existing generated files first
+    rm -f constants.go
+    
+    # Generate constants for the specified network
+    go run config_gen.go -network ${network} -output constants.go
+    
+    echo -e "${GREEN}Constants generated successfully for ${network}${NC}"
+    cd "${PROJECT_ROOT}"
+}
+
 # Function to build Go binary
-build_go_binary() {
+build_binary() {
     local goos=$1
     local goarch=$2
     local binary_name=$3
     local output_dir=$4
-    local output_name="${binary_name}-${goarch}-${goos}"
+    local network=$5
+    local suffix="-${network}"
     
-    echo -e "${BLUE}Building Go binary ${binary_name} for ${goos}/${goarch}...${NC}"
+    # Generate constants for this specific network
+    generate_constants ${network}
+    
+    # Build the binary with suffix
+    local output_name="${binary_name}${suffix}-${goarch}-${goos}"
+    
+    echo -e "${BLUE}Building Go binary ${output_name} for ${goos}/${goarch}...${NC}"
     
     # Save current directory
     local current_dir=$(pwd)
@@ -115,6 +141,27 @@ build_go_binary() {
     cd "${current_dir}"
 }
 
+# Build a specific platform with both tiny and full variants
+build_platform() {
+    local goos=$1
+    local goarch=$2
+    local rust_target=$3
+    
+    echo -e "${BLUE}Building for platform: ${goos}/${goarch} (${rust_target})${NC}"
+    
+    # Build Rust library (only need to do this once per platform)
+    build_rust_library "${rust_target}" || return 1
+    
+    # Build fuzzserver with tiny constants
+    fuzzserver_dir="${PROJECT_ROOT}/go/cmd/fuzzserver"
+    build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "tiny" || return 1
+    
+    # Build fuzzserver with full constants
+    build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "full" || return 1
+    
+    echo -e "${GREEN}Platform ${goos}/${goarch} built successfully${NC}"
+}
+
 # Check if a command is available
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -147,26 +194,11 @@ install_prerequisites() {
     return 0
 }
 
-# Build a specific platform
-build_platform() {
-    local goos=$1
-    local goarch=$2
-    local rust_target=$3
-    
-    echo -e "${BLUE}Building for platform: ${goos}/${goarch} (${rust_target})${NC}"
-    
-    # Build Rust library
-    build_rust_library "${rust_target}" || return 1
-    
-    # Build Go binary
-    fuzzserver_dir="${PROJECT_ROOT}/go/cmd/fuzzserver"
-    build_go_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" || return 1
-    
-    echo -e "${GREEN}Platform ${goos}/${goarch} built successfully${NC}"
-}
-
-# Main build process
+# Main build flow
 main() {
+    # Create temporary directory for cross-compilation
+    mkdir -p /tmp/jam_crossbuild
+    
     # Check and install prerequisites
     install_prerequisites || exit 1
     
@@ -181,14 +213,15 @@ main() {
     # Build for AMD64 Linux
     build_platform "linux" "amd64" "x86_64-unknown-linux-gnu" || exit 1
     
-    # Also build the fuzzclient for Linux AMD64
-    echo -e "${BLUE}Building Linux AMD64 fuzzclient...${NC}"
+    # Build the fuzzclient for Linux AMD64 with both tiny and full variants
+    echo -e "${BLUE}Building Linux AMD64 fuzzclient variants...${NC}"
     fuzzclient_dir="${PROJECT_ROOT}/go/cmd/fuzzclient"
-    build_go_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" || exit 1
-    echo -e "${GREEN}Successfully built fuzzclient for Linux AMD64${NC}"
+    build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
+    build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
+    echo -e "${GREEN}Successfully built fuzzclient variants for Linux AMD64${NC}"
     
     echo -e "${GREEN}All builds completed successfully!${NC}"
-    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/go/cmd/fuzzserver/${NC}"
+    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/go/cmd/fuzzserver/ and ${PROJECT_ROOT}/go/cmd/fuzzclient/${NC}"
 }
 
 # Execute the main function
