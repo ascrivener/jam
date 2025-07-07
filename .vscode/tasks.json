@@ -25,6 +25,84 @@
                 "panel": "shared"
             },
             "problemMatcher": []
+        },
+        {
+            "label": "Run Fuzzer Tests",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Build FuzzClient",
+                "Build FuzzServer",
+                "Start FuzzServer",
+                "Wait For Server",
+                "Run FuzzClient",
+                "Cleanup"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        },
+        {
+            "label": "Build FuzzClient",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/cmd/fuzzclient && go build -ldflags=\"-s -w\" .",
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Build FuzzServer",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/cmd/fuzzserver && go build -ldflags=\"-s -w\" .",
+            "group": "build",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Start FuzzServer",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/cmd/fuzzserver && ./fuzzserver",
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": "^.*$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "JAM Fuzzer Interface Server",
+                    "endsPattern": "."
+                }
+            }
+        },
+        {
+            "label": "Wait For Server",
+            "type": "shell",
+            "command": "sleep 2",
+            "presentation": {
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Run FuzzClient",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/go/cmd/fuzzclient && ./fuzzclient -vectors ${input:vectorsDir}",
+            "presentation": {
+                "reveal": "always"
+            }
+        },
+        {
+            "label": "Cleanup",
+            "type": "shell",
+            "command": "pkill -f fuzzserver || true && rm -f ${workspaceFolder}/go/cmd/fuzzclient/fuzzclient ${workspaceFolder}/go/cmd/fuzzserver/fuzzserver && rm -rf ${workspaceFolder}/go/cmd/fuzzserver/data/",
+            "presentation": {
+                "reveal": "silent"
+            }
         }
     ],
     "inputs": [
@@ -37,6 +115,18 @@
                 "full"
             ],
             "default": "tiny"
+        },
+        {
+            "id": "vectorsDir",
+            "type": "pickString",
+            "description": "Choose test vector directory",
+            "default": "reports-l0",
+            "options": [
+                "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l0",
+                "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1",
+                "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/fallback",
+                "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/safrole"
+            ]
         }
     ]
 }

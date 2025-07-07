@@ -7,8 +7,6 @@ use ark_vrf::suites::bandersnatch::{
 use ark_vrf::Suite;
 use ark_vrf::{codec, ietf, Error, Input, Output, Public};
 use once_cell::sync::OnceCell;
-use std::fs::File;
-use std::io::Read;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -121,10 +119,11 @@ pub extern "C" fn ietf_vrf_output(input_ptr: *const u8, input_len: usize, out_pt
     }
 }
 
-pub const PCS_SRS_FILE: &str = concat!(
+// Embed the SRS data directly in the binary
+pub const PCS_SRS_DATA: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin"
-);
+));
 
 // Use OnceCell instead of Lazy for explicit initialization
 static PCS_PARAMS: OnceCell<Result<PcsParams, Error>> = OnceCell::new();
@@ -140,10 +139,7 @@ pub extern "C" fn initialize_pcs_params() -> i32 {
     }
 
     let result = || -> Result<PcsParams, Error> {
-        let mut file = File::open(PCS_SRS_FILE).map_err(|_| Error::InvalidData)?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|_| Error::InvalidData)?;
-        PcsParams::deserialize_uncompressed(&mut &buf[..]).map_err(|_| Error::InvalidData)
+        PcsParams::deserialize_uncompressed(&mut &PCS_SRS_DATA[..]).map_err(|_| Error::InvalidData)
     }();
 
     if PCS_PARAMS.set(result).is_err() {

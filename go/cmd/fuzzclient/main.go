@@ -361,12 +361,12 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 func main() {
 	// Parse command line arguments
 	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
-	vectorsDir := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1", "Path to the test vectors directory")
+	vectorsPath := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1", "Path to the test vectors directory")
 	flag.Parse()
 
 	log.Printf("Starting fuzzer client")
 	log.Printf("Socket path: %s", *socketPath)
-	log.Printf("Test vectors: %s", *vectorsDir)
+	log.Printf("Test vectors: %s", *vectorsPath)
 
 	fuzzer := NewFuzzerClient(*socketPath)
 	if err := fuzzer.Connect(); err != nil {
@@ -374,6 +374,6 @@ func main() {
 	}
 	defer fuzzer.Disconnect()
 
-	fuzzer.RunTests(*vectorsDir)
+	fuzzer.RunTests(*vectorsPath)
 	log.Println("All tests completed")
 }

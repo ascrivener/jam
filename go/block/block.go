@@ -563,8 +563,8 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	// (11.26)
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		guarantorAssignments := guarantee.GuarantorAssignments(postState.EntropyAccumulator, postState.MostRecentBlockTimeslot, postState.ValidatorKeysetsActive, postState.ValidatorKeysetsPriorEpoch, postState.Disputes)
+		hashedWorkReport := blake2b.Sum256(serializer.Serialize(guarantee.WorkReport))
 		for _, credential := range guarantee.Credentials {
-			hashedWorkReport := blake2b.Sum256(serializer.Serialize(guarantee.WorkReport))
 			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
 			if !ed25519.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
 				return fmt.Errorf("invalid signature from validator %d", credential.ValidatorIndex)
