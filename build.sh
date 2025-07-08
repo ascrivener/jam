@@ -153,7 +153,7 @@ build_platform() {
     build_rust_library "${rust_target}" || return 1
     
     # Build fuzzserver with tiny constants
-    fuzzserver_dir="${PROJECT_ROOT}/go/cmd/fuzzserver"
+    fuzzserver_dir="${PROJECT_ROOT}/go/cmd/fuzzer/fuzzserver"
     build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "tiny" || return 1
     
     # Build fuzzserver with full constants
@@ -208,20 +208,20 @@ main() {
     echo -e "${BLUE}Starting builds for all platforms...${NC}"
     
     # Build for current platform (ARM64 macOS)
-    build_platform "darwin" "arm64" "aarch64-apple-darwin" || exit 1
+    # build_platform "darwin" "arm64" "aarch64-apple-darwin" || exit 1
     
     # Build for AMD64 Linux
     build_platform "linux" "amd64" "x86_64-unknown-linux-gnu" || exit 1
     
     # Build the fuzzclient for Linux AMD64 with both tiny and full variants
     echo -e "${BLUE}Building Linux AMD64 fuzzclient variants...${NC}"
-    fuzzclient_dir="${PROJECT_ROOT}/go/cmd/fuzzclient"
+    fuzzclient_dir="${PROJECT_ROOT}/go/cmd/fuzzer/fuzzclient"
     build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
     build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
     echo -e "${GREEN}Successfully built fuzzclient variants for Linux AMD64${NC}"
     
     echo -e "${GREEN}All builds completed successfully!${NC}"
-    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/go/cmd/fuzzserver/ and ${PROJECT_ROOT}/go/cmd/fuzzclient/${NC}"
+    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/go/cmd/fuzzer/fuzzserver/ and ${PROJECT_ROOT}/go/cmd/fuzzer/fuzzclient/${NC}"
 }
 
 # Execute the main function

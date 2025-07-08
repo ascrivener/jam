@@ -103,6 +103,77 @@
             "presentation": {
                 "reveal": "silent"
             }
+        },
+        // Docker fuzzer tasks (modular approach)
+        {
+            "label": "1. Build Binaries",
+            "type": "shell",
+            "command": "./build.sh",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "2. Build Docker Image",
+            "type": "shell",
+            "command": "docker build -t jam-fuzzer -f go/cmd/fuzzer/Dockerfile .",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "3. Run Docker Test (Selected Vector)",
+            "type": "shell",
+            "command": "docker run --rm -e TEST_VECTORS=${input:dockerTestVectors} jam-fuzzer",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "4. Run All Test Vectors",
+            "type": "shell",
+            "command": "echo 'Running all test vector sets...' && docker run --rm -e TEST_VECTORS=reports-l0 jam-fuzzer && echo '\\n\\n==== COMPLETED reports-l0 ====\\n\\n' && docker run --rm -e TEST_VECTORS=reports-l1 jam-fuzzer && echo '\\n\\n==== COMPLETED reports-l1 ====\\n\\n' && docker run --rm -e TEST_VECTORS=safrole jam-fuzzer && echo '\\n\\n==== COMPLETED safrole ====\\n\\n' && docker run --rm -e TEST_VECTORS=fallback jam-fuzzer && echo '\\n\\n==== COMPLETED fallback ====\\n\\n' && echo 'All test vector sets completed!'",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        // Composite tasks (using dependencies)
+        {
+            "label": "Run Docker Test (With Build)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "1. Build Binaries",
+                "2. Build Docker Image",
+                "3. Run Docker Test (Selected Vector)"
+            ],
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run All Docker Tests (With Build)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "1. Build Binaries",
+                "2. Build Docker Image",
+                "4. Run All Test Vectors"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
         }
     ],
     "inputs": [
@@ -126,6 +197,18 @@
                 "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1",
                 "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/fallback",
                 "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/safrole"
+            ]
+        },
+        {
+            "id": "dockerTestVectors",
+            "type": "pickString",
+            "description": "Choose test vector set for Docker test",
+            "default": "reports-l1",
+            "options": [
+                "reports-l0",
+                "reports-l1",
+                "safrole",
+                "fallback"
             ]
         }
     ]
