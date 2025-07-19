@@ -4,6 +4,7 @@ import (
 	"github.com/ascrivener/jam/constants"
 	"github.com/ascrivener/jam/serializer"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
 )
@@ -44,8 +45,8 @@ type GuarantorAssignments struct {
 }
 
 // x
-func (g Guarantees) RefinementContexts() []workreport.RefinementContext {
-	contexts := make([]workreport.RefinementContext, 0)
+func (g Guarantees) RefinementContexts() []workpackage.RefinementContext {
+	contexts := make([]workpackage.RefinementContext, 0)
 	for _, guarantee := range g {
 		contexts = append(contexts, guarantee.WorkReport.RefinementContext)
 	}

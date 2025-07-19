@@ -161,4 +161,5 @@ func generateConstantsFile(network string, outputFile string) {
 	fmt.Fprintln(f, "const NumValidatorSafetyThreshold uint16 = TwoThirdsNumValidators + 1")
 	fmt.Fprintln(f, "const OneThirdNumValidators uint16 = NumValidators / 3")
 	fmt.Fprintln(f, "const SegmentSize uint32 = ErasureCodedPiecesSize * ErasureCodedPiecesInSegment")
+	fmt.Fprintln(f, "const RecoveryThreshold uint32 = ErasureCodedPiecesSize / 2")
 }

@@ -2,6 +2,8 @@ package merklizer
 
 import (
 	"bytes"
+
+	"github.com/ascrivener/jam/constants"
 )
 
 func node(blobs [][]byte, hash func([]byte) [32]byte) []byte {
@@ -96,4 +98,12 @@ func mmrSuperPeakHelper(blobs [][32]byte) [32]byte {
 	buffer.Write(mmrSuperPeak[:])
 	buffer.Write(blobs[len(blobs)-1][:])
 	return Keccak256Hash(buffer.Bytes())
+}
+
+func PagedProofsFromSegments(segments [][constants.SegmentSize]byte) [][constants.SegmentSize]byte {
+	return segments
+}
+
+func JustificationFromProofPage(proofPage [constants.SegmentSize]byte, segmentIndex uint16, segment [constants.SegmentSize]byte, erasureRoot [32]byte) ([][32]byte, bool) {
+	return [][32]byte{}, false
 }

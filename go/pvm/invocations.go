@@ -10,8 +10,8 @@ import (
 	"github.com/ascrivener/jam/serviceaccount"
 	"github.com/ascrivener/jam/staterepository"
 	"github.com/ascrivener/jam/types"
+	"github.com/ascrivener/jam/workpackage"
 	wp "github.com/ascrivener/jam/workpackage"
-	"github.com/ascrivener/jam/workreport"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -109,7 +109,7 @@ func Refine(repo staterepository.PebbleStateRepository, workItemIndex int, workP
 		ServiceIndex                   types.ServiceIndex
 		BlobHashesAndLengthsIntroduced []wp.BlobHashAndLengthIntroduced
 		WorkPackageHash                [32]byte
-		RefinementContext              workreport.RefinementContext
+		RefinementContext              workpackage.RefinementContext
 		Authorizer                     [32]byte
 	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
 	integratedPVMsAndExportSequence := &IntegratedPVMsAndExportSequence{

@@ -355,10 +355,10 @@ func computeRecentBlocks(header header.Header, guarantees extrinsics.Guarantees,
 
 	// Create the new recent block
 	newRecentBlock := state.RecentBlock{
-		HeaderHash:            blake2b.Sum256(serializer.Serialize(header)),
-		AccumulationResultMMR: b,
-		StateRoot:             [32]byte{},
-		WorkPackageHashes:     workPackageHashes,
+		HeaderHash:                      blake2b.Sum256(serializer.Serialize(header)),
+		AccumulationResultMMR:           b,
+		StateRoot:                       [32]byte{},
+		WorkPackageHashesToSegmentRoots: workPackageHashes,
 	}
 	// Append the new block to the recent blocks list
 	updatedRecentBlocks := append(intermediateRecentBlocks, newRecentBlock)

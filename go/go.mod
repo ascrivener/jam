@@ -20,6 +20,7 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/pprof v0.0.0-20210407192527-94a9f03dee38 // indirect
 	github.com/klauspost/compress v1.16.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
@@ -44,6 +45,7 @@ require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/jam-duna/jamtestnet v0.0.0-20250505230955-ef883d2717c0 // indirect
+	github.com/klauspost/reedsolomon v1.12.5
 	github.com/quic-go/quic-go v0.52.0
-	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 )

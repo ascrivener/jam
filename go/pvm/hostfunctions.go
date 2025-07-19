@@ -937,7 +937,7 @@ func serializeWorkItemForFetch(i wp.WorkItem) []byte {
 		RefinementGasLimit:                i.RefinementGasLimit,
 		AccumulationGasLimit:              i.AccumulationGasLimit,
 		NumDataSegmentsExported:           i.NumDataSegmentsExported,
-		LenImportedDataSegments:           uint16(len(i.ImportedDataSegments)),
+		LenImportedDataSegments:           uint16(len(i.ImportedSegmentsInfo)),
 		LenBlobHashesAndLengthsIntroduced: uint16(len(i.BlobHashesAndLengthsIntroduced)),
 		LenPayload:                        uint32(len(i.Payload)),
 	})
