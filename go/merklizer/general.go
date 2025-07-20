@@ -2,9 +2,11 @@ package merklizer
 
 import (
 	"bytes"
+	"fmt"
 	"math/bits"
 
 	"github.com/ascrivener/jam/constants"
+	"github.com/ascrivener/jam/serializer"
 )
 
 func node(blobs [][]byte, hash func([]byte) [32]byte) []byte {
@@ -36,7 +38,7 @@ func node(blobs [][]byte, hash func([]byte) [32]byte) []byte {
 	return hashResult[:]
 }
 
-func trace(blobs [][]byte, index int, hash func([]byte) [32]byte) [][]byte {
+func Trace(blobs [][]byte, index int, hash func([]byte) [32]byte) [][]byte {
 	// Base case: if there's only one or zero blobs, return empty proof
 	if len(blobs) <= 1 {
 		return [][]byte{}
@@ -52,7 +54,7 @@ func trace(blobs [][]byte, index int, hash func([]byte) [32]byte) [][]byte {
 		rightHalf := node(blobs[mid:], hash)
 
 		// Recursively trace the left half, keeping the same index
-		subTrace := trace(blobs[:mid], index, hash)
+		subTrace := Trace(blobs[:mid], index, hash)
 
 		// Return the right half node concatenated with the sub-trace
 		return append([][]byte{rightHalf}, subTrace...)
@@ -62,7 +64,7 @@ func trace(blobs [][]byte, index int, hash func([]byte) [32]byte) [][]byte {
 		leftHalf := node(blobs[:mid], hash)
 
 		// Recursively trace the right half, adjusting the index
-		subTrace := trace(blobs[mid:], index-mid, hash)
+		subTrace := Trace(blobs[mid:], index-mid, hash)
 
 		// Return the left half node concatenated with the sub-trace
 		return append([][]byte{leftHalf}, subTrace...)
@@ -76,9 +78,9 @@ func constantDepthBinaryMerkleFn(blobs [][]byte, hash func([]byte) [32]byte) [32
 }
 
 // (E.5)
-func pageJustification(blobs [][]byte, height, index int, hashFn func([]byte) [32]byte) [][32]byte {
-	constancyHashes := constancyPreprocessor(blobs, hashFn)
-	traceSlice := trace(hashSliceToByteSlice(constancyHashes), index<<height, hashFn)[:calcRemainingHeight(len(constancyHashes), height)]
+func pageJustification(blobs [][]byte, height, index int, hash func([]byte) [32]byte) [][32]byte {
+	constancyHashes := constancyPreprocessor(blobs, hash)
+	traceSlice := Trace(hashSliceToByteSlice(constancyHashes), index<<height, hash)[:calcRemainingHeight(len(constancyHashes), height)]
 	return byteSliceToHashSlice(traceSlice)
 }
 
@@ -104,12 +106,12 @@ func calcRemainingHeight(blobsLen, height int) int {
 }
 
 // (E.6)
-func leavesPage(blobs [][]byte, height, index int, hashFn func([]byte) [32]byte) [][32]byte {
+func leavesPage(blobs [][]byte, height, index int, hash func([]byte) [32]byte) [][32]byte {
 	startIdx := index << height
 	endIdx := min(startIdx+(1<<height), len(blobs))
 	leaves := make([][32]byte, endIdx-startIdx)
 	for i := startIdx; i < endIdx; i++ {
-		leaves[i-startIdx] = hashFn(append([]byte("leaf"), blobs[i]...))
+		leaves[i-startIdx] = hash(append([]byte("leaf"), blobs[i]...))
 	}
 	return leaves
 }
@@ -178,8 +180,37 @@ func PagedProofsFromSegments(segments [][constants.SegmentSize]byte) [][constant
 	return segments
 }
 
-func JustificationFromProofPage(proofPage [constants.SegmentSize]byte, segmentIndex uint16, segment [constants.SegmentSize]byte, erasureRoot [32]byte) ([][32]byte, bool) {
-	return [][32]byte{}, false
+func JustificationFromProofPage(proofPage []byte, segmentIndex uint16, hash func([]byte) [32]byte) ([][32]byte, error) {
+	proofPageSlice := proofPage[:]
+	justificationLength, n, ok := serializer.DecodeGeneralNatural(proofPageSlice)
+	if !ok {
+		return nil, fmt.Errorf("failed to decode BitSequence length")
+	}
+	offset := n
+
+	pageJustification := make([][32]byte, justificationLength)
+	for i := range justificationLength {
+		pageJustification[i] = [32]byte(proofPageSlice[offset : offset+32])
+		offset += 32
+	}
+
+	leavesLength, n, ok := serializer.DecodeGeneralNatural(proofPageSlice[offset:])
+	if !ok {
+		return nil, fmt.Errorf("failed to decode leaves length")
+	}
+	offset += n
+
+	leaves := make([][32]byte, leavesLength)
+	for i := range leavesLength {
+		leaves[i] = [32]byte(proofPageSlice[offset : offset+32])
+		offset += 32
+	}
+
+	trace := Trace(hashSliceToByteSlice(leaves), int(segmentIndex%64), hash)
+
+	traceHashSlice := byteSliceToHashSlice(trace)
+
+	return append(traceHashSlice, pageJustification...), nil
 }
 
 func hashSliceToByteSlice(fixed [][32]byte) [][]byte {
@@ -196,4 +227,34 @@ func byteSliceToHashSlice(bytes [][]byte) [][32]byte {
 		copy(result[i][:], b)
 	}
 	return result
+}
+
+func GetRootUsingJustification(leaf []byte, leafIndex int, leafCount int, justification [][32]byte, hash func([]byte) [32]byte) [32]byte {
+	currentHash := hash(append([]byte("leaf"), leaf...))
+	currentIndex := leafIndex % leafCount
+
+	for _, sibling := range justification {
+		mid := (leafCount + 1) / 2
+
+		if currentIndex < mid {
+			// We're in left subtree, sibling is on the right
+			// Create a "mini-array" with just our current hash and the sibling
+			nodeInputs := [][]byte{currentHash[:], sibling[:]}
+			// Use node() to hash them together properly
+			currentHash = [32]byte(node(nodeInputs, hash))
+			// Next level, stay in left half
+			leafCount = mid
+		} else {
+			// We're in right subtree, sibling is on the left
+			// Create a "mini-array" with just the sibling and our current hash
+			nodeInputs := [][]byte{sibling[:], currentHash[:]} // Use byte slices for node function
+			// Use node() to hash them together properly
+			currentHash = [32]byte(node(nodeInputs, hash))
+			// Next level, move to right half and adjust index
+			currentIndex = currentIndex - mid
+			leafCount = leafCount - mid
+		}
+	}
+
+	return currentHash
 }

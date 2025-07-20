@@ -12,6 +12,7 @@ import (
 	"github.com/ascrivener/jam/types"
 	"github.com/ascrivener/jam/workpackage"
 	"github.com/ascrivener/jam/workreport"
+	"golang.org/x/crypto/blake2b"
 )
 
 func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp workpackage.WorkPackage, core types.CoreIndex) (workreport.WorkReport, error) {
@@ -86,9 +87,15 @@ func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp work
 			if len(proofPage) != int(constants.SegmentSize) {
 				return workreport.WorkReport{}, fmt.Errorf("proof page size is %d, expected %d", len(proofPage), constants.SegmentSize)
 			}
-			justification, valid := merklizer.JustificationFromProofPage([constants.SegmentSize]byte(proofPage), uint16(importedDataSegment.Index), [constants.SegmentSize]byte(segment), erasureRoot)
-			if !valid {
-				return workreport.WorkReport{}, fmt.Errorf("segment %d is not valid", importedDataSegment.Index)
+			justification, err := merklizer.JustificationFromProofPage(proofPage, uint16(importedDataSegment.Index), blake2b.Sum256)
+			if err != nil {
+				return workreport.WorkReport{}, err
+			}
+			calculatedRoot := merklizer.GetRootUsingJustification(segment, importedDataSegment.Index, int(exportingWorkReport.WorkPackageSpecification.SegmentCount), justification, blake2b.Sum256)
+
+			// Compare with the expected segment root
+			if calculatedRoot != segmentRoot {
+				return workreport.WorkReport{}, fmt.Errorf("justification verification failed: calculated root %x doesn't match segment root %x", calculatedRoot, segmentRoot)
 			}
 			workItemImportedSegments[importedDataSegmentIdx] = [constants.SegmentSize]byte(segment)
 			workItemJustifications[importedDataSegmentIdx] = justification
