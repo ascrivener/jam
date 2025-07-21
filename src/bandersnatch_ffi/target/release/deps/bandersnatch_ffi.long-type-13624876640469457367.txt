@@ -1,0 +1,1 @@
+w3f_ring_proof::piop::FixedColumnsCommitted<Fp<MontBackend<ark_bls12_381::fields::fr::FrConfig, 4>, 4>, w3f_pcs::pcs::kzg::commitment::KzgCommitment<Bls12<ark_bls12_381::curves::Config>>>

@@ -42,7 +42,7 @@ build_rust_library() {
     local target=$1
     echo -e "${BLUE}Building Rust FFI library for ${target}...${NC}"
     
-    cd "${PROJECT_ROOT}/bandersnatch_ffi"
+    cd "${PROJECT_ROOT}/src/bandersnatch_ffi"
     
     # Build with appropriate flags
     cargo build --release --target="${target}"
@@ -77,7 +77,7 @@ generate_constants() {
     echo -e "${BLUE}Generating constants for network: ${network}...${NC}"
     
     # Navigate to the constants directory
-    cd "${PROJECT_ROOT}/go/constants"
+    cd "${PROJECT_ROOT}/src/go/pkg/constants"
     
     # Clean up any existing generated files first
     rm -f constants.go
@@ -153,7 +153,7 @@ build_platform() {
     build_rust_library "${rust_target}" || return 1
     
     # Build fuzzserver with tiny constants
-    fuzzserver_dir="${PROJECT_ROOT}/go/cmd/fuzzer/fuzzserver"
+    fuzzserver_dir="${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
     build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "tiny" || return 1
     
     # Build fuzzserver with full constants
@@ -215,13 +215,13 @@ main() {
     
     # Build the fuzzclient for Linux AMD64 with both tiny and full variants
     echo -e "${BLUE}Building Linux AMD64 fuzzclient variants...${NC}"
-    fuzzclient_dir="${PROJECT_ROOT}/go/cmd/fuzzer/fuzzclient"
+    fuzzclient_dir="${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzclient"
     build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
     build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
     echo -e "${GREEN}Successfully built fuzzclient variants for Linux AMD64${NC}"
     
     echo -e "${GREEN}All builds completed successfully!${NC}"
-    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/go/cmd/fuzzer/fuzzserver/ and ${PROJECT_ROOT}/go/cmd/fuzzer/fuzzclient/${NC}"
+    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver/ and ${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzclient/${NC}"
 }
 
 # Execute the main function

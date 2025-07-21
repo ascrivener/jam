@@ -19,7 +19,7 @@
         {
             "label": "select-constants-generator",
             "type": "shell",
-            "command": "if [ \"${input:testSize}\" = \"tiny\" ]; then echo \"Using tiny test vectors with test constants\" && cd ${workspaceFolder}/go/constants && JAM_USE_TEST_CONSTANTS=true go run constants_gen.go; else echo \"Using full test vectors with production constants\" && cd ${workspaceFolder}/go/constants && go run constants_gen.go; fi",
+            "command": "if [ \"${input:testSize}\" = \"tiny\" ]; then echo \"Using tiny test vectors with test constants\" && cd ${workspaceFolder}/src/go/pkg/constants && JAM_USE_TEST_CONSTANTS=true go run constants_gen.go; else echo \"Using full test vectors with production constants\" && cd ${workspaceFolder}/src/go/pkg/constants && go run constants_gen.go; fi",
             "presentation": {
                 "reveal": "always",
                 "panel": "shared"
@@ -49,7 +49,7 @@
         {
             "label": "Build FuzzClient",
             "type": "shell",
-            "command": "cd ${workspaceFolder}/go/cmd/fuzzclient && go build -ldflags=\"-s -w\" .",
+            "command": "cd ${workspaceFolder}/src/go/cmd/fuzzclient && go build -ldflags=\"-s -w\" .",
             "group": "build",
             "presentation": {
                 "reveal": "silent"
@@ -58,7 +58,7 @@
         {
             "label": "Build FuzzServer",
             "type": "shell",
-            "command": "cd ${workspaceFolder}/go/cmd/fuzzserver && go build -ldflags=\"-s -w\" .",
+            "command": "cd ${workspaceFolder}/src/go/cmd/fuzzserver && go build -ldflags=\"-s -w\" .",
             "group": "build",
             "presentation": {
                 "reveal": "silent"
@@ -67,7 +67,7 @@
         {
             "label": "Start FuzzServer",
             "type": "shell",
-            "command": "cd ${workspaceFolder}/go/cmd/fuzzserver && ./fuzzserver",
+            "command": "cd ${workspaceFolder}/src/go/cmd/fuzzserver && ./fuzzserver",
             "isBackground": true,
             "problemMatcher": {
                 "pattern": {
@@ -91,7 +91,7 @@
         {
             "label": "Run FuzzClient",
             "type": "shell",
-            "command": "cd ${workspaceFolder}/go/cmd/fuzzclient && ./fuzzclient -vectors ${input:vectorsDir}",
+            "command": "cd ${workspaceFolder}/src/go/cmd/fuzzclient && ./fuzzclient -vectors ${input:vectorsDir}",
             "presentation": {
                 "reveal": "always"
             }
@@ -99,7 +99,7 @@
         {
             "label": "Cleanup",
             "type": "shell",
-            "command": "pkill -f fuzzserver || true && rm -f ${workspaceFolder}/go/cmd/fuzzclient/fuzzclient ${workspaceFolder}/go/cmd/fuzzserver/fuzzserver && rm -rf ${workspaceFolder}/go/cmd/fuzzserver/data/",
+            "command": "pkill -f fuzzserver || true && rm -f ${workspaceFolder}/src/go/cmd/fuzzclient/fuzzclient ${workspaceFolder}/src/go/cmd/fuzzserver/fuzzserver && rm -rf ${workspaceFolder}/src/go/cmd/fuzzserver/data/",
             "presentation": {
                 "reveal": "silent"
             }
@@ -119,7 +119,7 @@
         {
             "label": "2. Build Docker Image",
             "type": "shell",
-            "command": "docker build -t jam-fuzzer -f go/cmd/fuzzer/Dockerfile .",
+            "command": "docker build -t jam-fuzzer -f src/go/cmd/fuzzer/Dockerfile .",
             "group": "build",
             "presentation": {
                 "reveal": "always",

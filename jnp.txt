@@ -219,9 +219,16 @@ Announcement = Header ++ Final
 
 Node -> Node
 
---> Handshake AND <-- Handshake (In parallel)
+--> Handshake
 loop {
-    --> Announcement OR <-- Announcement (Either side may send)
+    --> Announcement
+}
+
+And in parallel:
+
+<-- Handshake
+loop {
+    <-- Announcement
 }
 ```
 
@@ -236,7 +243,10 @@ There are two types of request:
 - Descending inclusive: The sequence of blocks in the response should start with the given block,
   followed by its parent, grandparent, and so on.
 
-The number of blocks in the response should be limited to the given maximum.
+The number of blocks in the response should be limited to the given maximum. The response should
+not contain blocks which, from the responding node's perspective, cannot be finalized. If it is not
+possible to satisfy the request with this constraint (for example, because a block which cannot be
+finalized is explicitly requested), the stream should simply be reset/stopped.
 
 ```
 Direction = 0 (Ascending exclusive) OR 1 (Descending inclusive) (Single byte)
@@ -603,7 +613,10 @@ introduce preimages, and by validators to gossip these preimages to other valida
 
 The recipient of the announcement is expected to follow up by requesting the preimage using
 protocol 143, provided the preimage has been requested on chain by the given service and the
-recipient is not already in possession of it.
+recipient is not already in possession of it. In the case where the sender of the announcement is a
+non-validator node, it is expected to keep the connection open for a reasonable time (eg 10
+seconds) to allow this request to be made; if the connection is closed before the request can be
+made, the recipient is not expected to reopen it.
 
 Once a validator has obtained a requested preimage, it should announce possession to its neighbours
 in the grid structure.

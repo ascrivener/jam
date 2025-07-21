@@ -1,0 +1,1 @@
+ark_vrf::reexports::ark_ec::twisted_edwards::Affine<ark_ed_on_bls12_381_bandersnatch::curves::BandersnatchConfig>
