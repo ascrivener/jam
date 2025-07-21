@@ -149,6 +149,17 @@
             },
             "problemMatcher": []
         },
+        {
+            "label": "5. Clean Docker Binaries",
+            "type": "shell",
+            "command": "echo 'Cleaning up Docker binaries...' && rm -f ${workspaceFolder}/src/go/cmd/fuzzer/fuzzserver/fuzzserver* && rm -f ${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient/fuzzclient* && rm -rf /tmp/jam_crossbuild && echo 'Binaries cleanup completed'",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
         // Composite tasks (using dependencies)
         {
             "label": "Run Docker Test (With Build)",
@@ -156,7 +167,8 @@
             "dependsOn": [
                 "1. Build Binaries",
                 "2. Build Docker Image",
-                "3. Run Docker Test (Selected Vector)"
+                "3. Run Docker Test (Selected Vector)",
+                "5. Clean Docker Binaries"
             ],
             "group": "test",
             "problemMatcher": []
@@ -167,7 +179,8 @@
             "dependsOn": [
                 "1. Build Binaries",
                 "2. Build Docker Image",
-                "4. Run All Test Vectors"
+                "4. Run All Test Vectors",
+                "5. Clean Docker Binaries"
             ],
             "group": {
                 "kind": "test",
