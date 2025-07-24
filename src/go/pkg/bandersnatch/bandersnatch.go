@@ -1,7 +1,7 @@
 package bandersnatch
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../../bandersnatch_ffi/target/release -lbandersnatch_ffi
+#cgo LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/release -lbandersnatch_ffi
 #cgo darwin LDFLAGS: -framework Security
 #cgo linux,amd64 LDFLAGS: -L/tmp/jam_crossbuild/lib -lbandersnatch_ffi -static
 // Declaration of the Rust functions.

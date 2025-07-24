@@ -1,1 +1,1 @@
-/Users/adamscrivener/Projects/Jam/jam/bandersnatch_ffi/target/release/libbandersnatch_ffi.dylib: /Users/adamscrivener/Projects/Jam/jam/bandersnatch_ffi/src/lib.rs
+/Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/target/release/libbandersnatch_ffi.dylib: /Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin /Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/src/lib.rs

@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 	"time"
@@ -24,43 +23,28 @@ const AlternativeNameEncoding = "abcdefghijklmnopqrstuvwxyz234567"
 
 // generateTLSConfig creates a TLS configuration for the JAMNP-S client
 func generateTLSConfig(
-	publicKey ed25519.PublicKey,
 	privateKey ed25519.PrivateKey,
-	version string,
-	chainHash string,
-	isBuilder bool,
-	insecure bool,
 ) (*tls.Config, error) {
 	// Generate a self-signed certificate
-	cert, err := generateCertificate(publicKey, privateKey)
+	cert, err := generateCertificate(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate certificate: %w", err)
-	}
-
-	// Determine ALPN protocol name
-	alpn := fmt.Sprintf("jamnp-s/%s/%s", version, chainHash)
-	if isBuilder {
-		alpn += "/builder"
 	}
 
 	// Create TLS config
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{alpn},
 		MinVersion:   tls.VersionTLS13, // Require TLS 1.3
 		// Custom verification to validate peer certificate
 		VerifyPeerCertificate: verifyPeerCertificate,
-	}
-
-	if insecure {
-		tlsConfig.InsecureSkipVerify = true
 	}
 
 	return tlsConfig, nil
 }
 
 // generateCertificate creates a self-signed certificate for the JAMNP-S client
-func generateCertificate(publicKey ed25519.PublicKey, privateKey ed25519.PrivateKey) (tls.Certificate, error) {
+func generateCertificate(privateKey ed25519.PrivateKey) (tls.Certificate, error) {
+	publicKey := privateKey.Public().(ed25519.PublicKey)
 	// Generate alternative name from public key
 	altName, err := GenerateAlternativeName(publicKey)
 	if err != nil {
@@ -140,24 +124,30 @@ func GenerateAlternativeName(pubKey ed25519.PublicKey) (string, error) {
 		return "", fmt.Errorf("invalid public key size: %d", len(pubKey))
 	}
 
-	// Convert public key to uint256 using little-endian (as per spec)
-	var n uint64
-	for i := 0; i < len(pubKey); i += 8 {
-		end := i + 8
-		if end > len(pubKey) {
-			end = len(pubKey)
-		}
-		chunk := make([]byte, 8)
-		copy(chunk, pubKey[i:end])
-		n += binary.LittleEndian.Uint64(chunk)
+	// Create a big.Int from the public key (little-endian)
+	n := new(big.Int)
+	// Reverse the bytes for little-endian interpretation
+	revBytes := make([]byte, len(pubKey))
+	for i, b := range pubKey {
+		revBytes[len(pubKey)-1-i] = b
 	}
+	n.SetBytes(revBytes)
 
 	// Generate the alternative name using the B function from spec
 	result := "e" // Start with 'e' as per spec
+
+	// Constants for the loop
+	thirtytwo := big.NewInt(32)
+	mod := new(big.Int)
+
 	for i := 0; i < 52; i++ {
-		idx := n % 32
+		// Get the remainder when divided by 32
+		mod = mod.Mod(n, thirtytwo)
+		idx := int(mod.Int64())
 		result += string(AlternativeNameEncoding[idx])
-		n /= 32
+
+		// Divide by 32 for the next iteration
+		n.Div(n, thirtytwo)
 	}
 
 	return result, nil

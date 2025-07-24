@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,72 +14,159 @@ import (
 	"sync"
 	"time"
 
+	"jam/pkg/block"
+	"jam/pkg/block/header"
+	"jam/pkg/merklizer"
 	"jam/pkg/net"
+	"jam/pkg/serializer"
+	"jam/pkg/staterepository"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/blake2b"
 )
 
+// Config represents the configuration loaded from the JSON file
+type Config struct {
+	ProtocolParameters string            `json:"protocol_parameters"` // Protocol parameters as hex string
+	Bootnodes          []string          `json:"bootnodes"`           // List of bootnodes
+	Id                 string            `json:"id"`                  // Network ID
+	GenesisState       map[string]string `json:"genesis_state"`       // Initial genesis state as key-value pairs
+	GenesisHeader      string            `json:"genesis_header"`      // Genesis header as hex string
+}
+
 func main() {
-	// Parse command line flags
-	mode := flag.String("mode", "listen", "Mode to run in: listen, block, report, or state")
-	address := flag.String("address", "localhost:40000", "Address to connect to")
-	keyPath := flag.String("key", "", "Path to Ed25519 key file")
-	blockHash := flag.String("block", "", "Block hash to request (32 bytes, hex-encoded)")
-	reportHash := flag.String("report", "", "Report hash to request (32 bytes, hex-encoded)")
-	stateHash := flag.String("state", "", "State hash to request (32 bytes, hex-encoded)")
-	direction := flag.Int("direction", 0, "Direction for block request (0 = descendants, 1 = ancestors)")
-	maxBlocks := flag.Int("max-blocks", 10, "Maximum number of blocks to request")
-	saveDir := flag.String("save-dir", "", "Directory to save blocks to")
-	timeout := flag.Duration("timeout", 0, "Timeout for the operation (0 = no timeout)")
-	insecure := flag.Bool("insecure", false, "Skip peer certificate verification")
-	protocolVersion := flag.String("protocol", "jam-1.0", "Protocol version")
-	chainHash := flag.String("chain", "polkadot", "Chain hash")
-	isBuilder := flag.Bool("builder", false, "Identify as builder")
+	configPath := flag.String("config-path", "", "Path to a JSON configuration file")
+	devValidator := flag.Int("dev-validator", -1, "Dev validator index")
+	dataPath := flag.String("data-path", "./data", "Path to the data directory")
 
 	flag.Parse()
 
-	// Generate or load Ed25519 keys
-	var publicKey ed25519.PublicKey
+	if *configPath == "" {
+		log.Fatal("Error: --config-path flag is required")
+	}
+
+	if *devValidator < 0 || *devValidator > 5 {
+		log.Fatal("Error: --dev-validator flag is required")
+	}
+
+	var config Config
+
+	// Load from JSON file
+	configData, err := os.ReadFile(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to read config file: %v", err)
+	}
+
+	err = json.Unmarshal(configData, &config)
+	if err != nil {
+		log.Fatalf("Failed to parse config file: %v", err)
+	}
+
+	log.Printf("Using dev validator %d", *devValidator)
+
+	// Open the state repository
+	repo, err := staterepository.NewPebbleStateRepository(*dataPath)
+	if err != nil {
+		log.Fatalf("Failed to open state repository: %v", err)
+	}
+	defer repo.Close()
+
+	state := merklizer.State{}
+	for stateKey, stateValue := range config.GenesisState {
+		// Convert state key from hex to [31]byte
+		keyBytes, err := hex.DecodeString(stateKey)
+		if err != nil {
+			log.Fatalf("Failed to decode state key %s: %v", stateKey, err)
+		}
+		if len(keyBytes) != 31 {
+			log.Fatalf("Invalid state key length: expected 31 bytes, got %d bytes for key %s", len(keyBytes), stateKey)
+		}
+
+		// Convert state value from hex to []byte
+		valueBytes, err := hex.DecodeString(stateValue)
+		if err != nil {
+			log.Fatalf("Failed to decode state value for key %s: %v", stateKey, err)
+		}
+
+		// Create a [31]byte array for the key
+		var key [31]byte
+		copy(key[:], keyBytes)
+
+		// Add to state
+		state = append(state, merklizer.StateKV{
+			OriginalKey: key,
+			Value:       valueBytes,
+		})
+	}
+
+	err = state.OverwriteCurrentState(*repo)
+	if err != nil {
+		log.Fatalf("Failed to overwrite current state: %v", err)
+	}
+
+	headerBytes, err := hex.DecodeString(config.GenesisHeader)
+	if err != nil {
+		log.Fatalf("Failed to decode genesis header: %v", err)
+	}
+
+	header := header.Header{}
+	if err := serializer.Deserialize(headerBytes, &header); err != nil {
+		log.Fatalf("Failed to deserialize genesis header: %v", err)
+	}
+
+	blockWithInfo := block.BlockWithInfo{
+		Block: block.Block{
+			Header: header,
+		},
+		Info: block.BlockInfo{
+			PosteriorStateRoot: merklizer.MerklizeState(state),
+		},
+	}
+
+	if err := blockWithInfo.Set(*repo); err != nil {
+		log.Fatalf("Failed to store genesis block: %v", err)
+	}
+
 	var privateKey ed25519.PrivateKey
-	var err error
 
-	if *keyPath != "" {
-		// Load keys from file
-		keyData, err := os.ReadFile(*keyPath)
-		if err != nil {
-			log.Fatalf("Failed to read key file: %v", err)
-		}
-		if len(keyData) != ed25519.PrivateKeySize {
-			log.Fatalf("Invalid key size: %d", len(keyData))
-		}
-		privateKey = ed25519.PrivateKey(keyData)
-		publicKey = privateKey.Public().(ed25519.PublicKey)
-	} else {
-		// Generate new keys
-		publicKey, privateKey, err = ed25519.GenerateKey(nil)
-		if err != nil {
-			log.Fatalf("Failed to generate keys: %v", err)
-		}
-		log.Printf("Generated new Ed25519 keys")
+	// Create trivial seed as per JIP-5: repeat_8_times(encode_as_32bit_le(i))
+	seed := make([]byte, 32)
+	for i := 0; i < 32; i += 4 {
+		binary.LittleEndian.PutUint32(seed[i:i+4], uint32(*devValidator))
 	}
 
-	// Set up a context with timeout if specified
-	ctx := context.Background()
-	if *timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
-		defer cancel()
+	// Derive ed25519_secret_seed = blake2b("jam_val_key_ed25519" ++ seed)
+	h1, err := blake2b.New256(nil)
+	if err != nil {
+		log.Fatalf("Failed to create BLAKE2b hash: %v", err)
 	}
+	h1.Write([]byte("jam_val_key_ed25519"))
+	h1.Write(seed)
+	ed25519SecretSeed := h1.Sum(nil)
+
+	// Derive bandersnatch_secret_seed = blake2b("jam_val_key_bandersnatch" ++ seed)
+	h2, err := blake2b.New256(nil)
+	if err != nil {
+		log.Fatalf("Failed to create BLAKE2b hash: %v", err)
+	}
+	h2.Write([]byte("jam_val_key_bandersnatch"))
+	h2.Write(seed)
+	bandersnatchSecretSeed := h2.Sum(nil)
+
+	// Use the derived secret seed to get private key
+	privateKey = ed25519.NewKeyFromSeed(ed25519SecretSeed)
+
+	log.Printf("Using JIP-5 derived keys for validator %d", *devValidator)
+	log.Printf("Seed: %x", seed)
+	log.Printf("Ed25519 secret seed: %x", ed25519SecretSeed)
+	log.Printf("Bandersnatch secret seed: %x", bandersnatchSecretSeed)
+	// Note: We can't compute the Bandersnatch public key here without a Bandersnatch library
 
 	// Create the JAMNP-S client
 	clientOpts := net.ClientOptions{
-		PublicKey:       publicKey,
-		PrivateKey:      privateKey,
-		ProtocolVersion: *protocolVersion,
-		ChainHash:       *chainHash,
-		IsBuilder:       *isBuilder,
-		DialTimeout:     10 * time.Second,
-		Insecure:        *insecure,
+		PrivateKey:             privateKey,
+		BandersnatchSecretSeed: bandersnatchSecretSeed,
+		DialTimeout:            10 * time.Second,
 	}
 
 	client, err := net.NewClient(clientOpts)
@@ -85,53 +174,6 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 	defer client.Close()
-
-	// Connect to the node
-	conn, err := client.Connect(ctx, *address)
-	if err != nil {
-		log.Fatalf("Failed to connect to %s: %v", *address, err)
-	}
-
-	// Display connection info
-	log.Printf("Connected to %s (remote peer: %x)", *address, conn.RemoteKey())
-
-	// Handle the requested mode
-	switch *mode {
-	case "listen":
-		err := listenMode(ctx, client, conn, *timeout)
-		if err != nil {
-			log.Fatalf("Listen mode failed: %v", err)
-		}
-	case "report":
-		if *reportHash == "" {
-			log.Fatal("Report hash is required for report mode")
-		}
-		hash, err := parseHash(*reportHash)
-		if err != nil {
-			log.Fatalf("Invalid report hash: %v", err)
-		}
-		requestWorkReport(ctx, client, conn, hash)
-	case "block":
-		if *blockHash == "" {
-			log.Fatal("Block hash is required for block mode")
-		}
-		hash, err := parseHash(*blockHash)
-		if err != nil {
-			log.Fatalf("Invalid block hash: %v", err)
-		}
-		requestBlocks(ctx, client, conn, hash, net.Direction(*direction), uint32(*maxBlocks), *saveDir)
-	case "state":
-		if *stateHash == "" {
-			log.Fatal("State hash is required for state mode")
-		}
-		hash, err := parseHash(*stateHash)
-		if err != nil {
-			log.Fatalf("Invalid state hash: %v", err)
-		}
-		requestState(ctx, client, conn, hash)
-	default:
-		log.Fatalf("Unknown mode: %s", *mode)
-	}
 }
 
 // listenMode listens for block announcements and assurance distributions

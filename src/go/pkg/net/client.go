@@ -16,26 +16,15 @@ import (
 
 // ClientOptions contains options for creating a new client
 type ClientOptions struct {
-	// PublicKey is the client's Ed25519 public key
-	PublicKey ed25519.PublicKey
 
 	// PrivateKey is the client's Ed25519 private key
 	PrivateKey ed25519.PrivateKey
 
-	// ProtocolVersion is the protocol version string (e.g., "jam-1.0")
-	ProtocolVersion string
-
-	// ChainHash is the chain hash string
-	ChainHash string
-
-	// IsBuilder indicates whether this client is a builder
-	IsBuilder bool
+	// Bandersnatch secret seed
+	BandersnatchSecretSeed []byte
 
 	// DialTimeout is the timeout for dialing a connection
 	DialTimeout time.Duration
-
-	// Insecure disables peer certificate verification
-	Insecure bool
 }
 
 // Client is a JAMNP-S protocol client
@@ -49,25 +38,15 @@ type Client struct {
 
 // NewClient creates a new JAMNP-S client
 func NewClient(opts ClientOptions) (*Client, error) {
-	// Validate options
-	if len(opts.PublicKey) != ed25519.PublicKeySize {
-		return nil, errors.New("invalid public key size")
-	}
 	if len(opts.PrivateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("invalid private key size")
-	}
-	if opts.ProtocolVersion == "" {
-		opts.ProtocolVersion = "jam-1.0"
-	}
-	if opts.ChainHash == "" {
-		opts.ChainHash = "polkadot"
 	}
 	if opts.DialTimeout == 0 {
 		opts.DialTimeout = 10 * time.Second
 	}
 
 	// Create TLS config
-	tlsConfig, err := generateTLSConfig(opts.PublicKey, opts.PrivateKey, opts.ProtocolVersion, opts.ChainHash, opts.IsBuilder, opts.Insecure)
+	tlsConfig, err := generateTLSConfig(opts.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
 	}
@@ -138,7 +117,7 @@ func (c *Client) Connect(ctx context.Context, address string) (Connection, error
 	}
 
 	// Create JAMNP-S connection
-	conn, err := NewConnection(quicConn, c.opts.PublicKey)
+	conn, err := NewConnection(quicConn, c.opts.PrivateKey.Public().(ed25519.PublicKey))
 	if err != nil {
 		quicConn.CloseWithError(0, "connection setup failed")
 		return nil, fmt.Errorf("failed to create JAMNP-S connection: %w", err)
