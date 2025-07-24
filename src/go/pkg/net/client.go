@@ -1,6 +1,7 @@
 package net
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -22,6 +23,12 @@ type ClientOptions struct {
 
 	// Bandersnatch secret seed
 	BandersnatchSecretSeed []byte
+
+	// Chain ID
+	ChainID string
+
+	// IsBuilder indicates whether this client should identify as a builder (adds "/builder" suffix to ALPN)
+	IsBuilder bool
 
 	// DialTimeout is the timeout for dialing a connection
 	DialTimeout time.Duration
@@ -46,7 +53,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	}
 
 	// Create TLS config
-	tlsConfig, err := generateTLSConfig(opts.PrivateKey)
+	tlsConfig, err := generateTLSConfig(opts.PrivateKey, opts.ChainID, opts.IsBuilder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
 	}
@@ -143,7 +150,7 @@ func (c *Client) Close() {
 
 // OpenBlockAnnouncementStream opens a UP 0 block announcement stream
 func (c *Client) OpenBlockAnnouncementStream(ctx context.Context, conn Connection) (Stream, error) {
-	return conn.OpenStream(StreamKindUP0BlockAnnouncements)
+	return conn.OpenStream(StreamKindUP0BlockAnnouncement)
 }
 
 // OpenAssuranceDistributionStream opens a CE 141 assurance distribution stream
@@ -311,7 +318,7 @@ func (c *Client) HandleBlockAnnouncements(conn Connection, handler func(*BlockAn
 		}
 	}
 
-	conn.RegisterHandler(StreamKindUP0BlockAnnouncements, streamHandler)
+	conn.RegisterHandler(StreamKindUP0BlockAnnouncement, streamHandler)
 	return nil
 }
 
@@ -337,4 +344,84 @@ func (c *Client) HandleAssuranceDistributions(conn Connection, handler func([]by
 
 	conn.RegisterHandler(StreamKindCE141AssuranceDistribution, streamHandler)
 	return nil
+}
+
+// handleIncomingStreams handles streams opened by the remote peer
+func (c *Client) handleIncomingStreams(ctx context.Context, conn Connection) {
+	// Accept streams in a loop
+	for {
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Accept stream from connection
+		stream, err := conn.(*jamnpsConnection).conn.AcceptStream(ctx)
+		if err != nil {
+			// If the connection is closed or context cancelled, just return
+			if err.Error() == "connection closed" || errors.Is(err, context.Canceled) {
+				return
+			}
+
+			// Log other errors and continue
+			fmt.Printf("Error accepting stream: %v\n", err)
+			continue
+		}
+
+		// Handle the stream in a separate goroutine
+		go func(stream quic.Stream) {
+			// Read the first byte to determine the stream kind
+			kindBuf := make([]byte, 1)
+			_, err := stream.Read(kindBuf)
+			if err != nil {
+				fmt.Printf("Error reading stream kind: %v\n", err)
+				stream.Close()
+				return
+			}
+
+			kind := StreamKind(kindBuf[0])
+
+			// Create a Stream object
+			s := &jamnpsStream{
+				stream:    stream,
+				kind:      kind,
+				readMu:    sync.Mutex{},
+				writeMu:   sync.Mutex{},
+				writeBuf:  bytes.NewBuffer(nil),
+				readBuf:   bytes.NewBuffer(nil),
+				messageIn: make(chan []byte, 10),
+			}
+
+			// Register stream with connection
+			conn.(*jamnpsConnection).streamMu.Lock()
+			conn.(*jamnpsConnection).streams[stream.StreamID()] = s
+			conn.(*jamnpsConnection).streamMu.Unlock()
+
+			// Handle the stream based on its kind
+			switch kind {
+			case StreamKindUP0BlockAnnouncement:
+				// Check if we have a handler for this stream kind
+				if handler, exists := conn.(*jamnpsConnection).handlers[kind]; exists {
+					go handler(s)
+				} else {
+					fmt.Printf("No handler for stream kind %d\n", kind)
+					stream.Close()
+				}
+			case StreamKindCE141AssuranceDistribution:
+				// Check if we have a handler for this stream kind
+				if handler, exists := conn.(*jamnpsConnection).handlers[kind]; exists {
+					go handler(s)
+				} else {
+					fmt.Printf("No handler for stream kind %d\n", kind)
+					stream.Close()
+				}
+			// Add cases for other stream kinds as needed
+			default:
+				fmt.Printf("Unsupported stream kind: %d\n", kind)
+				stream.Close()
+			}
+		}(stream)
+	}
 }

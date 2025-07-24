@@ -1,6 +1,7 @@
 package net
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -36,6 +37,8 @@ type jamnpsConnection struct {
 	upStreamsMu sync.Mutex
 	handlers    map[StreamKind]StreamHandler
 	handlersMu  sync.RWMutex
+	streams     map[quic.StreamID]Stream
+	streamMu    sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
@@ -44,8 +47,13 @@ type jamnpsConnection struct {
 
 // jamnpsStream implements the Stream interface
 type jamnpsStream struct {
-	stream quic.Stream
-	kind   StreamKind
+	stream    quic.Stream
+	kind      StreamKind
+	readMu    sync.Mutex
+	writeMu   sync.Mutex
+	writeBuf  *bytes.Buffer
+	readBuf   *bytes.Buffer
+	messageIn chan []byte
 }
 
 // NewConnection creates a new Connection from a QUIC connection
@@ -74,6 +82,7 @@ func NewConnection(conn quic.Connection, localKey ed25519.PublicKey) (Connection
 		ctx:         ctx,
 		cancel:      cancel,
 		acceptErrCh: make(chan error, 1),
+		streams:     make(map[quic.StreamID]Stream),
 	}
 
 	// Start stream acceptor
@@ -331,11 +340,29 @@ func (c *jamnpsConnection) QuicConnection() quic.Connection {
 
 // Read reads data from the stream
 func (s *jamnpsStream) Read(p []byte) (int, error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+
+	// If we have data in the buffer, return it
+	if s.readBuf != nil && s.readBuf.Len() > 0 {
+		return s.readBuf.Read(p)
+	}
+
+	// Otherwise, read from the underlying stream
 	return s.stream.Read(p)
 }
 
 // Write writes data to the stream
 func (s *jamnpsStream) Write(p []byte) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	// If we have a write buffer, write to it
+	if s.writeBuf != nil {
+		return s.writeBuf.Write(p)
+	}
+
+	// Otherwise, write directly to the stream
 	return s.stream.Write(p)
 }
 

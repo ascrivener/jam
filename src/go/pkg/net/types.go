@@ -13,7 +13,7 @@ type StreamKind byte
 
 const (
 	// UP streams (0-127)
-	StreamKindUP0BlockAnnouncements StreamKind = 0
+	StreamKindUP0BlockAnnouncement StreamKind = 0
 
 	// CE streams (128-255)
 	StreamKindCE2BlockRequest            StreamKind = 2

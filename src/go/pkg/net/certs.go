@@ -24,11 +24,20 @@ const AlternativeNameEncoding = "abcdefghijklmnopqrstuvwxyz234567"
 // generateTLSConfig creates a TLS configuration for the JAMNP-S client
 func generateTLSConfig(
 	privateKey ed25519.PrivateKey,
+	chainID string,
+	isBuilder bool,
 ) (*tls.Config, error) {
 	// Generate a self-signed certificate
 	cert, err := generateCertificate(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate certificate: %w", err)
+	}
+
+	// Set ALPN protocol identifier according to JAMNP-S spec
+	// Format: jamnp-s/V/H or jamnp-s/V/H/builder
+	alpnProto := fmt.Sprintf("jamnp-s/0/%s", chainID)
+	if isBuilder {
+		alpnProto += "/builder"
 	}
 
 	// Create TLS config
@@ -37,6 +46,10 @@ func generateTLSConfig(
 		MinVersion:   tls.VersionTLS13, // Require TLS 1.3
 		// Custom verification to validate peer certificate
 		VerifyPeerCertificate: verifyPeerCertificate,
+		// Set ALPN protocol identifier according to JAMNP-S spec
+		NextProtos: []string{alpnProto},
+		// Disable standard certificate verification to avoid key size errors
+		InsecureSkipVerify: true,
 	}
 
 	return tlsConfig, nil

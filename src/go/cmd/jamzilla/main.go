@@ -11,14 +11,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
+
+	stdnet "net"
 
 	"jam/pkg/block"
 	"jam/pkg/block/header"
 	"jam/pkg/merklizer"
 	"jam/pkg/net"
 	"jam/pkg/serializer"
+	"jam/pkg/state"
 	"jam/pkg/staterepository"
 
 	"github.com/google/uuid"
@@ -71,7 +73,7 @@ func main() {
 	}
 	defer repo.Close()
 
-	state := merklizer.State{}
+	merklizerState := merklizer.State{}
 	for stateKey, stateValue := range config.GenesisState {
 		// Convert state key from hex to [31]byte
 		keyBytes, err := hex.DecodeString(stateKey)
@@ -93,13 +95,13 @@ func main() {
 		copy(key[:], keyBytes)
 
 		// Add to state
-		state = append(state, merklizer.StateKV{
+		merklizerState = append(merklizerState, merklizer.StateKV{
 			OriginalKey: key,
 			Value:       valueBytes,
 		})
 	}
 
-	err = state.OverwriteCurrentState(*repo)
+	err = merklizerState.OverwriteCurrentState(*repo)
 	if err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
@@ -119,7 +121,7 @@ func main() {
 			Header: header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(state),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
 		},
 	}
 
@@ -160,13 +162,19 @@ func main() {
 	log.Printf("Seed: %x", seed)
 	log.Printf("Ed25519 secret seed: %x", ed25519SecretSeed)
 	log.Printf("Bandersnatch secret seed: %x", bandersnatchSecretSeed)
-	// Note: We can't compute the Bandersnatch public key here without a Bandersnatch library
+
+	// Extract chain ID from genesis header hash (first 8 nibbles/4 bytes)
+	genesisHash := blake2b.Sum256(headerBytes)
+	chainID := fmt.Sprintf("%x", genesisHash[:4])
+	log.Printf("Using chain ID: %s", chainID)
 
 	// Create the JAMNP-S client
 	clientOpts := net.ClientOptions{
 		PrivateKey:             privateKey,
 		BandersnatchSecretSeed: bandersnatchSecretSeed,
 		DialTimeout:            10 * time.Second,
+		ChainID:                chainID,
+		IsBuilder:              false, // We're a validator, not a builder
 	}
 
 	client, err := net.NewClient(clientOpts)
@@ -174,14 +182,85 @@ func main() {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 	defer client.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state, err := state.GetState(*repo)
+	if err != nil {
+		log.Fatalf("Failed to get state: %v", err)
+	}
+
+	// Connect to bootnodes
+	var connectedNodes int
+	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
+		if idx == *devValidator {
+			continue
+		}
+
+		metadata := validatorKeyset[len(validatorKeyset)-128:]
+
+		// Extract IPv6 address (first 16 bytes)
+		ipv6Addr := metadata[:16]
+		ip := stdnet.IP(ipv6Addr).String()
+
+		// Extract port (next 2 bytes in little endian)
+		port := binary.LittleEndian.Uint16(metadata[16:18])
+
+		// Construct bootnode address
+		bootnode := fmt.Sprintf("[%s]:%d", ip, port)
+
+		log.Printf("Connecting to validator %d at %s", idx, bootnode)
+		conn, err := connectToNode(ctx, client, bootnode)
+		if err != nil {
+			log.Printf("Failed to connect to bootnode %s: %v", bootnode, err)
+			continue
+		}
+
+		// For each successful connection, open required streams
+		err = openRequiredStreams(ctx, client, conn)
+		if err != nil {
+			log.Printf("Failed to open required streams for bootnode %s: %v", bootnode, err)
+			continue
+		}
+
+		log.Printf("Successfully connected to bootnode: %s", bootnode)
+		connectedNodes++
+		break
+	}
+
+	log.Printf("Connected to %d out of %d bootnodes", connectedNodes, len(config.Bootnodes))
+
+	// Listen indefinitely
+	log.Println("Node is running. Press Ctrl+C to exit.")
+	select {
+	case <-ctx.Done():
+		log.Println("Context cancelled, shutting down...")
+	}
 }
 
-// listenMode listens for block announcements and assurance distributions
-func listenMode(ctx context.Context, client *net.Client, conn net.Connection, timeout time.Duration) error {
-	log.Println("Listening for block announcements and assurance distributions...")
+// connectToNode connects to a node with retry logic
+func connectToNode(ctx context.Context, client *net.Client, address string) (net.Connection, error) {
+	var conn net.Connection
+	var err error
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Try connecting up to 3 times
+	for attempts := 0; attempts < 3; attempts++ {
+		conn, err = client.Connect(ctx, address)
+		if err == nil {
+			return conn, nil
+		}
+
+		log.Printf("Attempt %d: Failed to connect to %s: %v", attempts+1, address, err)
+		time.Sleep(2 * time.Second)
+	}
+
+	return nil, fmt.Errorf("failed to connect after multiple attempts: %w", err)
+}
+
+// openRequiredStreams opens the required streams for a connection according to JAMNP-S
+func openRequiredStreams(ctx context.Context, client *net.Client, conn net.Connection) error {
+	// First register handlers for incoming messages
 
 	// Handle block announcements
 	err := client.HandleBlockAnnouncements(conn, func(announcement *net.BlockAnnouncement) error {
@@ -212,30 +291,75 @@ func listenMode(ctx context.Context, client *net.Client, conn net.Connection, ti
 		return fmt.Errorf("failed to register assurance distribution handler: %w", err)
 	}
 
-	// Open a block announcement stream
-	_, err = client.OpenBlockAnnouncementStream(ctx, conn)
+	// Now open the block announcement stream
+	stream, err := client.OpenBlockAnnouncementStream(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to open block announcement stream: %w", err)
 	}
 
+	// Create a handshake message with our known leaves
+	// For now, just send an empty handshake as we don't have any known blocks yet
+	finalizedBlockHash := [32]byte{} // Empty hash for now
+	finalizedBlockSlot := uint32(0)  // Slot 0
+
+	// No leaves to send initially
+	var leaves [][32]byte
+	var leafSlots []uint32
+
+	// Encode and send handshake
+	handshakeData := encodeBlockAnnouncementHandshake(finalizedBlockHash, finalizedBlockSlot, leaves, leafSlots)
+
+	// Use the WriteMessage function from the net package to send the handshake
+	if err := net.WriteMessage(stream, handshakeData); err != nil {
+		return fmt.Errorf("failed to send block announcement handshake: %w", err)
+	}
+
+	log.Printf("Sent initial block announcement handshake")
+
 	// Open an assurance distribution stream
 	_, err = client.OpenAssuranceDistributionStream(ctx, conn)
 	if err != nil {
-		return fmt.Errorf("failed to open assurance distribution stream: %w", err)
-	}
-
-	// Wait indefinitely or until timeout
-	if timeout > 0 {
-		time.Sleep(timeout)
-	} else {
-		// Wait for interrupt signal or context cancellation
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		log.Printf("Warning: failed to open assurance distribution stream: %v", err)
+		// Don't return error here - this is optional for initial connection
 	}
 
 	return nil
+}
+
+// encodeBlockAnnouncementHandshake encodes a block announcement handshake message
+// according to the JAMNP-S specification
+func encodeBlockAnnouncementHandshake(finalHash [32]byte, finalSlot uint32, leaves [][32]byte, leafSlots []uint32) []byte {
+	if len(leaves) != len(leafSlots) {
+		log.Printf("Warning: mismatched leaves and slots arrays, ignoring leaves")
+		leaves = nil
+		leafSlots = nil
+	}
+
+	// Format according to JAMNP-S:
+	// Handshake = Final ++ len++[Leaf]
+	// Final = Header Hash ++ Slot
+	// Leaf = Header Hash ++ Slot
+
+	// Start with final hash and slot
+	result := make([]byte, 36) // 32 + 4
+	copy(result[:32], finalHash[:])
+	binary.LittleEndian.PutUint32(result[32:36], finalSlot)
+
+	// Add leaf count
+	leafCount := uint32(len(leaves))
+	leafCountBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(leafCountBytes, leafCount)
+	result = append(result, leafCountBytes...)
+
+	// Add leaves (hash + slot for each)
+	for i, leaf := range leaves {
+		leafData := make([]byte, 36) // 32 + 4
+		copy(leafData[:32], leaf[:])
+		binary.LittleEndian.PutUint32(leafData[32:], leafSlots[i])
+		result = append(result, leafData...)
+	}
+
+	return result
 }
 
 // requestWorkReport requests a work report for the given hash
