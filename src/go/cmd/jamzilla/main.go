@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
@@ -168,68 +169,123 @@ func main() {
 	chainID := fmt.Sprintf("%x", genesisHash[:4])
 	log.Printf("Using chain ID: %s", chainID)
 
-	// Create the JAMNP-S client
-	clientOpts := net.ClientOptions{
-		PrivateKey:             privateKey,
-		BandersnatchSecretSeed: bandersnatchSecretSeed,
-		DialTimeout:            10 * time.Second,
-		ChainID:                chainID,
-		IsBuilder:              false, // We're a validator, not a builder
+	// Create a network node for both outgoing and incoming connections
+	nodeOpts := net.NodeOptions{
+		PrivateKey: privateKey,
+		ChainID:    chainID,
+		ListenAddr: ":40000", // Listen on port 40000 for incoming connections
 	}
 
-	client, err := net.NewClient(clientOpts)
+	node, err := net.NewNode(nodeOpts)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Fatalf("Error creating network node: %v", err)
 	}
-	defer client.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Start the node's listener to accept incoming connections
+	if err := node.Start(ctx); err != nil {
+		log.Fatalf("Error starting network node: %v", err)
+	}
+	defer node.Close()
+
+	log.Printf("Network node started, listening at %s", node.Addr())
+
+	// Connect to bootnodes
+	var connectedNodes int
+	connections := make(map[string]net.Connection) // Map of bootnode address to connection
 
 	state, err := state.GetState(*repo)
 	if err != nil {
 		log.Fatalf("Failed to get state: %v", err)
 	}
 
-	// Connect to bootnodes
-	var connectedNodes int
+	// Iterate through validator keysets and connect
 	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
-		if idx == *devValidator {
+		publicKey := validatorKeyset.ToEd25519PublicKey()
+		if bytes.Equal(publicKey[:], privateKey.Public().(ed25519.PublicKey)) {
+			log.Printf("Skipping connection to self (validator %d)", idx)
 			continue
 		}
 
-		metadata := validatorKeyset[len(validatorKeyset)-128:]
+		// Decide whether to connect based on the preferred initiator
+		myKey := privateKey.Public().(ed25519.PublicKey)
+		otherKey := publicKey[:]
+
+		// Check if we are the preferred initiator using the formula:
+		// P(a, b) = a when (a₃₁ > 127) ⊕ (b₃₁ > 127) ⊕ (a < b), otherwise b
+		myKeyLast := myKey[31] > 127
+		otherKeyLast := otherKey[31] > 127
+		myKeyLessThan := bytes.Compare(myKey, otherKey) < 0
+
+		// XOR operation for the three boolean conditions
+		amPreferredInitiator := (myKeyLast != otherKeyLast) != myKeyLessThan
+
+		if !amPreferredInitiator {
+			log.Printf("Not the preferred initiator for validator %d, waiting for them to connect to us",
+				idx)
+
+			// Listen specifically for the target validator
+			conn, err := node.AcceptFrom(ctx, otherKey)
+			if err != nil {
+				log.Printf("Error accepting connection from validator %d: %v", idx, err)
+				continue
+			}
+
+			log.Printf("Successfully established connection with validator %d", idx)
+
+			// Store the connection in our connections map for consistent handling
+			connectedNodes++
+			// Use validator index as identifier in the connections map
+			connectionKey := fmt.Sprintf("validator-%d", idx)
+			connections[connectionKey] = conn
+			log.Printf("Connection from validator %d added to connection map (%d/%d connections established)",
+				idx, connectedNodes, len(state.ValidatorKeysetsActive))
+
+			continue
+		}
+
+		log.Printf("I am the preferred initiator for validator %d, proceeding with connection", idx)
 
 		// Extract IPv6 address (first 16 bytes)
-		ipv6Addr := metadata[:16]
-		ip := stdnet.IP(ipv6Addr).String()
+		ipv6Addr := validatorKeyset[len(validatorKeyset)-128:]
+		ipv6Str := stdnet.IP(ipv6Addr).String()
 
 		// Extract port (next 2 bytes in little endian)
-		port := binary.LittleEndian.Uint16(metadata[16:18])
+		port := binary.LittleEndian.Uint16(ipv6Addr[16:18])
 
 		// Construct bootnode address
-		bootnode := fmt.Sprintf("[%s]:%d", ip, port)
+		target := fmt.Sprintf("[%s]:%d", ipv6Str, port)
 
-		log.Printf("Connecting to validator %d at %s", idx, bootnode)
-		conn, err := connectToNode(ctx, client, bootnode)
+		log.Printf("Connecting to validator %d at %s", idx, target)
+
+		// Establish connection to the validator
+		conn, err := connectToNode(ctx, node, target)
 		if err != nil {
-			log.Printf("Failed to connect to bootnode %s: %v", bootnode, err)
+			log.Printf("Failed to connect to validator %d: %v", idx, err)
 			continue
 		}
 
-		// For each successful connection, open required streams
-		err = openRequiredStreams(ctx, client, conn)
-		if err != nil {
-			log.Printf("Failed to open required streams for bootnode %s: %v", bootnode, err)
-			continue
-		}
-
-		log.Printf("Successfully connected to bootnode: %s", bootnode)
 		connectedNodes++
-		break
+		connectionKey := fmt.Sprintf("validator-%d", idx)
+		connections[connectionKey] = conn
+		log.Printf("Successfully connected to validator %d at %s (%d/%d connections established)",
+			idx, target, connectedNodes, len(state.ValidatorKeysetsActive))
 	}
 
-	log.Printf("Connected to %d out of %d bootnodes", connectedNodes, len(config.Bootnodes))
+	log.Printf("Connected to %d bootnodes", connectedNodes)
+
+	// Now open streams on all successful connections
+	log.Printf("Opening required streams on all %d connections", len(connections))
+	for target, conn := range connections {
+		err := openRequiredStreams(ctx, node, conn)
+		if err != nil {
+			log.Printf("Failed to open required streams for bootnode %s: %v", target, err)
+			continue
+		}
+		log.Printf("Successfully opened all required streams for bootnode %s", target)
+	}
 
 	// Listen indefinitely
 	log.Println("Node is running. Press Ctrl+C to exit.")
@@ -240,30 +296,31 @@ func main() {
 }
 
 // connectToNode connects to a node with retry logic
-func connectToNode(ctx context.Context, client *net.Client, address string) (net.Connection, error) {
+func connectToNode(ctx context.Context, node *net.Node, address string) (net.Connection, error) {
 	var conn net.Connection
 	var err error
 
-	// Try connecting up to 3 times
+	// Try to connect with retry logic
 	for attempts := 0; attempts < 3; attempts++ {
-		conn, err = client.Connect(ctx, address)
+		conn, err = node.Connect(ctx, address)
 		if err == nil {
 			return conn, nil
 		}
 
-		log.Printf("Attempt %d: Failed to connect to %s: %v", attempts+1, address, err)
+		// Log error and retry
+		log.Printf("Connection attempt %d failed: %v", attempts+1, err)
 		time.Sleep(2 * time.Second)
 	}
 
-	return nil, fmt.Errorf("failed to connect after multiple attempts: %w", err)
+	return nil, fmt.Errorf("failed to connect after 3 attempts: %w", err)
 }
 
 // openRequiredStreams opens the required streams for a connection according to JAMNP-S
-func openRequiredStreams(ctx context.Context, client *net.Client, conn net.Connection) error {
+func openRequiredStreams(ctx context.Context, node *net.Node, conn net.Connection) error {
 	// First register handlers for incoming messages
 
 	// Handle block announcements
-	err := client.HandleBlockAnnouncements(conn, func(announcement *net.BlockAnnouncement) error {
+	err := node.HandleBlockAnnouncements(conn, func(announcement *net.BlockAnnouncement) error {
 		log.Printf("Block announcement: %d headers, finalized block %x at slot %d",
 			len(announcement.Headers),
 			announcement.FinalizedRef.Hash,
@@ -282,7 +339,7 @@ func openRequiredStreams(ctx context.Context, client *net.Client, conn net.Conne
 	}
 
 	// Handle assurance distributions
-	err = client.HandleAssuranceDistributions(conn, func(assuranceData []byte) error {
+	err = node.HandleAssuranceDistributions(conn, func(assuranceData []byte) error {
 		log.Printf("Received assurance distribution: %d bytes", len(assuranceData))
 		// Process assurance data if needed
 		return nil
@@ -292,7 +349,7 @@ func openRequiredStreams(ctx context.Context, client *net.Client, conn net.Conne
 	}
 
 	// Now open the block announcement stream
-	stream, err := client.OpenBlockAnnouncementStream(ctx, conn)
+	stream, err := node.OpenBlockAnnouncementStream(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to open block announcement stream: %w", err)
 	}
@@ -317,7 +374,7 @@ func openRequiredStreams(ctx context.Context, client *net.Client, conn net.Conne
 	log.Printf("Sent initial block announcement handshake")
 
 	// Open an assurance distribution stream
-	_, err = client.OpenAssuranceDistributionStream(ctx, conn)
+	_, err = node.OpenAssuranceDistributionStream(ctx, conn)
 	if err != nil {
 		log.Printf("Warning: failed to open assurance distribution stream: %v", err)
 		// Don't return error here - this is optional for initial connection
@@ -363,10 +420,10 @@ func encodeBlockAnnouncementHandshake(finalHash [32]byte, finalSlot uint32, leav
 }
 
 // requestWorkReport requests a work report for the given hash
-func requestWorkReport(ctx context.Context, client *net.Client, conn net.Connection, hash [32]byte) {
+func requestWorkReport(ctx context.Context, node *net.Node, conn net.Connection, hash [32]byte) {
 	log.Printf("Requesting work report for hash: %x", hash)
 
-	report, err := client.RequestWorkReport(ctx, conn, hash)
+	report, err := node.RequestWorkReport(ctx, conn, hash)
 	if err != nil {
 		log.Fatalf("Failed to request work report: %v", err)
 	}
@@ -376,10 +433,10 @@ func requestWorkReport(ctx context.Context, client *net.Client, conn net.Connect
 }
 
 // requestBlocks requests blocks in the given direction from the starting hash
-func requestBlocks(ctx context.Context, client *net.Client, conn net.Connection, hash [32]byte, direction net.Direction, maxBlocks uint32, saveDir string) {
+func requestBlocks(ctx context.Context, node *net.Node, conn net.Connection, hash [32]byte, direction net.Direction, maxBlocks uint32, saveDir string) {
 	log.Printf("Requesting up to %d blocks %s from %x", maxBlocks, directionString(direction), hash)
 
-	blocks, err := client.RequestBlocks(ctx, conn, hash, direction, maxBlocks)
+	blocks, err := node.RequestBlocks(ctx, conn, hash, direction, maxBlocks)
 	if err != nil {
 		log.Fatalf("Failed to request blocks: %v", err)
 	}
@@ -396,7 +453,7 @@ func requestBlocks(ctx context.Context, client *net.Client, conn net.Connection,
 }
 
 // requestState requests state for the given root hash
-func requestState(ctx context.Context, client *net.Client, conn net.Connection, stateRoot [32]byte) {
+func requestState(ctx context.Context, node *net.Node, conn net.Connection, stateRoot [32]byte) {
 	log.Printf("Requesting state for root: %x", stateRoot)
 
 	options := &net.StateRequestOptions{
@@ -406,7 +463,7 @@ func requestState(ctx context.Context, client *net.Client, conn net.Connection, 
 		MaximumSize: 1024 * 1024, // 1MB max size
 	}
 
-	response, err := client.RequestState(ctx, conn, options)
+	response, err := node.RequestState(ctx, conn, options)
 	if err != nil {
 		log.Fatalf("Failed to request state: %v", err)
 	}
