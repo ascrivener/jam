@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"time"
 
-	stdnet "net"
-
 	"jam/pkg/block"
 	"jam/pkg/block/header"
 	"jam/pkg/merklizer"
@@ -23,6 +21,7 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
+	"jam/pkg/types"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/blake2b"
@@ -171,9 +170,10 @@ func main() {
 
 	// Create a network node for both outgoing and incoming connections
 	nodeOpts := net.NodeOptions{
-		PrivateKey: privateKey,
-		ChainID:    chainID,
-		ListenAddr: ":40000", // Listen on port 40000 for incoming connections
+		PrivateKey:  privateKey,
+		ChainID:     chainID,
+		ListenAddr:  ":40000", // Listen on port 40000 for incoming connections
+		DialTimeout: 10 * time.Second,
 	}
 
 	node, err := net.NewNode(nodeOpts)
@@ -184,33 +184,23 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start the node's listener to accept incoming connections
-	if err := node.Start(ctx); err != nil {
-		log.Fatalf("Error starting network node: %v", err)
-	}
-	defer node.Close()
-
-	log.Printf("Network node started, listening at %s", node.Addr())
-
-	// Connect to bootnodes
-	var connectedNodes int
-	connections := make(map[string]net.Connection) // Map of bootnode address to connection
-
 	state, err := state.GetState(*repo)
 	if err != nil {
 		log.Fatalf("Failed to get state: %v", err)
 	}
 
-	// Iterate through validator keysets and connect
+	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
+	myKey := privateKey.Public().(ed25519.PublicKey)
+	var iAmInitiator []types.ValidatorKeyset
+	var theyAreInitiator []types.ValidatorKeyset
+
 	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
 		publicKey := validatorKeyset.ToEd25519PublicKey()
-		if bytes.Equal(publicKey[:], privateKey.Public().(ed25519.PublicKey)) {
+		if bytes.Equal(publicKey[:], myKey) {
 			log.Printf("Skipping connection to self (validator %d)", idx)
 			continue
 		}
 
-		// Decide whether to connect based on the preferred initiator
-		myKey := privateKey.Public().(ed25519.PublicKey)
 		otherKey := publicKey[:]
 
 		// Check if we are the preferred initiator using the formula:
@@ -222,69 +212,28 @@ func main() {
 		// XOR operation for the three boolean conditions
 		amPreferredInitiator := (myKeyLast != otherKeyLast) != myKeyLessThan
 
-		if !amPreferredInitiator {
-			log.Printf("Not the preferred initiator for validator %d, waiting for them to connect to us",
-				idx)
-
-			// Listen specifically for the target validator
-			conn, err := node.AcceptFrom(ctx, otherKey)
-			if err != nil {
-				log.Printf("Error accepting connection from validator %d: %v", idx, err)
-				continue
-			}
-
-			log.Printf("Successfully established connection with validator %d", idx)
-
-			// Store the connection in our connections map for consistent handling
-			connectedNodes++
-			// Use validator index as identifier in the connections map
-			connectionKey := fmt.Sprintf("validator-%d", idx)
-			connections[connectionKey] = conn
-			log.Printf("Connection from validator %d added to connection map (%d/%d connections established)",
-				idx, connectedNodes, len(state.ValidatorKeysetsActive))
-
-			continue
+		if amPreferredInitiator {
+			iAmInitiator = append(iAmInitiator, validatorKeyset)
+		} else {
+			theyAreInitiator = append(theyAreInitiator, validatorKeyset)
 		}
-
-		log.Printf("I am the preferred initiator for validator %d, proceeding with connection", idx)
-
-		// Extract IPv6 address (first 16 bytes)
-		ipv6Addr := validatorKeyset[len(validatorKeyset)-128:]
-		ipv6Str := stdnet.IP(ipv6Addr).String()
-
-		// Extract port (next 2 bytes in little endian)
-		port := binary.LittleEndian.Uint16(ipv6Addr[16:18])
-
-		// Construct bootnode address
-		target := fmt.Sprintf("[%s]:%d", ipv6Str, port)
-
-		log.Printf("Connecting to validator %d at %s", idx, target)
-
-		// Establish connection to the validator
-		conn, err := connectToNode(ctx, node, target)
-		if err != nil {
-			log.Printf("Failed to connect to validator %d: %v", idx, err)
-			continue
-		}
-
-		connectedNodes++
-		connectionKey := fmt.Sprintf("validator-%d", idx)
-		connections[connectionKey] = conn
-		log.Printf("Successfully connected to validator %d at %s (%d/%d connections established)",
-			idx, target, connectedNodes, len(state.ValidatorKeysetsActive))
 	}
 
-	log.Printf("Connected to %d bootnodes", connectedNodes)
+	log.Printf("Partitioned validators: I am initiator for %d validators, waiting for %d validators to connect to me",
+		len(iAmInitiator), len(theyAreInitiator))
+
+	// Start the node's listener to accept incoming connections
+	if err := node.Start(ctx, iAmInitiator, theyAreInitiator); err != nil {
+		log.Fatalf("Error starting network node: %v", err)
+	}
+	defer node.Close()
+
+	log.Printf("Network node started, listening at %s", node.Addr())
 
 	// Now open streams on all successful connections
-	log.Printf("Opening required streams on all %d connections", len(connections))
-	for target, conn := range connections {
-		err := openRequiredStreams(ctx, node, conn)
-		if err != nil {
-			log.Printf("Failed to open required streams for bootnode %s: %v", target, err)
-			continue
-		}
-		log.Printf("Successfully opened all required streams for bootnode %s", target)
+	log.Printf("Opening required streams on all connections...")
+	if err := node.OpenAllStreams(ctx); err != nil {
+		log.Printf("Warning: Some streams failed to open: %v", err)
 	}
 
 	// Listen indefinitely
@@ -293,130 +242,6 @@ func main() {
 	case <-ctx.Done():
 		log.Println("Context cancelled, shutting down...")
 	}
-}
-
-// connectToNode connects to a node with retry logic
-func connectToNode(ctx context.Context, node *net.Node, address string) (net.Connection, error) {
-	var conn net.Connection
-	var err error
-
-	// Try to connect with retry logic
-	for attempts := 0; attempts < 3; attempts++ {
-		conn, err = node.Connect(ctx, address)
-		if err == nil {
-			return conn, nil
-		}
-
-		// Log error and retry
-		log.Printf("Connection attempt %d failed: %v", attempts+1, err)
-		time.Sleep(2 * time.Second)
-	}
-
-	return nil, fmt.Errorf("failed to connect after 3 attempts: %w", err)
-}
-
-// openRequiredStreams opens the required streams for a connection according to JAMNP-S
-func openRequiredStreams(ctx context.Context, node *net.Node, conn net.Connection) error {
-	// First register handlers for incoming messages
-
-	// Handle block announcements
-	err := node.HandleBlockAnnouncements(conn, func(announcement *net.BlockAnnouncement) error {
-		log.Printf("Block announcement: %d headers, finalized block %x at slot %d",
-			len(announcement.Headers),
-			announcement.FinalizedRef.Hash,
-			announcement.FinalizedRef.Slot)
-
-		// Save headers if present
-		for i, header := range announcement.Headers {
-			log.Printf("Header %d: %d bytes", i, len(header))
-			// Can save headers if needed
-		}
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to register block announcement handler: %w", err)
-	}
-
-	// Handle assurance distributions
-	err = node.HandleAssuranceDistributions(conn, func(assuranceData []byte) error {
-		log.Printf("Received assurance distribution: %d bytes", len(assuranceData))
-		// Process assurance data if needed
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to register assurance distribution handler: %w", err)
-	}
-
-	// Now open the block announcement stream
-	stream, err := node.OpenBlockAnnouncementStream(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("failed to open block announcement stream: %w", err)
-	}
-
-	// Create a handshake message with our known leaves
-	// For now, just send an empty handshake as we don't have any known blocks yet
-	finalizedBlockHash := [32]byte{} // Empty hash for now
-	finalizedBlockSlot := uint32(0)  // Slot 0
-
-	// No leaves to send initially
-	var leaves [][32]byte
-	var leafSlots []uint32
-
-	// Encode and send handshake
-	handshakeData := encodeBlockAnnouncementHandshake(finalizedBlockHash, finalizedBlockSlot, leaves, leafSlots)
-
-	// Use the WriteMessage function from the net package to send the handshake
-	if err := net.WriteMessage(stream, handshakeData); err != nil {
-		return fmt.Errorf("failed to send block announcement handshake: %w", err)
-	}
-
-	log.Printf("Sent initial block announcement handshake")
-
-	// Open an assurance distribution stream
-	_, err = node.OpenAssuranceDistributionStream(ctx, conn)
-	if err != nil {
-		log.Printf("Warning: failed to open assurance distribution stream: %v", err)
-		// Don't return error here - this is optional for initial connection
-	}
-
-	return nil
-}
-
-// encodeBlockAnnouncementHandshake encodes a block announcement handshake message
-// according to the JAMNP-S specification
-func encodeBlockAnnouncementHandshake(finalHash [32]byte, finalSlot uint32, leaves [][32]byte, leafSlots []uint32) []byte {
-	if len(leaves) != len(leafSlots) {
-		log.Printf("Warning: mismatched leaves and slots arrays, ignoring leaves")
-		leaves = nil
-		leafSlots = nil
-	}
-
-	// Format according to JAMNP-S:
-	// Handshake = Final ++ len++[Leaf]
-	// Final = Header Hash ++ Slot
-	// Leaf = Header Hash ++ Slot
-
-	// Start with final hash and slot
-	result := make([]byte, 36) // 32 + 4
-	copy(result[:32], finalHash[:])
-	binary.LittleEndian.PutUint32(result[32:36], finalSlot)
-
-	// Add leaf count
-	leafCount := uint32(len(leaves))
-	leafCountBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(leafCountBytes, leafCount)
-	result = append(result, leafCountBytes...)
-
-	// Add leaves (hash + slot for each)
-	for i, leaf := range leaves {
-		leafData := make([]byte, 36) // 32 + 4
-		copy(leafData[:32], leaf[:])
-		binary.LittleEndian.PutUint32(leafData[32:], leafSlots[i])
-		result = append(result, leafData...)
-	}
-
-	return result
 }
 
 // requestWorkReport requests a work report for the given hash

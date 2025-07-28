@@ -1,7 +1,6 @@
 package net
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,9 +8,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"jam/pkg/types"
+	"log"
 	"math/big"
 	"net"
 	"sync"
@@ -26,7 +29,7 @@ type NodeOptions struct {
 	PrivateKey  ed25519.PrivateKey // Ed25519 private key
 	ChainID     string             // Chain ID
 	ListenAddr  string             // Address to listen on (default: ":40000")
-	DialTimeout time.Duration      // Timeout for outbound connections (default: 10s)
+	DialTimeout time.Duration      // Timeout for outbound connections (default: 30s)
 	IsBuilder   bool
 }
 
@@ -37,14 +40,7 @@ type Node struct {
 	quicConfig  *quic.Config
 	listener    *quic.Listener
 	listenAddr  string
-	connections map[string]Connection        // Map of address -> connection
-	peerKeys    map[string]ed25519.PublicKey // Map of peer key -> connection
-	acceptCond  *sync.Cond                   // Condition variable for AcceptFrom
-	acceptMtx   sync.Mutex                   // Mutex for acceptCond
-	incomingCh  chan incomingConn            // Channel for incoming connections
-	closeCh     chan struct{}                // Channel for close signal
-	closed      bool                         // Whether the node is closed
-	closeMtx    sync.Mutex                   // Mutex for closed
+	connections sync.Map // Map of address -> connection
 }
 
 // incomingConn represents an incoming connection with its public key
@@ -66,13 +62,6 @@ const AlternativeNameEncoding = "abcdefghijklmnopqrstuvwxyz234567"
 
 // NewNode creates a new JAMNP-S node
 func NewNode(opts NodeOptions) (*Node, error) {
-	// Set default values
-	if opts.ListenAddr == "" {
-		opts.ListenAddr = ":40000"
-	}
-	if opts.DialTimeout == 0 {
-		opts.DialTimeout = 10 * time.Second
-	}
 
 	// Generate TLS certificate
 	cert, err := generateCertificate(opts.PrivateKey)
@@ -141,14 +130,8 @@ func NewNode(opts NodeOptions) (*Node, error) {
 		tlsConfig:   tlsConfig,
 		quicConfig:  quicConfig,
 		listenAddr:  opts.ListenAddr,
-		connections: make(map[string]Connection),
-		peerKeys:    make(map[string]ed25519.PublicKey),
-		incomingCh:  make(chan incomingConn),
-		closeCh:     make(chan struct{}),
+		connections: sync.Map{},
 	}
-
-	// Initialize condition variable
-	node.acceptCond = sync.NewCond(&node.acceptMtx)
 
 	return node, nil
 }
@@ -229,7 +212,7 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 }
 
 // Start starts the node's listener to accept incoming connections
-func (n *Node) Start(ctx context.Context) error {
+func (n *Node) Start(ctx context.Context, iAmInitiator []types.ValidatorKeyset, theyAreInitiator []types.ValidatorKeyset) error {
 	udpAddr, err := net.ResolveUDPAddr("udp", n.listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
@@ -248,194 +231,208 @@ func (n *Node) Start(ctx context.Context) error {
 
 	n.listener = listener
 
+	// Use a WaitGroup to wait for both accepting and initiating connections to complete
+	var wg sync.WaitGroup
+
 	// Start accepting connections in a goroutine
-	go n.acceptLoop(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.acceptConnections(ctx, theyAreInitiator)
+	}()
+
+	// Start outbound connections to validators where I am the initiator
+	for _, v := range iAmInitiator {
+		wg.Add(1)
+		go func(validatorKeyset types.ValidatorKeyset) {
+			defer wg.Done()
+			n.initiateConnection(ctx, validatorKeyset)
+		}(v)
+	}
+
+	// Wait for all connections (both incoming and outgoing) to be established
+	wg.Wait()
 
 	return nil
 }
 
-// acceptLoop accepts incoming connections
-func (n *Node) acceptLoop(ctx context.Context) {
-	for {
-		// Check if the context is done or the node is closed
-		select {
-		case <-ctx.Done():
-			return
-		case <-n.closeCh:
-			return
-		default:
-		}
-
-		// Accept a new connection
-		quicConn, err := n.listener.Accept(ctx)
-		if err != nil {
-			// Check if the error is due to listener closing
-			if n.isClosed() {
-				return
-			}
-
-			// Log the error and continue
-			fmt.Printf("Error accepting connection: %v\n", err)
-			continue
-		}
-
-		// Handle the connection in a goroutine
-		go n.handleIncomingConnection(quicConn)
-	}
-}
-
-// handleIncomingConnection processes an incoming QUIC connection
-func (n *Node) handleIncomingConnection(quicConn quic.Connection) {
-	// Extract the peer's public key from the TLS certificate
-	tlsState := quicConn.ConnectionState().TLS
-	if len(tlsState.PeerCertificates) == 0 {
-		quicConn.CloseWithError(0, "no client certificate")
-		return
-	}
-
-	cert := tlsState.PeerCertificates[0]
-	remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
-	if !ok {
-		quicConn.CloseWithError(0, "invalid certificate key type")
-		return
-	}
-
-	// Create a JAMNP-S connection
+// createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
+func (n *Node) createAndStoreConnection(quicConn quic.Connection) error {
+	// Create JAMNP-S connection
 	conn, err := NewConnection(quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey))
 	if err != nil {
 		quicConn.CloseWithError(0, "failed to create connection")
-		return
+		return fmt.Errorf("failed to create JAMNP-S connection: %w", err)
 	}
 
-	// Send the connection to the incoming channel
-	select {
-	case n.incomingCh <- incomingConn{conn: conn, publicKey: remoteKey}:
-		// Connection will be handled by AcceptFrom or another method
-	case <-n.closeCh:
-		conn.Close()
-		return
-	}
+	// Store the connection in the map
+	n.connections.Store(hex.EncodeToString(conn.RemoteKey()), conn)
 
-	// Store the public key for this connection
-	peerKeyStr := fmt.Sprintf("%x", remoteKey)
-
-	n.acceptMtx.Lock()
-	n.peerKeys[peerKeyStr] = remoteKey
-	n.acceptMtx.Unlock()
-
-	// Signal that a new connection has been accepted
-	n.acceptCond.Broadcast()
+	return nil
 }
 
-// AcceptFrom waits for a connection from a specific validator by public key
-func (n *Node) AcceptFrom(ctx context.Context, publicKey ed25519.PublicKey) (Connection, error) {
+// acceptConnections accepts incoming connections
+func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []types.ValidatorKeyset) {
+	// Create a map for faster lookup of expected validators by public key
+	expectedValidators := make(map[string]types.ValidatorKeyset)
+	for _, validator := range theyAreInitiator {
+		publicKey := validator.ToEd25519PublicKey()
+		expectedValidators[hex.EncodeToString(publicKey[:])] = validator
+	}
 
-	// Check if we already have a connection from this peer
-	n.acceptMtx.Lock()
-	defer n.acceptMtx.Unlock()
+	log.Printf("Accepting connections from %d expected validators", len(expectedValidators))
 
-	// Set up a goroutine to check the incoming channel
-	connCh := make(chan Connection, 1)
-	errCh := make(chan error, 1)
+	// Channel to signal when a connection is successfully established
+	connectionEstablished := make(chan string, len(expectedValidators))
+	connectedValidators := make(map[string]bool)
 
+	// Channel to deliver new QUIC connections
+	newConnections := make(chan quic.Connection, 1)
+
+	// Goroutine to accept connections and forward them to the channel
 	go func() {
 		for {
-			select {
-			case incoming := <-n.incomingCh:
-				// Check if this is the peer we're waiting for
-				if bytes.Equal(incoming.publicKey, publicKey) {
-					connCh <- incoming.conn
-					return
+			quicConn, err := n.listener.Accept(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return // Context cancelled
 				}
+				fmt.Printf("Error accepting connection: %v\n", err)
+				continue
+			}
 
-				// Not the peer we're looking for, close and continue
-				incoming.conn.Close()
-
+			select {
+			case newConnections <- quicConn:
+				// Successfully forwarded
 			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-
-			case <-n.closeCh:
-				errCh <- fmt.Errorf("node closed")
+				quicConn.CloseWithError(0, "shutting down")
 				return
 			}
 		}
 	}()
 
-	// Wait for either a connection or an error
-	select {
-	case conn := <-connCh:
-		return conn, nil
+	for {
+		// Use blocking select to handle either connection signals or new connections
+		select {
+		case validatorKey := <-connectionEstablished:
+			connectedValidators[validatorKey] = true
+			log.Printf("Connected validator %s (%d/%d validators connected)",
+				validatorKey, len(connectedValidators), len(expectedValidators))
 
-	case err := <-errCh:
-		return nil, err
+			if len(connectedValidators) == len(expectedValidators) {
+				log.Printf("All %d expected validators have connected. Stopping acceptance of new connections.", len(expectedValidators))
+				return
+			}
 
-	case <-ctx.Done():
-		return nil, ctx.Err()
+		case quicConn := <-newConnections:
+			// Handle the connection in a goroutine
+			go func(conn quic.Connection) {
+				// Extract the peer's public key from the TLS certificate
+				tlsState := conn.ConnectionState().TLS
+				if len(tlsState.PeerCertificates) == 0 {
+					conn.CloseWithError(0, "no client certificate")
+					return
+				}
+
+				cert := tlsState.PeerCertificates[0]
+				remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
+				if !ok {
+					conn.CloseWithError(0, "invalid certificate key type")
+					return
+				}
+
+				// Check if this validator is in the expected list
+				remoteKeyStr := fmt.Sprintf("%x", remoteKey)
+				_, isExpected := expectedValidators[remoteKeyStr]
+
+				if !isExpected {
+					conn.CloseWithError(0, "validator not in expected initiator list")
+					fmt.Printf("Rejected connection from unexpected validator with key: %s\n", remoteKeyStr)
+					return
+				}
+
+				// Check if this validator has already connected by checking if it's already in connections
+				if _, exists := n.connections.Load(remoteKeyStr); exists {
+					conn.CloseWithError(0, "validator already connected")
+					fmt.Printf("Rejected duplicate connection from validator with key: %s\n", remoteKeyStr)
+					return
+				}
+
+				if err := n.createAndStoreConnection(conn); err != nil {
+					fmt.Printf("Failed to create connection for validator %s: %v\n", remoteKeyStr, err)
+					return
+				}
+
+				// Signal that this connection has been successfully established
+				select {
+				case connectionEstablished <- remoteKeyStr:
+					// Successfully signaled
+				default:
+					// Channel might be full or closed, but connection is still established
+					log.Printf("Warning: Could not signal connection establishment for %s", remoteKeyStr)
+				}
+			}(quicConn)
+
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
-// Connect establishes an outbound connection to the given address
-func (n *Node) Connect(ctx context.Context, address string) (Connection, error) {
-	// Check if we already have a connection to this address
-	n.acceptMtx.Lock()
-	if conn, ok := n.connections[address]; ok {
-		n.acceptMtx.Unlock()
-		return conn, nil
-	}
-	n.acceptMtx.Unlock()
+// initiateConnection establishes an outbound connection to a validator where this node is the initiator
+func (n *Node) initiateConnection(ctx context.Context, validatorKeyset types.ValidatorKeyset) {
+	// Extract the last 128 bytes which contain network information
+	networkInfo := validatorKeyset[len(validatorKeyset)-128:]
 
+	// Extract IPv6 address (first 16 bytes of network info)
+	ipv6Addr := networkInfo[:16]
+	ipv6Str := net.IP(ipv6Addr).String()
+
+	// Extract port (next 2 bytes in little endian)
+	port := binary.LittleEndian.Uint16(networkInfo[16:18])
+
+	// Construct target address
+	target := fmt.Sprintf("[%s]:%d", ipv6Str, port)
+
+	log.Printf("Connecting to validator %d at %s", validatorKeyset.ToEd25519PublicKey(), target)
+
+	// Establish connection with retry logic
+	for attempts := 0; attempts < 3; attempts++ {
+		err := n.Connect(ctx, target)
+		if err == nil {
+			log.Printf("Successfully connected to validator %d at %s", validatorKeyset.ToEd25519PublicKey(), target)
+			return
+		}
+
+		log.Printf("Connection attempt %d to validator %d failed: %v", attempts+1, validatorKeyset.ToEd25519PublicKey(), err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+			continue
+		}
+	}
+
+	log.Printf("Failed to connect to validator %d after 3 attempts", validatorKeyset.ToEd25519PublicKey())
+}
+
+// Connect establishes an outbound connection to the given address
+func (n *Node) Connect(ctx context.Context, address string) error {
 	// Create a context with timeout
 	dialCtx, cancel := context.WithTimeout(ctx, n.opts.DialTimeout)
 	defer cancel()
 
-	// Resolve the address
-	udpAddr, err := net.ResolveUDPAddr("udp", address)
+	// Use the built-in QUIC DialAddrEarly which handles connection establishment properly
+	conn, err := quic.DialAddrEarly(dialCtx, address, n.tlsConfig, n.quicConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve address: %w", err)
+		return fmt.Errorf("failed to establish QUIC connection: %w", err)
 	}
 
-	// Dial the UDP address
-	udpConn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial UDP: %w", err)
+	if err := n.createAndStoreConnection(conn); err != nil {
+		return fmt.Errorf("failed to create and store connection: %w", err)
 	}
 
-	// Establish QUIC connection
-	quicConn, err := quic.DialEarly(dialCtx, udpConn, udpAddr, n.tlsConfig, n.quicConfig)
-	if err != nil {
-		udpConn.Close()
-		return nil, fmt.Errorf("failed to establish QUIC connection: %w", err)
-	}
-
-	// Create JAMNP-S connection
-	conn, err := NewConnection(quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey))
-	if err != nil {
-		quicConn.CloseWithError(0, "failed to create connection")
-		return nil, fmt.Errorf("failed to create JAMNP-S connection: %w", err)
-	}
-
-	// Extract peer's public key
-	tlsState := quicConn.ConnectionState().TLS
-	if len(tlsState.PeerCertificates) == 0 {
-		conn.Close()
-		return nil, fmt.Errorf("no server certificate")
-	}
-
-	cert := tlsState.PeerCertificates[0]
-	remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
-	if !ok {
-		conn.Close()
-		return nil, fmt.Errorf("invalid certificate key type")
-	}
-
-	// Store the connection
-	n.acceptMtx.Lock()
-	n.connections[address] = conn
-	n.peerKeys[fmt.Sprintf("%x", remoteKey)] = remoteKey
-	n.acceptMtx.Unlock()
-
-	return conn, nil
+	return nil
 }
 
 // Addr returns the listening address
@@ -448,15 +445,6 @@ func (n *Node) Addr() net.Addr {
 
 // Close closes the node and all its connections
 func (n *Node) Close() error {
-	n.closeMtx.Lock()
-	defer n.closeMtx.Unlock()
-
-	if n.closed {
-		return nil
-	}
-
-	n.closed = true
-	close(n.closeCh)
 
 	// Close the listener
 	var err error
@@ -465,22 +453,13 @@ func (n *Node) Close() error {
 	}
 
 	// Close all connections
-	n.acceptMtx.Lock()
-	for _, conn := range n.connections {
+	n.connections.Range(func(key, value interface{}) bool {
+		conn := value.(Connection)
 		conn.Close()
-	}
-	n.connections = make(map[string]Connection)
-	n.peerKeys = make(map[string]ed25519.PublicKey)
-	n.acceptMtx.Unlock()
+		return true
+	})
 
 	return err
-}
-
-// isClosed checks if the node is closed
-func (n *Node) isClosed() bool {
-	n.closeMtx.Lock()
-	defer n.closeMtx.Unlock()
-	return n.closed
 }
 
 // generateCertificate creates a self-signed certificate for the JAMNP-S client
@@ -751,4 +730,154 @@ func (n *Node) HandleAssuranceDistributions(conn Connection, handler func([]byte
 
 	conn.RegisterHandler(StreamKindCE141AssuranceDistribution, streamHandler)
 	return nil
+}
+
+// OpenAllStreams opens required streams on all active connections with retry logic
+func (n *Node) OpenAllStreams(ctx context.Context) error {
+	var errors []string
+
+	n.connections.Range(func(key, value interface{}) bool {
+		validatorID := key.(string)
+		conn := value.(Connection)
+
+		// Use retry logic for stream opening
+		var err error
+		for attempts := 0; attempts < 3; attempts++ {
+			err = n.openRequiredStreamsForConnection(ctx, conn)
+			if err == nil {
+				log.Printf("Successfully opened all required streams for validator %s", validatorID)
+				break
+			}
+
+			// If we hit an error, log it and retry after a delay
+			log.Printf("Attempt %d: Failed to open streams for validator %s: %v",
+				attempts+1, validatorID, err)
+
+			// Give a short delay between retries (but not on the last attempt)
+			if attempts < 2 {
+				select {
+				case <-ctx.Done():
+					return false // Stop iteration if context is cancelled
+				case <-time.After(time.Duration(attempts+1) * time.Second):
+					continue
+				}
+			}
+		}
+
+		if err != nil {
+			errorMsg := fmt.Sprintf("Failed to open required streams for validator %s after multiple attempts: %v", validatorID, err)
+			log.Printf(errorMsg)
+			errors = append(errors, errorMsg)
+		}
+
+		return true // Continue iteration
+	})
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to open streams on some connections: %v", errors)
+	}
+
+	return nil
+}
+
+// openRequiredStreamsForConnection opens the required streams for a single connection
+func (n *Node) openRequiredStreamsForConnection(ctx context.Context, conn Connection) error {
+	// Handle block announcements
+	err := n.HandleBlockAnnouncements(conn, func(announcement *BlockAnnouncement) error {
+		log.Printf("Block announcement: %d headers, finalized block %x at slot %d",
+			len(announcement.Headers),
+			announcement.FinalizedRef.Hash,
+			announcement.FinalizedRef.Slot)
+
+		// Save headers if present
+		for i, header := range announcement.Headers {
+			log.Printf("Header %d: %d bytes", i, len(header))
+			// Can save headers if needed
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register block announcement handler: %w", err)
+	}
+
+	// Handle assurance distributions
+	err = n.HandleAssuranceDistributions(conn, func(assuranceData []byte) error {
+		log.Printf("Received assurance distribution: %d bytes", len(assuranceData))
+		// Process assurance data if needed
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register assurance distribution handler: %w", err)
+	}
+
+	// Now open the block announcement stream
+	stream, err := n.OpenBlockAnnouncementStream(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("failed to open block announcement stream: %w", err)
+	}
+
+	// Create a handshake message with our known leaves
+	// For now, just send an empty handshake as we don't have any known blocks yet
+	finalizedBlockHash := [32]byte{} // Empty hash for now
+	finalizedBlockSlot := uint32(0)  // Slot 0
+
+	// No leaves to send initially
+	var leaves [][32]byte
+	var leafSlots []uint32
+
+	// Encode and send handshake
+	handshakeData := encodeBlockAnnouncementHandshake(finalizedBlockHash, finalizedBlockSlot, leaves, leafSlots)
+
+	// Use the WriteMessage function from the net package to send the handshake
+	if err := WriteMessage(stream, handshakeData); err != nil {
+		return fmt.Errorf("failed to send block announcement handshake: %w", err)
+	}
+
+	log.Printf("Sent initial block announcement handshake")
+
+	// Open an assurance distribution stream
+	_, err = n.OpenAssuranceDistributionStream(ctx, conn)
+	if err != nil {
+		log.Printf("Warning: failed to open assurance distribution stream: %v", err)
+		// Don't return error here - this is optional for initial connection
+	}
+
+	return nil
+}
+
+// encodeBlockAnnouncementHandshake encodes a block announcement handshake message
+// according to the JAMNP-S specification
+func encodeBlockAnnouncementHandshake(finalHash [32]byte, finalSlot uint32, leaves [][32]byte, leafSlots []uint32) []byte {
+	if len(leaves) != len(leafSlots) {
+		log.Printf("Warning: mismatched leaves and slots arrays, ignoring leaves")
+		leaves = nil
+		leafSlots = nil
+	}
+
+	// Format according to JAMNP-S:
+	// Handshake = Final ++ len++[Leaf]
+	// Final = Header Hash ++ Slot
+	// Leaf = Header Hash ++ Slot
+
+	// Start with final hash and slot
+	result := make([]byte, 36) // 32 + 4
+	copy(result[:32], finalHash[:])
+	binary.LittleEndian.PutUint32(result[32:36], finalSlot)
+
+	// Add leaf count
+	leafCount := uint32(len(leaves))
+	leafCountBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(leafCountBytes, leafCount)
+	result = append(result, leafCountBytes...)
+
+	// Add leaves (hash + slot for each)
+	for i, leaf := range leaves {
+		leafData := make([]byte, 36) // 32 + 4
+		copy(leafData[:32], leaf[:])
+		binary.LittleEndian.PutUint32(leafData[32:], leafSlots[i])
+		result = append(result, leafData...)
+	}
+
+	return result
 }
