@@ -30,19 +30,20 @@ var (
 
 // jamnpsConnection implements the Connection interface
 type jamnpsConnection struct {
-	conn        quic.Connection
-	localKey    ed25519.PublicKey
-	remoteKey   ed25519.PublicKey
-	upStreams   map[StreamKind]quic.Stream
-	upStreamsMu sync.Mutex
-	handlers    map[StreamKind]StreamHandler
-	handlersMu  sync.RWMutex
-	streams     map[quic.StreamID]Stream
-	streamMu    sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	acceptErrCh chan error
+	conn                quic.Connection
+	localKey            ed25519.PublicKey
+	validatorInfo       ValidatorInfo
+	initializedByRemote bool
+	upStreams           map[StreamKind]quic.Stream
+	upStreamsMu         sync.Mutex
+	handlers            map[StreamKind]StreamHandler
+	handlersMu          sync.RWMutex
+	streams             map[quic.StreamID]Stream
+	streamMu            sync.Mutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
+	acceptErrCh         chan error
 }
 
 // jamnpsStream implements the Stream interface
@@ -57,32 +58,21 @@ type jamnpsStream struct {
 }
 
 // NewConnection creates a new Connection from a QUIC connection
-func NewConnection(conn quic.Connection, localKey ed25519.PublicKey) (Connection, error) {
-	// Extract the remote public key from the connection's peer certificate
-	tlsState := conn.ConnectionState().TLS
-	if len(tlsState.PeerCertificates) == 0 {
-		return nil, fmt.Errorf("peer did not provide a certificate")
-	}
-
-	cert := tlsState.PeerCertificates[0]
-	remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("peer certificate does not use Ed25519")
-	}
-
+func NewConnection(conn quic.Connection, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool) (Connection, error) {
 	// Create connection context
 	ctx, cancel := context.WithCancel(context.Background())
 
 	connection := &jamnpsConnection{
-		conn:        conn,
-		localKey:    localKey,
-		remoteKey:   remoteKey,
-		upStreams:   make(map[StreamKind]quic.Stream),
-		handlers:    make(map[StreamKind]StreamHandler),
-		ctx:         ctx,
-		cancel:      cancel,
-		acceptErrCh: make(chan error, 1),
-		streams:     make(map[quic.StreamID]Stream),
+		conn:                conn,
+		localKey:            localKey,
+		validatorInfo:       validatorInfo,
+		initializedByRemote: initializedByRemote,
+		upStreams:           make(map[StreamKind]quic.Stream),
+		handlers:            make(map[StreamKind]StreamHandler),
+		ctx:                 ctx,
+		cancel:              cancel,
+		acceptErrCh:         make(chan error, 1),
+		streams:             make(map[quic.StreamID]Stream),
 	}
 
 	// Start stream acceptor
@@ -254,41 +244,6 @@ func (c *jamnpsConnection) OpenStream(kind StreamKind) (Stream, error) {
 	}, nil
 }
 
-// AcceptStream accepts an incoming stream
-func (c *jamnpsConnection) AcceptStream() (StreamKind, Stream, error) {
-	select {
-	case <-c.ctx.Done():
-		return 0, nil, c.ctx.Err()
-	case err := <-c.acceptErrCh:
-		return 0, nil, err
-	case <-time.After(500 * time.Millisecond):
-		// No errors, continue with normal operation
-	}
-
-	// Accept new stream
-	stream, err := c.conn.AcceptStream(c.ctx)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	// Read stream kind byte
-	kindBuf := make([]byte, 1)
-	_, err = io.ReadFull(stream, kindBuf)
-	if err != nil {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
-		return 0, nil, err
-	}
-
-	kind := StreamKind(kindBuf[0])
-
-	// Return the stream
-	return kind, &jamnpsStream{
-		stream: stream,
-		kind:   kind,
-	}, nil
-}
-
 // RegisterHandler registers a handler for a specific stream kind
 func (c *jamnpsConnection) RegisterHandler(kind StreamKind, handler StreamHandler) {
 	c.handlersMu.Lock()
@@ -320,7 +275,18 @@ func (c *jamnpsConnection) Close() error {
 
 // RemoteKey returns the remote peer's public key
 func (c *jamnpsConnection) RemoteKey() ed25519.PublicKey {
-	return c.remoteKey
+	publicKey := c.validatorInfo.Keyset.ToEd25519PublicKey()
+	return publicKey[:]
+}
+
+// InitializedByRemote returns true if this connection was initialized by the remote peer
+func (c *jamnpsConnection) InitializedByRemote() bool {
+	return c.initializedByRemote
+}
+
+// ValidatorIdx returns the index of the validator this connection is to
+func (c *jamnpsConnection) ValidatorIdx() int {
+	return c.validatorInfo.Index
 }
 
 // LocalKey returns the local peer's public key

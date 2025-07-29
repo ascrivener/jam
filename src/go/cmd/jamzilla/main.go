@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
@@ -19,9 +18,7 @@ import (
 	"jam/pkg/merklizer"
 	"jam/pkg/net"
 	"jam/pkg/serializer"
-	"jam/pkg/state"
 	"jam/pkg/staterepository"
-	"jam/pkg/types"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/blake2b"
@@ -36,6 +33,11 @@ type Config struct {
 	GenesisHeader      string            `json:"genesis_header"`      // Genesis header as hex string
 }
 
+// main initializes the application by parsing command-line flags, loading configuration,
+// setting up the state repository, generating cryptographic keys, and starting the network
+// node to handle incoming and outgoing connections. It uses the configuration to set up
+// the genesis state and block, derives validator keys based on the dev validator index,
+// and listens for incoming connections indefinitely.
 func main() {
 	configPath := flag.String("config-path", "", "Path to a JSON configuration file")
 	devValidator := flag.Int("dev-validator", -1, "Dev validator index")
@@ -176,68 +178,26 @@ func main() {
 		DialTimeout: 10 * time.Second,
 	}
 
-	node, err := net.NewNode(nodeOpts)
+	// Initialize the global singleton node
+	err = net.InitializeGlobalNode(nodeOpts)
 	if err != nil {
 		log.Fatalf("Error creating network node: %v", err)
 	}
 
+	// Get reference to the global node for local use
+	node := net.GetGlobalNode()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	state, err := state.GetState(*repo)
-	if err != nil {
-		log.Fatalf("Failed to get state: %v", err)
-	}
-
-	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
-	myKey := privateKey.Public().(ed25519.PublicKey)
-	var iAmInitiator []types.ValidatorKeyset
-	var theyAreInitiator []types.ValidatorKeyset
-
-	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
-		publicKey := validatorKeyset.ToEd25519PublicKey()
-		if bytes.Equal(publicKey[:], myKey) {
-			log.Printf("Skipping connection to self (validator %d)", idx)
-			continue
-		}
-
-		otherKey := publicKey[:]
-
-		// Check if we are the preferred initiator using the formula:
-		// P(a, b) = a when (a₃₁ > 127) ⊕ (b₃₁ > 127) ⊕ (a < b), otherwise b
-		myKeyLast := myKey[31] > 127
-		otherKeyLast := otherKey[31] > 127
-		myKeyLessThan := bytes.Compare(myKey, otherKey) < 0
-
-		// XOR operation for the three boolean conditions
-		amPreferredInitiator := (myKeyLast != otherKeyLast) != myKeyLessThan
-
-		if amPreferredInitiator {
-			iAmInitiator = append(iAmInitiator, validatorKeyset)
-		} else {
-			theyAreInitiator = append(theyAreInitiator, validatorKeyset)
-		}
-	}
-
-	log.Printf("Partitioned validators: I am initiator for %d validators, waiting for %d validators to connect to me",
-		len(iAmInitiator), len(theyAreInitiator))
-
-	// Start the node's listener to accept incoming connections
-	if err := node.Start(ctx, iAmInitiator, theyAreInitiator); err != nil {
+	// Start the node. Initiate connections and UP 0 stream
+	if err := node.Start(ctx, repo); err != nil {
 		log.Fatalf("Error starting network node: %v", err)
 	}
 	defer node.Close()
 
 	log.Printf("Network node started, listening at %s", node.Addr())
 
-	// Now open streams on all successful connections
-	log.Printf("Opening required streams on all connections...")
-	if err := node.OpenAllStreams(ctx); err != nil {
-		log.Printf("Warning: Some streams failed to open: %v", err)
-	}
-
-	// Listen indefinitely
-	log.Println("Node is running. Press Ctrl+C to exit.")
 	select {
 	case <-ctx.Done():
 		log.Println("Context cancelled, shutting down...")

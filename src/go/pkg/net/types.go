@@ -80,14 +80,17 @@ type Connection interface {
 	// OpenStream opens a new stream with the specified kind
 	OpenStream(kind StreamKind) (Stream, error)
 
-	// AcceptStream accepts an incoming stream
-	AcceptStream() (StreamKind, Stream, error)
-
 	// RegisterHandler registers a handler for a specific stream kind
 	RegisterHandler(kind StreamKind, handler StreamHandler)
 
 	// RemoteKey returns the remote peer's public key
 	RemoteKey() ed25519.PublicKey
+
+	// InitializedByRemote returns true if this connection was initialized by the remote peer
+	InitializedByRemote() bool
+
+	// ValidatorIdx returns the index of the validator this connection is to
+	ValidatorIdx() int
 
 	// LocalKey returns the local peer's public key
 	LocalKey() ed25519.PublicKey

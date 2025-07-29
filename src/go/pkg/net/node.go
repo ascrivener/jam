@@ -1,6 +1,7 @@
 package net
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,8 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"jam/pkg/state"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
+	"math"
 	"math/big"
 	"net"
 	"sync"
@@ -33,6 +37,12 @@ type NodeOptions struct {
 	IsBuilder   bool
 }
 
+// ValidatorInfo contains validator information including keyset and index
+type ValidatorInfo struct {
+	Keyset types.ValidatorKeyset
+	Index  int
+}
+
 // Node is a unified JAMNP-S node that can both initiate and accept connections
 type Node struct {
 	opts        NodeOptions
@@ -41,12 +51,7 @@ type Node struct {
 	listener    *quic.Listener
 	listenAddr  string
 	connections sync.Map // Map of address -> connection
-}
-
-// incomingConn represents an incoming connection with its public key
-type incomingConn struct {
-	conn      Connection
-	publicKey ed25519.PublicKey
+	myValidator ValidatorInfo
 }
 
 // OIDs for certificate extensions
@@ -59,6 +64,43 @@ var (
 
 // AlternativeNameEncoding is the encoding used for the alternative name
 const AlternativeNameEncoding = "abcdefghijklmnopqrstuvwxyz234567"
+
+var (
+	globalNode *Node
+	nodeMutex  sync.RWMutex
+	nodeOnce   sync.Once
+)
+
+// InitializeGlobalNode initializes the global singleton Node instance
+func InitializeGlobalNode(opts NodeOptions) error {
+	var initErr error
+	nodeOnce.Do(func() {
+		node, err := NewNode(opts)
+		if err != nil {
+			initErr = err
+			return
+		}
+
+		nodeMutex.Lock()
+		globalNode = node
+		nodeMutex.Unlock()
+	})
+	return initErr
+}
+
+// GetGlobalNode returns the global singleton Node instance
+func GetGlobalNode() *Node {
+	nodeMutex.RLock()
+	defer nodeMutex.RUnlock()
+	return globalNode
+}
+
+// IsGlobalNodeInitialized checks if the global node has been initialized
+func IsGlobalNodeInitialized() bool {
+	nodeMutex.RLock()
+	defer nodeMutex.RUnlock()
+	return globalNode != nil
+}
 
 // NewNode creates a new JAMNP-S node
 func NewNode(opts NodeOptions) (*Node, error) {
@@ -211,8 +253,52 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return nil
 }
 
-// Start starts the node's listener to accept incoming connections
-func (n *Node) Start(ctx context.Context, iAmInitiator []types.ValidatorKeyset, theyAreInitiator []types.ValidatorKeyset) error {
+// Start starts the node. Initiate connections and UP 0 stream
+func (n *Node) Start(ctx context.Context, repo *staterepository.PebbleStateRepository) error {
+	state, err := state.GetState(*repo)
+	if err != nil {
+		log.Fatalf("Failed to get state: %v", err)
+	}
+
+	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
+	myKey := n.opts.PrivateKey.Public().(ed25519.PublicKey)
+	var iAmInitiator []ValidatorInfo
+	var theyAreInitiator []ValidatorInfo
+
+	amValidator := false
+	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
+		publicKey := validatorKeyset.ToEd25519PublicKey()
+		if bytes.Equal(publicKey[:], myKey) {
+			log.Printf("Skipping connection to self (validator %d)", idx)
+			n.myValidator = ValidatorInfo{Keyset: validatorKeyset, Index: idx}
+			amValidator = true
+			continue
+		}
+
+		otherKey := publicKey[:]
+
+		// Check if we are the preferred initiator using the formula:
+		// P(a, b) = a when (a₃₁ > 127) ⊕ (b₃₁ > 127) ⊕ (a < b), otherwise b
+		myKeyLast := myKey[31] > 127
+		otherKeyLast := otherKey[31] > 127
+		myKeyLessThan := bytes.Compare(myKey, otherKey) < 0
+
+		// XOR operation for the three boolean conditions
+		amPreferredInitiator := (myKeyLast != otherKeyLast) != myKeyLessThan
+
+		if amPreferredInitiator {
+			iAmInitiator = append(iAmInitiator, ValidatorInfo{Keyset: validatorKeyset, Index: idx})
+		} else {
+			theyAreInitiator = append(theyAreInitiator, ValidatorInfo{Keyset: validatorKeyset, Index: idx})
+		}
+	}
+	if !amValidator {
+		log.Fatalf("Failed to find self validator")
+	}
+
+	log.Printf("Partitioned validators: I am initiator for %d validators, waiting for %d validators to connect to me",
+		len(iAmInitiator), len(theyAreInitiator))
+
 	udpAddr, err := net.ResolveUDPAddr("udp", n.listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
@@ -244,22 +330,27 @@ func (n *Node) Start(ctx context.Context, iAmInitiator []types.ValidatorKeyset, 
 	// Start outbound connections to validators where I am the initiator
 	for _, v := range iAmInitiator {
 		wg.Add(1)
-		go func(validatorKeyset types.ValidatorKeyset) {
+		go func(validator ValidatorInfo) {
 			defer wg.Done()
-			n.initiateConnection(ctx, validatorKeyset)
+			n.initiateConnection(ctx, validator)
 		}(v)
 	}
 
 	// Wait for all connections (both incoming and outgoing) to be established
 	wg.Wait()
 
+	// Now open UP 0 streams to all grid neighbors where we are the initiator
+	log.Printf("All connections established. Opening UP 0 streams to grid neighbors...")
+	n.openAllRequiredBlockAnnouncementStreams(ctx, len(state.ValidatorKeysetsActive))
+
+	log.Printf("Network node started, listening at %s", n.listenAddr)
 	return nil
 }
 
 // createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
-func (n *Node) createAndStoreConnection(quicConn quic.Connection) error {
+func (n *Node) createAndStoreConnection(quicConn quic.Connection, validatorInfo ValidatorInfo, initializedByRemote bool) error {
 	// Create JAMNP-S connection
-	conn, err := NewConnection(quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey))
+	conn, err := NewConnection(quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey), validatorInfo, initializedByRemote)
 	if err != nil {
 		quicConn.CloseWithError(0, "failed to create connection")
 		return fmt.Errorf("failed to create JAMNP-S connection: %w", err)
@@ -272,11 +363,11 @@ func (n *Node) createAndStoreConnection(quicConn quic.Connection) error {
 }
 
 // acceptConnections accepts incoming connections
-func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []types.ValidatorKeyset) {
+func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []ValidatorInfo) {
 	// Create a map for faster lookup of expected validators by public key
-	expectedValidators := make(map[string]types.ValidatorKeyset)
+	expectedValidators := make(map[string]ValidatorInfo)
 	for _, validator := range theyAreInitiator {
-		publicKey := validator.ToEd25519PublicKey()
+		publicKey := validator.Keyset.ToEd25519PublicKey()
 		expectedValidators[hex.EncodeToString(publicKey[:])] = validator
 	}
 
@@ -343,7 +434,7 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []types.V
 
 				// Check if this validator is in the expected list
 				remoteKeyStr := fmt.Sprintf("%x", remoteKey)
-				_, isExpected := expectedValidators[remoteKeyStr]
+				validatorInfo, isExpected := expectedValidators[remoteKeyStr]
 
 				if !isExpected {
 					conn.CloseWithError(0, "validator not in expected initiator list")
@@ -358,7 +449,8 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []types.V
 					return
 				}
 
-				if err := n.createAndStoreConnection(conn); err != nil {
+				err := n.createAndStoreConnection(conn, validatorInfo, true)
+				if err != nil {
 					fmt.Printf("Failed to create connection for validator %s: %v\n", remoteKeyStr, err)
 					return
 				}
@@ -380,9 +472,33 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []types.V
 }
 
 // initiateConnection establishes an outbound connection to a validator where this node is the initiator
-func (n *Node) initiateConnection(ctx context.Context, validatorKeyset types.ValidatorKeyset) {
+func (n *Node) initiateConnection(ctx context.Context, validator ValidatorInfo) {
+	// Establish connection with retry logic
+	for attempts := 0; attempts < 3; attempts++ {
+		err := n.Connect(ctx, validator)
+		if err == nil {
+			log.Printf("Successfully connected to validator %d", validator.Index)
+			return
+		}
+
+		log.Printf("Connection attempt %d to validator %d failed: %v",
+			attempts+1, validator.Index, err)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+			continue
+		}
+	}
+
+	log.Printf("Failed to connect to validator %d after 3 attempts", validator.Index)
+}
+
+// Connect establishes an outbound connection to the given address
+func (n *Node) Connect(ctx context.Context, validatorInfo ValidatorInfo) error {
 	// Extract the last 128 bytes which contain network information
-	networkInfo := validatorKeyset[len(validatorKeyset)-128:]
+	networkInfo := validatorInfo.Keyset[len(validatorInfo.Keyset)-128:]
 
 	// Extract IPv6 address (first 16 bytes of network info)
 	ipv6Addr := networkInfo[:16]
@@ -394,41 +510,19 @@ func (n *Node) initiateConnection(ctx context.Context, validatorKeyset types.Val
 	// Construct target address
 	target := fmt.Sprintf("[%s]:%d", ipv6Str, port)
 
-	log.Printf("Connecting to validator %d at %s", validatorKeyset.ToEd25519PublicKey(), target)
+	log.Printf("Connecting to validator %d at %s", validatorInfo.Index, target)
 
-	// Establish connection with retry logic
-	for attempts := 0; attempts < 3; attempts++ {
-		err := n.Connect(ctx, target)
-		if err == nil {
-			log.Printf("Successfully connected to validator %d at %s", validatorKeyset.ToEd25519PublicKey(), target)
-			return
-		}
-
-		log.Printf("Connection attempt %d to validator %d failed: %v", attempts+1, validatorKeyset.ToEd25519PublicKey(), err)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			continue
-		}
-	}
-
-	log.Printf("Failed to connect to validator %d after 3 attempts", validatorKeyset.ToEd25519PublicKey())
-}
-
-// Connect establishes an outbound connection to the given address
-func (n *Node) Connect(ctx context.Context, address string) error {
 	// Create a context with timeout
 	dialCtx, cancel := context.WithTimeout(ctx, n.opts.DialTimeout)
 	defer cancel()
 
 	// Use the built-in QUIC DialAddrEarly which handles connection establishment properly
-	conn, err := quic.DialAddrEarly(dialCtx, address, n.tlsConfig, n.quicConfig)
+	conn, err := quic.DialAddrEarly(dialCtx, target, n.tlsConfig, n.quicConfig)
 	if err != nil {
 		return fmt.Errorf("failed to establish QUIC connection: %w", err)
 	}
 
-	if err := n.createAndStoreConnection(conn); err != nil {
+	if err = n.createAndStoreConnection(conn, validatorInfo, false); err != nil {
 		return fmt.Errorf("failed to create and store connection: %w", err)
 	}
 
@@ -532,11 +626,6 @@ func generateCertificate(privateKey ed25519.PrivateKey) (tls.Certificate, error)
 	}
 
 	return tlsCert, nil
-}
-
-// OpenBlockAnnouncementStream opens a UP 0 block announcement stream
-func (n *Node) OpenBlockAnnouncementStream(ctx context.Context, conn Connection) (Stream, error) {
-	return conn.OpenStream(StreamKindUP0BlockAnnouncement)
 }
 
 // OpenAssuranceDistributionStream opens a CE 141 assurance distribution stream
@@ -732,87 +821,49 @@ func (n *Node) HandleAssuranceDistributions(conn Connection, handler func([]byte
 	return nil
 }
 
-// OpenAllStreams opens required streams on all active connections with retry logic
-func (n *Node) OpenAllStreams(ctx context.Context) error {
-	var errors []string
-
-	n.connections.Range(func(key, value interface{}) bool {
-		validatorID := key.(string)
-		conn := value.(Connection)
-
-		// Use retry logic for stream opening
-		var err error
-		for attempts := 0; attempts < 3; attempts++ {
-			err = n.openRequiredStreamsForConnection(ctx, conn)
-			if err == nil {
-				log.Printf("Successfully opened all required streams for validator %s", validatorID)
-				break
-			}
-
-			// If we hit an error, log it and retry after a delay
-			log.Printf("Attempt %d: Failed to open streams for validator %s: %v",
-				attempts+1, validatorID, err)
-
-			// Give a short delay between retries (but not on the last attempt)
-			if attempts < 2 {
-				select {
-				case <-ctx.Done():
-					return false // Stop iteration if context is cancelled
-				case <-time.After(time.Duration(attempts+1) * time.Second):
-					continue
-				}
-			}
-		}
-
-		if err != nil {
-			errorMsg := fmt.Sprintf("Failed to open required streams for validator %s after multiple attempts: %v", validatorID, err)
-			log.Printf(errorMsg)
-			errors = append(errors, errorMsg)
-		}
-
-		return true // Continue iteration
-	})
-
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to open streams on some connections: %v", errors)
+// isGridNeighbor checks if two validators are neighbors in the grid structure
+func isGridNeighbor(myIndex, theirIndex, totalValidators int) bool {
+	if totalValidators <= 1 {
+		return false
 	}
 
-	return nil
+	W := int(math.Sqrt(float64(totalValidators))) // floor(sqrt(V))
+
+	myRow := myIndex / W
+	myCol := myIndex % W
+	theirRow := theirIndex / W
+	theirCol := theirIndex % W
+
+	// Same row or same column
+	return myRow == theirRow || myCol == theirCol
 }
 
-// openRequiredStreamsForConnection opens the required streams for a single connection
-func (n *Node) openRequiredStreamsForConnection(ctx context.Context, conn Connection) error {
-	// Handle block announcements
-	err := n.HandleBlockAnnouncements(conn, func(announcement *BlockAnnouncement) error {
-		log.Printf("Block announcement: %d headers, finalized block %x at slot %d",
-			len(announcement.Headers),
-			announcement.FinalizedRef.Hash,
-			announcement.FinalizedRef.Slot)
-
-		// Save headers if present
-		for i, header := range announcement.Headers {
-			log.Printf("Header %d: %d bytes", i, len(header))
-			// Can save headers if needed
+// openAllRequiredBlockAnnouncementStreams opens UP 0 streams to all grid neighbors where we are the initiator
+func (n *Node) openAllRequiredBlockAnnouncementStreams(ctx context.Context, totalValidators int) {
+	n.connections.Range(func(key any, value any) bool {
+		conn := value.(Connection)
+		if conn.InitializedByRemote() {
+			log.Printf("Skipping UP 0 stream - not required for validator %d (initialized by remote)", conn.ValidatorIdx())
+			return true
 		}
-
-		return nil
+		if !isGridNeighbor(n.myValidator.Index, conn.ValidatorIdx(), totalValidators) {
+			log.Printf("Skipping UP 0 stream - not required for validator %d (not a grid neighbor)", conn.ValidatorIdx())
+			return true
+		}
+		err := n.openBlockAnnouncementStream(ctx, conn)
+		if err != nil {
+			log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", conn.RemoteKey(), err)
+		} else {
+			log.Printf("Successfully opened UP 0 stream for validator %s", conn.RemoteKey())
+		}
+		return true
 	})
-	if err != nil {
-		return fmt.Errorf("failed to register block announcement handler: %w", err)
-	}
+}
 
-	// Handle assurance distributions
-	err = n.HandleAssuranceDistributions(conn, func(assuranceData []byte) error {
-		log.Printf("Received assurance distribution: %d bytes", len(assuranceData))
-		// Process assurance data if needed
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to register assurance distribution handler: %w", err)
-	}
-
-	// Now open the block announcement stream
-	stream, err := n.OpenBlockAnnouncementStream(ctx, conn)
+// openBlockAnnouncementStream opens just the UP 0 stream without registering handlers
+func (n *Node) openBlockAnnouncementStream(ctx context.Context, conn Connection) error {
+	// Open the UP 0 stream as the initiator
+	stream, err := conn.OpenStream(StreamKindUP0BlockAnnouncement)
 	if err != nil {
 		return fmt.Errorf("failed to open block announcement stream: %w", err)
 	}
@@ -835,14 +886,6 @@ func (n *Node) openRequiredStreamsForConnection(ctx context.Context, conn Connec
 	}
 
 	log.Printf("Sent initial block announcement handshake")
-
-	// Open an assurance distribution stream
-	_, err = n.OpenAssuranceDistributionStream(ctx, conn)
-	if err != nil {
-		log.Printf("Warning: failed to open assurance distribution stream: %v", err)
-		// Don't return error here - this is optional for initial connection
-	}
-
 	return nil
 }
 
