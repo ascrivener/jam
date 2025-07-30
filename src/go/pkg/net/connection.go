@@ -8,6 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"jam/pkg/block/header"
+	"jam/pkg/serializer"
+	"jam/pkg/types"
+	"log"
 	"sync"
 	"time"
 
@@ -34,6 +38,7 @@ type jamnpsConnection struct {
 	localKey            ed25519.PublicKey
 	validatorInfo       ValidatorInfo
 	initializedByRemote bool
+	isNeighbor          bool
 	upStreams           map[StreamKind]quic.Stream
 	upStreamsMu         sync.Mutex
 	handlers            map[StreamKind]StreamHandler
@@ -58,9 +63,9 @@ type jamnpsStream struct {
 }
 
 // NewConnection creates a new Connection from a QUIC connection
-func NewConnection(conn quic.Connection, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool) (Connection, error) {
+func NewConnection(ctx context.Context, conn quic.Connection, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool, myValidatorIndex int, totalValidators int) (Connection, error) {
 	// Create connection context
-	ctx, cancel := context.WithCancel(context.Background())
+	connCtx, cancel := context.WithCancel(ctx)
 
 	connection := &jamnpsConnection{
 		conn:                conn,
@@ -69,15 +74,21 @@ func NewConnection(conn quic.Connection, localKey ed25519.PublicKey, validatorIn
 		initializedByRemote: initializedByRemote,
 		upStreams:           make(map[StreamKind]quic.Stream),
 		handlers:            make(map[StreamKind]StreamHandler),
-		ctx:                 ctx,
+		ctx:                 connCtx,
 		cancel:              cancel,
 		acceptErrCh:         make(chan error, 1),
 		streams:             make(map[quic.StreamID]Stream),
 	}
 
+	// register all handlers
+	connection.registerHandlers()
+
 	// Start stream acceptor
 	connection.wg.Add(1)
 	go connection.acceptStreams()
+
+	// open required streams
+	connection.openRequiredBlockAnnouncementStreams(ctx, myValidatorIndex, totalValidators)
 
 	return connection, nil
 }
@@ -127,37 +138,57 @@ func (c *jamnpsConnection) acceptStreams() {
 		// Handle UP streams specially
 		if kind < 128 {
 			c.handleUPStream(kind, stream)
-			continue
-		}
-
-		// Handle CE stream with registered handler if available
-		c.handlersMu.RLock()
-		handler, ok := c.handlers[kind]
-		c.handlersMu.RUnlock()
-
-		if ok {
-			// Handle stream in a goroutine
-			c.wg.Add(1)
-			go func() {
-				defer c.wg.Done()
-				jstream := &jamnpsStream{
-					stream: stream,
-					kind:   kind,
-				}
-
-				err := handler(jstream)
-				if err != nil {
-					// Log error if needed
-				}
-
-				// Make sure stream is closed
-				jstream.Close()
-			}()
 		} else {
-			// No handler, reset the stream
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			c.handleStreamWithHandler(stream, kind, false)
 		}
+	}
+}
+
+// handleStreamWithHandler dispatches a stream to its registered handler
+func (c *jamnpsConnection) handleStreamWithHandler(stream quic.Stream, kind StreamKind, isUPStream bool) {
+	c.handlersMu.RLock()
+	handler, ok := c.handlers[kind]
+	c.handlersMu.RUnlock()
+
+	if ok {
+		// Handle stream in a goroutine
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			jstream := &jamnpsStream{
+				stream: stream,
+				kind:   kind,
+			}
+
+			err := handler(jstream)
+			if err != nil {
+				log.Printf("Stream handler error for kind %d from validator %d: %v",
+					kind, c.ValidatorIdx(), err)
+
+				// Close the stream on error to prevent resource leaks
+				jstream.Close()
+
+				// For UP streams, remove from the stored streams map
+				if isUPStream {
+					c.upStreamsMu.Lock()
+					if storedStream, exists := c.upStreams[kind]; exists && storedStream.StreamID() == stream.StreamID() {
+						delete(c.upStreams, kind)
+						log.Printf("Removed failed UP stream %d from validator %d", kind, c.ValidatorIdx())
+					}
+					c.upStreamsMu.Unlock()
+				}
+			}
+
+			if !isUPStream {
+				// For CE streams, close automatically on handler return
+				jstream.Close()
+			}
+			// For UP streams, we don't close automatically as they are long-lived
+		}()
+	} else {
+		// No handler, reset the stream
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
 	}
 }
 
@@ -185,29 +216,7 @@ func (c *jamnpsConnection) handleUPStream(kind StreamKind, stream quic.Stream) {
 	c.upStreams[kind] = stream
 
 	// Handle the stream with registered handler if available
-	c.handlersMu.RLock()
-	handler, ok := c.handlers[kind]
-	c.handlersMu.RUnlock()
-
-	if ok {
-		// Handle stream in a goroutine
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			jstream := &jamnpsStream{
-				stream: stream,
-				kind:   kind,
-			}
-
-			err := handler(jstream)
-			if err != nil {
-				// Log error if needed
-			}
-
-			// For UP streams, we don't close automatically on handler return
-			// as they are long-lived
-		}()
-	}
+	c.handleStreamWithHandler(stream, kind, true)
 }
 
 // OpenStream opens a new stream of the specified kind
@@ -245,10 +254,234 @@ func (c *jamnpsConnection) OpenStream(kind StreamKind) (Stream, error) {
 }
 
 // RegisterHandler registers a handler for a specific stream kind
-func (c *jamnpsConnection) RegisterHandler(kind StreamKind, handler StreamHandler) {
+func (c *jamnpsConnection) registerHandler(kind StreamKind, handler StreamHandler) {
 	c.handlersMu.Lock()
 	defer c.handlersMu.Unlock()
 	c.handlers[kind] = handler
+}
+
+// RegisterHandlers registers handlers for all active connections
+func (c *jamnpsConnection) registerHandlers() {
+	// Register handler for incoming block announcements (UP 0)
+	err := c.HandleBlockAnnouncements(func(announcement *Announcement) error {
+		log.Printf("Received block announcement from validator %d", c.ValidatorIdx())
+		// TODO: Process the block announcement
+		return nil
+	})
+	if err != nil {
+		log.Printf("Warning: Failed to register block announcement handler for validator %d: %v",
+			c.ValidatorIdx(), err)
+	}
+
+	// Register handler for incoming assurance distributions (CE 141)
+	err = c.HandleAssuranceDistributions(func(data []byte) error {
+		log.Printf("Received assurance distribution from validator %d: %d bytes",
+			c.ValidatorIdx(), len(data))
+		// TODO: Process the assurance distribution
+		return nil
+	})
+	if err != nil {
+		log.Printf("Warning: Failed to register assurance distribution handler for validator %d: %v",
+			c.ValidatorIdx(), err)
+	}
+}
+
+type Announcement struct {
+	Header header.Header
+	Final  Final
+}
+
+type Final struct {
+	HeaderHash    [32]byte
+	FinalizedSlot types.Timeslot
+}
+
+// HandleBlockAnnouncements registers a handler for block announcements
+func (c *jamnpsConnection) HandleBlockAnnouncements(handler func(*Announcement) error) error {
+	streamHandler := func(stream Stream) error {
+		// Perform handshake exchange first
+		err := c.performHandshakeExchange(stream)
+		if err != nil {
+			return fmt.Errorf("handshake exchange failed: %w", err)
+		}
+
+		// Now enter the announcement loop
+		for {
+			// Read message
+			msg, err := ReadMessage(stream)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				return err
+			}
+
+			announcement := &Announcement{}
+			err = serializer.Deserialize(msg, announcement)
+			if err != nil {
+				return err
+			}
+
+			// Call handler
+			if err := handler(announcement); err != nil {
+				return err
+			}
+		}
+	}
+
+	c.registerHandler(StreamKindUP0BlockAnnouncement, streamHandler)
+	return nil
+}
+
+// HandleAssuranceDistributions registers a handler for assurance distributions
+func (c *jamnpsConnection) HandleAssuranceDistributions(handler func([]byte) error) error {
+	streamHandler := func(stream Stream) error {
+		for {
+			// Read message
+			msg, err := ReadMessage(stream)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				return err
+			}
+
+			// Call handler
+			if err := handler(msg); err != nil {
+				return err
+			}
+		}
+	}
+
+	c.registerHandler(StreamKindCE141AssuranceDistribution, streamHandler)
+	return nil
+}
+
+// openRequiredBlockAnnouncementStreams opens UP 0 streams to all grid neighbors where we are the initiator
+func (c *jamnpsConnection) openRequiredBlockAnnouncementStreams(ctx context.Context, myValidatorIndex int, totalValidators int) {
+	if c.initializedByRemote {
+		log.Printf("Skipping UP 0 stream - not required for validator %d (initialized by remote)", c.validatorInfo.Index)
+		return
+	}
+	if !isGridNeighbor(myValidatorIndex, c.validatorInfo.Index, totalValidators) {
+		log.Printf("Skipping UP 0 stream - not required for validator %d (not a grid neighbor)", c.validatorInfo.Index)
+		return
+	}
+	err := c.openBlockAnnouncementStream(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", c.RemoteKey(), err)
+	} else {
+		log.Printf("Successfully opened UP 0 stream for validator %s", c.RemoteKey())
+	}
+}
+
+// openBlockAnnouncementStream opens just the UP 0 stream without registering handlers
+func (c *jamnpsConnection) openBlockAnnouncementStream(ctx context.Context) error {
+	// Open the UP 0 stream as the initiator
+	stream, err := c.OpenStream(StreamKindUP0BlockAnnouncement)
+	if err != nil {
+		return fmt.Errorf("failed to open block announcement stream: %w", err)
+	}
+	if err := c.performHandshakeExchange(stream); err != nil {
+		return fmt.Errorf("failed to perform handshake exchange: %w", err)
+	}
+
+	log.Printf("Sent initial block announcement handshake")
+	return nil
+}
+
+// Handshake data structures according to JAMNP-S specification
+// Final = Header Hash ++ Slot
+// Leaf = Header Hash ++ Slot
+// Handshake = Final ++ len++[Leaf]
+
+type HandshakeFinal struct {
+	HeaderHash [32]byte
+	Slot       uint32
+}
+
+type HandshakeLeaf struct {
+	HeaderHash [32]byte
+	Slot       uint32
+}
+
+type Handshake struct {
+	Final  HandshakeFinal
+	Leaves []HandshakeLeaf
+}
+
+// createHandshake creates a handshake message with current finalized block info and known leaves
+func createHandshake() Handshake {
+	// TODO: Get actual finalized block info from state
+	// For now, use placeholder values
+	finalHash := [32]byte{} // Should be latest finalized block hash
+	finalSlot := uint32(0)  // Should be latest finalized block slot
+
+	// TODO: Get actual leaves (descendants of finalized block with no known children)
+	// For now, use empty leaves array
+	leaves := []HandshakeLeaf{}
+
+	return Handshake{
+		Final: HandshakeFinal{
+			HeaderHash: finalHash,
+			Slot:       finalSlot,
+		},
+		Leaves: leaves,
+	}
+}
+
+// processHandshake processes a received handshake message
+func (c *jamnpsConnection) processHandshake(handshake Handshake) error {
+	log.Printf("Processing handshake from validator %d:", c.ValidatorIdx())
+	log.Printf("  Final block: hash=%x, slot=%d", handshake.Final.HeaderHash, handshake.Final.Slot)
+	log.Printf("  Leaves: %d entries", len(handshake.Leaves))
+
+	for i, leaf := range handshake.Leaves {
+		log.Printf("    Leaf %d: hash=%x, slot=%d", i, leaf.HeaderHash, leaf.Slot)
+	}
+
+	// TODO: Implement actual handshake processing logic:
+	// 1. Validate the finalized block info against our local state
+	// 2. Store/update peer's known leaves for announcement filtering
+	// 3. Compare with our own state to determine sync needs
+	// 4. Determine what announcements to send based on peer's knowledge
+
+	return nil
+}
+
+// performHandshakeExchange handles the complete handshake exchange for UP 0 streams
+// Both sides send their handshake and receive the peer's handshake
+func (c *jamnpsConnection) performHandshakeExchange(stream Stream) error {
+	// Send our handshake first
+	handshake := createHandshake()
+	handshakeData := serializer.Serialize(handshake)
+	if err := WriteMessage(stream, handshakeData); err != nil {
+		return fmt.Errorf("failed to send handshake: %w", err)
+	}
+
+	log.Printf("Sent handshake to validator %d", c.ValidatorIdx())
+
+	// Receive peer's handshake
+	handshakeMsg, err := ReadMessage(stream)
+	if err != nil {
+		return fmt.Errorf("failed to read peer handshake: %w", err)
+	}
+
+	log.Printf("Received handshake from validator %d: %d bytes", c.ValidatorIdx(), len(handshakeMsg))
+
+	// Parse the handshake message
+	peerHandshake := Handshake{}
+	err = serializer.Deserialize(handshakeMsg, &peerHandshake)
+	if err != nil {
+		return fmt.Errorf("failed to parse peer handshake: %w", err)
+	}
+
+	// Process the parsed handshake
+	if err := c.processHandshake(peerHandshake); err != nil {
+		return fmt.Errorf("failed to process peer handshake: %w", err)
+	}
+
+	return nil
 }
 
 // Close closes the connection

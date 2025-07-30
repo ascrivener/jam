@@ -184,24 +184,27 @@ func (pvm *PVM) Ψ() ExitReason {
 	}
 }
 
-func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
+func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
 			pvm.State.RAM.ClearRollbackLog()
-			return exitReason
+			return exitReason, nil
 		}
 
 		hostCall := exitReason.ComplexExitReason.Parameter
 		stateBeforeHostCall := *pvm.State
-		postHostCallExitReason := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
+		postHostCallExitReason, err := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
+		if err != nil {
+			return ExitReason{}, err
+		}
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
 			pvm.State.RAM.Rollback() // rollback changes
 			// Reset pvm.State to the snapshot from before the host call.
 			// Taking the address of stateBeforeHostCall will cause it to escape to the heap.
 			pvm.State = &stateBeforeHostCall
-			return postHostCallExitReason
+			return postHostCallExitReason, nil
 		}
 
 		pvm.State.RAM.ClearRollbackLog()
@@ -210,30 +213,33 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) ExitReason {
 			continue
 		}
 
-		return postHostCallExitReason
+		return postHostCallExitReason, nil
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue) {
+func ΨM[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
-		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0
+		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
-	postHostCallExitReason := ΨH(pvm, f, x)
+	postHostCallExitReason, err := ΨH(pvm, f, x)
+	if err != nil {
+		return types.ExecutionExitReason{}, 0, err
+	}
 	gasUsed := gas - types.GasValue(max(pvm.State.Gas, 0))
 	if postHostCallExitReason.IsSimple() {
 		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
-			return types.NewExecutionExitReasonError(types.ExecutionErrorOutOfGas), gasUsed
+			return types.NewExecutionExitReasonError(types.ExecutionErrorOutOfGas), gasUsed, nil
 		}
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap) {
 				blob := pvm.State.RAM.InspectRange(uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap, false)
-				return types.NewExecutionExitReasonBlob(blob), gasUsed
+				return types.NewExecutionExitReasonBlob(blob), gasUsed, nil
 			} else {
-				return types.NewExecutionExitReasonBlob([]byte{}), gasUsed
+				return types.NewExecutionExitReasonBlob([]byte{}), gasUsed, nil
 			}
 		}
 	}
-	return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), gasUsed
+	return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), gasUsed, nil
 }

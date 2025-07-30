@@ -2,6 +2,7 @@ package merklizer
 
 import (
 	"bytes"
+	"errors"
 
 	"golang.org/x/crypto/blake2b"
 
@@ -80,7 +81,11 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 	return blake2b.Sum256(bs.Bytes())
 }
 
-func GetState(repo staterepository.PebbleStateRepository) State {
+func GetState() State {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		panic("global repository not initialized")
+	}
 	// Create iterator bounds for keys with "state:" prefix
 	// The upper bound uses semicolon (the next ASCII character after colon)
 	// to ensure we only get keys starting with "state:"
@@ -135,7 +140,11 @@ func GetState(repo staterepository.PebbleStateRepository) State {
 	return state
 }
 
-func (s State) OverwriteCurrentState(repo staterepository.PebbleStateRepository) error {
+func (s State) OverwriteCurrentState() error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch
 	batch := repo.GetBatch()
 	ownBatch := batch == nil

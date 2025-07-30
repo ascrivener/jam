@@ -8,7 +8,6 @@ import (
 	"jam/pkg/merklizer"
 	"jam/pkg/preimages"
 	"jam/pkg/state"
-	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
 	"jam/pkg/workreport"
@@ -16,12 +15,15 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp workpackage.WorkPackage, core types.CoreIndex) (workreport.WorkReport, error) {
-	state, err := state.GetState(repo)
+func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (workreport.WorkReport, error) {
+	state, err := state.GetState()
 	if err != nil {
 		return workreport.WorkReport{}, err
 	}
-	exitReason, _ := IsAuthorized(wp, core)
+	exitReason, _, err := IsAuthorized(wp, core)
+	if err != nil {
+		return workreport.WorkReport{}, err
+	}
 	if exitReason.IsError() || uint32(len(*exitReason.Blob)) > constants.MaxTotalSizeWorkReportBlobs {
 		return workreport.WorkReport{}, nil
 	}
@@ -35,7 +37,7 @@ func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp work
 		// extrinsic data
 		workItemExtrinsicData := make([]types.Blob, len(workItem.BlobHashesAndLengthsIntroduced))
 		for blobHashAndLengthIntroducedIdx, blobHashAndLengthIntroduced := range workItem.BlobHashesAndLengthsIntroduced {
-			blob, err := preimages.GetPreimage(repo, blobHashAndLengthIntroduced.BlobHash)
+			blob, err := preimages.GetPreimage(blobHashAndLengthIntroduced.BlobHash)
 			if err != nil {
 				return workreport.WorkReport{}, err
 			}
@@ -52,14 +54,14 @@ func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp work
 				segmentRoot = hash.Identifier
 			} else {
 				workPackageHash := hash.Identifier
-				segmentRoot, err := workreport.GetSegmentRootByWorkPackageHash(repo, workPackageHash)
+				segmentRoot, err := workreport.GetSegmentRootByWorkPackageHash(workPackageHash)
 				if err != nil {
 					return workreport.WorkReport{}, err
 				}
 				segmentRootLookup[workPackageHash] = segmentRoot
 			}
 			// check if segment root is known and not expired
-			exportingWorkReport, err := workreport.GetWorkReportBySegmentRoot(repo, segmentRoot)
+			exportingWorkReport, err := workreport.GetWorkReportBySegmentRoot(segmentRoot)
 			if err != nil {
 				return workreport.WorkReport{}, err
 			}
@@ -105,7 +107,7 @@ func WorkPackageToWorkReport(repo staterepository.PebbleStateRepository, wp work
 		justifications[workItemIdx] = workItemJustifications
 		totalNumDataSegmentsExported += workItem.NumDataSegmentsExported
 	}
-	Refine(repo, 0, wp, nil, importSegments, 0, state.ServiceAccounts)
+	Refine(0, wp, nil, importSegments, 0, state.ServiceAccounts)
 	return workreport.WorkReport{}, nil
 }
 

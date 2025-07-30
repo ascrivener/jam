@@ -26,15 +26,13 @@ func main() {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
-	// Open the state repository
-	repo, err := staterepository.NewPebbleStateRepository(*dataDir + "/state")
+	err := staterepository.InitializeGlobalRepository(*dataDir + "/state")
 	if err != nil {
-		log.Fatalf("Failed to open state repository: %v", err)
+		log.Fatalf("Failed to initialize global state repository: %v", err)
 	}
-	defer repo.Close()
-
+	defer staterepository.CloseGlobalRepository()
 	// Create and start the server
-	server := fuzzinterface.NewServer(*repo)
+	server := fuzzinterface.NewServer()
 	if err := server.Start(*socketPath); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

@@ -7,14 +7,13 @@ import (
 
 	"jam/pkg/constants"
 	"jam/pkg/serviceaccount"
-	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workreport"
 
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(repo staterepository.PebbleStateRepository, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions) {
+func SingleServiceAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var gas types.GasValue
 	operandTuples := make([]OperandTuple, 0)
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
@@ -36,7 +35,7 @@ func SingleServiceAccumulation(repo staterepository.PebbleStateRepository, accum
 			}
 		}
 	}
-	return Accumulate(repo, accumulationStateComponents, timeslot, serviceIndex, gas, operandTuples, posteriorEntropyAccumulator)
+	return Accumulate(accumulationStateComponents, timeslot, serviceIndex, gas, operandTuples, posteriorEntropyAccumulator)
 }
 
 type BEEFYCommitment struct {
@@ -44,7 +43,7 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -90,6 +89,9 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
 	n := make(serviceaccount.ServiceAccounts)
 
+	// Collect errors from goroutines
+	var accumulationErrors []error
+
 	// m will store the union of (original keys - result keys) for all service indices
 	// This represents all keys that were present in the original set but missing in at least one result
 	m := make(map[types.ServiceIndex]struct{})
@@ -115,7 +117,13 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
-			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed, preimageProvisions := SingleServiceAccumulation(repo, accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
+			accumulationStateComponentsResult, deferredTransfersResult, preimageResult, gasUsed, preimageProvisions, err := SingleServiceAccumulation(accumulationStateComponents, timeslot, workReports, freeAccumulationServices, sIndex, posteriorEntropyAccumulator)
+			if err != nil {
+				mu.Lock()
+				accumulationErrors = append(accumulationErrors, err)
+				mu.Unlock()
+				return
+			}
 			mu.Lock()
 			serviceGasUsage = append(serviceGasUsage, struct {
 				ServiceIndex types.ServiceIndex
@@ -166,6 +174,11 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 	}
 	wg.Wait()
 
+	// Check if any errors occurred during accumulation
+	if len(accumulationErrors) > 0 {
+		return AccumulationStateComponents{}, nil, nil, nil, accumulationErrors[0]
+	}
+
 	if newServiceIndexCollisionDetected {
 		return AccumulationStateComponents{}, nil, nil, nil, errors.New("new service index collision detected")
 	}
@@ -208,8 +221,8 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 		}
 		blob := []byte(preimageProvision.BlobString)
 		preimage := blake2b.Sum256(blob)
-		serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(len(blob)), preimage, []types.Timeslot{timeslot})
-		serviceAccount.SetPreimageForHash(repo, preimage, blob)
+		serviceAccount.SetPreimageLookupHistoricalStatus(uint32(len(blob)), preimage, []types.Timeslot{timeslot})
+		serviceAccount.SetPreimageForHash(preimage, blob)
 	}
 
 	// Get the components from privileged services
@@ -243,7 +256,7 @@ func ParallelizedAccumulation(repo staterepository.PebbleStateRepository, accumu
 	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage, nil
 }
 
-func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func OuterAccumulation(gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -288,7 +301,6 @@ func OuterAccumulation(repo staterepository.PebbleStateRepository, gas types.Gas
 
 		// Process this batch
 		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage, err := ParallelizedAccumulation(
-			repo,
 			&currentStateComponents,
 			timeslot,
 			workReports[startIdx:batchEndIdx],

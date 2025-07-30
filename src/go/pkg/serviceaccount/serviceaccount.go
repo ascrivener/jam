@@ -1,6 +1,7 @@
 package serviceaccount
 
 import (
+	"errors"
 	"fmt"
 
 	"jam/pkg/constants"
@@ -14,17 +15,26 @@ import (
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 // R
-func (s *ServiceAccounts) IsNewPreimage(repo staterepository.PebbleStateRepository, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) bool {
+func (s *ServiceAccounts) IsNewPreimage(serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
 	serviceAccount := (*s)[serviceIndex]
-	if _, exists := serviceAccount.GetPreimageForHash(repo, hash); exists {
-		return false
+	_, exists, err := serviceAccount.GetPreimageForHash(hash)
+	if err != nil {
+		return false, err
 	}
-	if availabilityTimeslots, exists := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(dataLen), hash); !exists {
-		return false
-	} else if len(availabilityTimeslots) > 0 {
-		return false
+	if exists {
+		return false, nil
 	}
-	return true
+	availabilityTimeslots, exists, err := serviceAccount.GetPreimageLookupHistoricalStatus(uint32(dataLen), hash)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if len(availabilityTimeslots) > 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 type PreimageLookupHistoricalStatusKey struct {
@@ -66,28 +76,36 @@ func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 
 // bold m, bold c
 
-func (s *ServiceAccount) MetadataAndCode(repo staterepository.PebbleStateRepository) (*[]byte, *[]byte) {
-	if preimage, ok := s.GetPreimageForHash(repo, s.CodeHash); ok {
-		offset := 0
-		L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
-		if !ok {
-			panic("failed to decode metadata length")
-		}
-		offset += n
-		m := preimage[offset : offset+int(L_m)]
-		offset += int(L_m)
-		c := preimage[offset:]
-
-		// Convert types.Blob to []byte before taking address
-		mBytes := []byte(m)
-		cBytes := []byte(c)
-		return &mBytes, &cBytes
+func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte, error) {
+	preimage, ok, err := s.GetPreimageForHash(s.CodeHash)
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, nil
+	if !ok {
+		return nil, nil, nil
+	}
+	offset := 0
+	L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
+	if !ok {
+		panic("failed to decode metadata length")
+	}
+	offset += n
+	m := preimage[offset : offset+int(L_m)]
+	offset += int(L_m)
+	c := preimage[offset:]
+
+	// Convert types.Blob to []byte before taking address
+	mBytes := []byte(m)
+	cBytes := []byte(c)
+	return &mBytes, &cBytes, nil
 }
 
 // GetServiceStorageItem retrieves a storage item for a service account
-func (s *ServiceAccount) GetServiceStorageItem(repo staterepository.PebbleStateRepository, key [32]byte) ([]byte, bool) {
+func (s *ServiceAccount) GetServiceStorageItem(key [32]byte) ([]byte, bool, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return nil, false, errors.New("global repository not initialized")
+	}
 	// Create the key
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
 
@@ -97,9 +115,9 @@ func (s *ServiceAccount) GetServiceStorageItem(repo staterepository.PebbleStateR
 	// Fetch the value
 	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
-		return nil, false // Return nil for non-existent keys
+		return nil, false, nil // Return nil for non-existent keys
 	} else if err != nil {
-		panic(fmt.Errorf("failed to get storage item for service %d: %w", s.ServiceIndex, err))
+		return nil, false, fmt.Errorf("failed to get storage item for service %d: %w", s.ServiceIndex, err)
 	}
 	defer closer.Close()
 
@@ -107,11 +125,15 @@ func (s *ServiceAccount) GetServiceStorageItem(repo staterepository.PebbleStateR
 	result := make([]byte, len(value))
 	copy(result, value)
 
-	return result, true
+	return result, true, nil
 }
 
 // SetServiceStorageItem sets a storage item for a service account
-func (s *ServiceAccount) SetServiceStorageItem(repo staterepository.PebbleStateRepository, key [32]byte, value []byte) {
+func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -121,7 +143,10 @@ func (s *ServiceAccount) SetServiceStorageItem(repo staterepository.PebbleStateR
 	}
 
 	// Check if this is a new key or an update
-	oldItem, exists := s.GetServiceStorageItem(repo, key)
+	oldItem, exists, err := s.GetServiceStorageItem(key)
+	if err != nil {
+		return err
+	}
 
 	// Update storage metrics
 	if !exists {
@@ -150,10 +175,15 @@ func (s *ServiceAccount) SetServiceStorageItem(repo staterepository.PebbleStateR
 			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
 		}
 	}
+	return nil
 }
 
 // DeleteServiceStorageItem deletes a storage item for a service account
-func (s *ServiceAccount) DeleteServiceStorageItem(repo staterepository.PebbleStateRepository, key [32]byte) {
+func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -163,10 +193,12 @@ func (s *ServiceAccount) DeleteServiceStorageItem(repo staterepository.PebbleSta
 	}
 
 	// Check if the item exists
-	oldItem, exists := s.GetServiceStorageItem(repo, key)
-
+	oldItem, exists, err := s.GetServiceStorageItem(key)
+	if err != nil {
+		return err
+	}
 	if !exists {
-		return // Item doesn't exist, nothing to do
+		return nil // Item doesn't exist, nothing to do
 	}
 
 	// Update storage metrics
@@ -180,19 +212,24 @@ func (s *ServiceAccount) DeleteServiceStorageItem(repo staterepository.PebbleSta
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
-		panic(fmt.Errorf("failed to delete storage item for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to delete storage item for service %d: %w", s.ServiceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
 		}
 	}
+	return nil
 }
 
 // GetPreimageForHash retrieves a preimage for a given hash
-func (s *ServiceAccount) GetPreimageForHash(repo staterepository.PebbleStateRepository, hash [32]byte) ([]byte, bool) {
+func (s *ServiceAccount) GetPreimageForHash(hash [32]byte) ([]byte, bool, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return nil, false, errors.New("global repository not initialized")
+	}
 	// Create the key
 	dbKey := staterepository.MakePreimageKey(s.ServiceIndex, hash)
 
@@ -202,9 +239,9 @@ func (s *ServiceAccount) GetPreimageForHash(repo staterepository.PebbleStateRepo
 	// Fetch the value
 	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
-		return nil, false // Return nil for non-existent keys
+		return nil, false, nil // Return nil for non-existent keys
 	} else if err != nil {
-		panic(fmt.Errorf("failed to get preimage for hash in service %d: %w", s.ServiceIndex, err))
+		return nil, false, fmt.Errorf("failed to get preimage for hash in service %d: %w", s.ServiceIndex, err)
 	}
 	defer closer.Close()
 
@@ -212,11 +249,15 @@ func (s *ServiceAccount) GetPreimageForHash(repo staterepository.PebbleStateRepo
 	result := make([]byte, len(value))
 	copy(result, value)
 
-	return result, true
+	return result, true, nil
 }
 
 // SetPreimageForHash sets a preimage for a given hash
-func (s *ServiceAccount) SetPreimageForHash(repo staterepository.PebbleStateRepository, hash [32]byte, preimage []byte) {
+func (s *ServiceAccount) SetPreimageForHash(hash [32]byte, preimage []byte) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -232,19 +273,24 @@ func (s *ServiceAccount) SetPreimageForHash(repo staterepository.PebbleStateRepo
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Set(prefixedKey, preimage, nil); err != nil {
-		panic(fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
 		}
 	}
+	return nil
 }
 
 // DeletePreimageForHash deletes a preimage for a given hash
-func (s *ServiceAccount) DeletePreimageForHash(repo staterepository.PebbleStateRepository, hash [32]byte) {
+func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -269,10 +315,15 @@ func (s *ServiceAccount) DeletePreimageForHash(repo staterepository.PebbleStateR
 			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
 		}
 	}
+	return nil
 }
 
 // GetPreimageLookupHistoricalStatus retrieves historical status for a preimage lookup
-func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(repo staterepository.PebbleStateRepository, blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool) {
+func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return nil, false, errors.New("global repository not initialized")
+	}
 	// Create the key
 	dbKey := staterepository.MakeHistoricalStatusKey(s.ServiceIndex, blobLength, hashedPreimage)
 
@@ -282,9 +333,9 @@ func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(repo staterepository.
 	// Fetch the value
 	value, closer, err := repo.Get(prefixedKey)
 	if err == pebble.ErrNotFound {
-		return nil, false // Return nil for non-existent keys
+		return nil, false, nil // Return nil for non-existent keys
 	} else if err != nil {
-		panic(fmt.Errorf("failed to get historical status for service %d: %w", s.ServiceIndex, err))
+		return nil, false, fmt.Errorf("failed to get historical status for service %d: %w", s.ServiceIndex, err)
 	}
 	defer closer.Close()
 
@@ -294,13 +345,17 @@ func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(repo staterepository.
 
 	var status []types.Timeslot
 	if err := serializer.Deserialize(result, &status); err != nil {
-		panic(fmt.Errorf("failed to deserialize historical status for service %d: %w", s.ServiceIndex, err))
+		return nil, false, fmt.Errorf("failed to deserialize historical status for service %d: %w", s.ServiceIndex, err)
 	}
-	return status, true
+	return status, true, nil
 }
 
 // SetPreimageLookupHistoricalStatus sets historical status for a preimage lookup
-func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(repo staterepository.PebbleStateRepository, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) {
+func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -310,7 +365,10 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(repo staterepository.
 	}
 
 	// Check if this is a new key or an update
-	_, exists := s.GetPreimageLookupHistoricalStatus(repo, blobLength, hashedPreimage)
+	_, exists, err := s.GetPreimageLookupHistoricalStatus(blobLength, hashedPreimage)
+	if err != nil {
+		return fmt.Errorf("failed to get preimage lookup historical status for service %d: %w", s.ServiceIndex, err)
+	}
 
 	// Update storage metrics
 	if !exists {
@@ -327,19 +385,25 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(repo staterepository.
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Set(prefixedKey, serializer.Serialize(status), nil); err != nil {
-		panic(fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
 		}
 	}
+
+	return nil
 }
 
 // DeletePreimageLookupHistoricalStatus deletes historical status for a preimage lookup
-func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(repo staterepository.PebbleStateRepository, blobLength uint32, hashedPreimage [32]byte) {
+func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(blobLength uint32, hashedPreimage [32]byte) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -349,10 +413,13 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(repo statereposito
 	}
 
 	// Check if the status exists
-	_, exists := s.GetPreimageLookupHistoricalStatus(repo, blobLength, hashedPreimage)
+	_, exists, err := s.GetPreimageLookupHistoricalStatus(blobLength, hashedPreimage)
+	if err != nil {
+		return fmt.Errorf("failed to get preimage lookup historical status for service %d: %w", s.ServiceIndex, err)
+	}
 
 	if !exists {
-		return // Status doesn't exist, nothing to do
+		return nil // Status doesn't exist, nothing to do
 	}
 
 	// Update storage metrics
@@ -367,18 +434,24 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(repo statereposito
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
-		panic(fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
 		}
 	}
+
+	return nil
 }
 
-func DeleteServiceAccountByServiceIndex(repo staterepository.PebbleStateRepository, serviceIndex types.ServiceIndex) {
+func DeleteServiceAccountByServiceIndex(serviceIndex types.ServiceIndex) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil
@@ -394,13 +467,15 @@ func DeleteServiceAccountByServiceIndex(repo staterepository.PebbleStateReposito
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
-		panic(fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err))
+		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", serviceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", serviceIndex, err)
 		}
 	}
+
+	return nil
 }

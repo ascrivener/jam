@@ -1,6 +1,7 @@
 package preimages
 
 import (
+	"errors"
 	"fmt"
 
 	"jam/pkg/staterepository"
@@ -36,7 +37,11 @@ func (p Preimage) Set(repo staterepository.PebbleStateRepository, hash [32]byte)
 }
 
 // GetPreimage retrieves a preimage from the repository by its hash
-func GetPreimage(repo staterepository.PebbleStateRepository, hash [32]byte) (Preimage, error) {
+func GetPreimage(hash [32]byte) (Preimage, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return nil, errors.New("global repository not initialized")
+	}
 	// Construct the key with the "preimage:" prefix
 	key := append([]byte("preimage:"), hash[:]...)
 

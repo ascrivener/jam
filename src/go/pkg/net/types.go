@@ -80,9 +80,6 @@ type Connection interface {
 	// OpenStream opens a new stream with the specified kind
 	OpenStream(kind StreamKind) (Stream, error)
 
-	// RegisterHandler registers a handler for a specific stream kind
-	RegisterHandler(kind StreamKind, handler StreamHandler)
-
 	// RemoteKey returns the remote peer's public key
 	RemoteKey() ed25519.PublicKey
 

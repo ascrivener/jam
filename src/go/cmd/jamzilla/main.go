@@ -68,12 +68,12 @@ func main() {
 
 	log.Printf("Using dev validator %d", *devValidator)
 
-	// Open the state repository
-	repo, err := staterepository.NewPebbleStateRepository(*dataPath)
+	// Initialize the global state repository
+	err = staterepository.InitializeGlobalRepository(*dataPath)
 	if err != nil {
-		log.Fatalf("Failed to open state repository: %v", err)
+		log.Fatalf("Failed to initialize global state repository: %v", err)
 	}
-	defer repo.Close()
+	defer staterepository.CloseGlobalRepository()
 
 	merklizerState := merklizer.State{}
 	for stateKey, stateValue := range config.GenesisState {
@@ -103,7 +103,7 @@ func main() {
 		})
 	}
 
-	err = merklizerState.OverwriteCurrentState(*repo)
+	err = merklizerState.OverwriteCurrentState()
 	if err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
@@ -127,7 +127,7 @@ func main() {
 		},
 	}
 
-	if err := blockWithInfo.Set(*repo); err != nil {
+	if err := blockWithInfo.Set(); err != nil {
 		log.Fatalf("Failed to store genesis block: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func main() {
 	defer cancel()
 
 	// Start the node. Initiate connections and UP 0 stream
-	if err := node.Start(ctx, repo); err != nil {
+	if err := node.Start(ctx); err != nil {
 		log.Fatalf("Error starting network node: %v", err)
 	}
 	defer node.Close()

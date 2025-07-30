@@ -1,6 +1,7 @@
 package workreport
 
 import (
+	"errors"
 	"fmt"
 
 	"jam/pkg/serializer"
@@ -84,24 +85,28 @@ func (workReport WorkReport) Set(repo staterepository.PebbleStateRepository) err
 }
 
 // Get a work report by segment root (direct lookup)
-func GetWorkReportBySegmentRoot(repo staterepository.PebbleStateRepository, segmentRoot [32]byte) (WorkReport, error) {
+func GetWorkReportBySegmentRoot(segmentRoot [32]byte) (WorkReport, error) {
 	prefixedKey := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	return getWorkReportByKey(repo, prefixedKey)
+	return getWorkReportByKey(prefixedKey)
 }
 
 // Get a work report by work package hash (index lookup + main lookup)
-func GetWorkReportByWorkPackageHash(repo staterepository.PebbleStateRepository, workPackageHash [32]byte) (WorkReport, error) {
-	segmentRoot, err := GetSegmentRootByWorkPackageHash(repo, workPackageHash)
+func GetWorkReportByWorkPackageHash(workPackageHash [32]byte) (WorkReport, error) {
+	segmentRoot, err := GetSegmentRootByWorkPackageHash(workPackageHash)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to find segment root for work package hash %x: %w", workPackageHash, err)
 	}
 
 	// Then do the main lookup
-	return GetWorkReportBySegmentRoot(repo, segmentRoot)
+	return GetWorkReportBySegmentRoot(segmentRoot)
 }
 
 // Get segment root directly from work package hash without loading full work report
-func GetSegmentRootByWorkPackageHash(repo staterepository.PebbleStateRepository, workPackageHash [32]byte) ([32]byte, error) {
+func GetSegmentRootByWorkPackageHash(workPackageHash [32]byte) ([32]byte, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return [32]byte{}, errors.New("global repository not initialized")
+	}
 	// Look up the segment root from the index
 	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
 	value, closer, err := repo.Get(indexKey)
@@ -118,7 +123,11 @@ func GetSegmentRootByWorkPackageHash(repo staterepository.PebbleStateRepository,
 }
 
 // Helper function for the actual deserialization
-func getWorkReportByKey(repo staterepository.PebbleStateRepository, key []byte) (WorkReport, error) {
+func getWorkReportByKey(key []byte) (WorkReport, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return WorkReport{}, errors.New("global repository not initialized")
+	}
 	value, closer, err := repo.Get(key)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to get work report: %w", err)

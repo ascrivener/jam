@@ -17,15 +17,13 @@ import (
 
 // Server represents a fuzzer interface server
 type Server struct {
-	repo         staterepository.PebbleStateRepository
 	peerInfo     PeerInfo
 	stateMapLock sync.RWMutex
 }
 
 // NewServer creates a new fuzzer interface server
-func NewServer(repo staterepository.PebbleStateRepository) *Server {
+func NewServer() *Server {
 	return &Server{
-		repo: repo,
 		peerInfo: PeerInfo{
 			Name: []byte("jam-node"),
 			AppVersion: Version{
@@ -179,9 +177,13 @@ func (s *Server) handleMessage(msg RequestMessage) (ResponseMessage, error) {
 
 // handleSetState handles a SetState request
 func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return ResponseMessage{}, fmt.Errorf("global repository not initialized")
+	}
 
 	// Begin a transaction
-	if err := s.repo.BeginTransaction(); err != nil {
+	if err := repo.BeginTransaction(); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
@@ -190,11 +192,11 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			s.repo.RollbackTransaction()
+			repo.RollbackTransaction()
 		}
 	}()
 
-	if err := setState.StateWithRoot.State.OverwriteCurrentState(s.repo); err != nil {
+	if err := setState.StateWithRoot.State.OverwriteCurrentState(); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
@@ -207,18 +209,18 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 		},
 	}
 
-	if err := blockWithInfo.Set(s.repo); err != nil {
+	if err := blockWithInfo.Set(); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to store block: %w", err)
 	}
 
 	// Commit the transaction
-	if err := s.repo.CommitTransaction(); err != nil {
+	if err := repo.CommitTransaction(); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	txSuccess = true
 
 	// Compute state root
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(s.repo))
+	stateRoot := merklizer.MerklizeState(merklizer.GetState())
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
@@ -227,8 +229,8 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 // handleImportBlock handles an ImportBlock request
 func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, error) {
 
-	err := statetransition.STF(s.repo, block.Block(importBlock))
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(s.repo))
+	err := statetransition.STF(block.Block(importBlock))
+	stateRoot := merklizer.MerklizeState(merklizer.GetState())
 	if err != nil {
 		log.Printf("Failed to process block: %v", err)
 	} else {
@@ -239,7 +241,7 @@ func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, er
 
 // handleGetState handles a GetState request
 func (s *Server) handleGetState(getState GetState) (ResponseMessage, error) {
-	state := merklizer.GetState(s.repo)
+	state := merklizer.GetState()
 
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
 	return ResponseMessage{State: &state}, nil

@@ -3,6 +3,7 @@ package statetransition
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -62,7 +63,11 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
-func STF(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
+func STF(curBlock block.Block) error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Begin a transaction for all repository operations
 	if err := repo.BeginTransaction(); err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -77,7 +82,7 @@ func STF(repo staterepository.PebbleStateRepository, curBlock block.Block) error
 	}()
 
 	// Run state transition function
-	if err := stfHelper(repo, curBlock); err != nil {
+	if err := stfHelper(curBlock); err != nil {
 		return err
 	}
 
@@ -93,16 +98,16 @@ func STF(repo staterepository.PebbleStateRepository, curBlock block.Block) error
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block) error {
+func stfHelper(curBlock block.Block) error {
 
 	// Load state
-	priorState, err := state.GetState(repo)
+	priorState, err := state.GetState()
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}
 
 	// Verify block
-	if err := curBlock.Verify(repo, priorState); err != nil {
+	if err := curBlock.Verify(priorState); err != nil {
 		return fmt.Errorf("failed to verify block: %w", err)
 	}
 
@@ -156,7 +161,6 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, BEEFYCommitments, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
-		repo,
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
 		accumulatableWorkReports,
@@ -191,7 +195,7 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 	posteriorRecentBlocks := computeRecentBlocks(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.RecentBlocks, intermediateRecentBlocks, BEEFYCommitments)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	computeServiceAccounts(repo, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
+	computeServiceAccounts(curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
 
 	authorizersPool := computeAuthorizersPool(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
@@ -222,18 +226,18 @@ func stfHelper(repo staterepository.PebbleStateRepository, curBlock block.Block)
 	}
 
 	// Save state
-	if err := postState.Set(repo); err != nil {
+	if err := postState.Set(); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(repo)),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState()),
 		},
 	}
 
-	if err := blockWithInfo.Set(repo); err != nil {
+	if err := blockWithInfo.Set(); err != nil {
 		return fmt.Errorf("failed to save block with info: %w", err)
 	}
 
@@ -461,16 +465,25 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
-func computeServiceAccounts(repo staterepository.PebbleStateRepository, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) {
+func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		if !postAccumulationIntermediateServiceAccounts.IsNewPreimage(repo, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data))) {
+		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		if err != nil {
+			return err
+		}
+		if !ok {
 			continue
 		}
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
-		serviceAccount.SetPreimageForHash(repo, hash, preimage.Data)
-		serviceAccount.SetPreimageLookupHistoricalStatus(repo, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot})
+		if err := serviceAccount.SetPreimageForHash(hash, preimage.Data); err != nil {
+			return err
+		}
+		if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func computeEntropyAccumulator(header header.Header, mostRecentBlockTimeslot types.Timeslot, priorEntropyAccumulator [4][32]byte) ([4][32]byte, error) {
@@ -612,7 +625,6 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 }
 
 func accumulateAndIntegrate(
-	repo staterepository.PebbleStateRepository,
 	priorState *state.State,
 	posteriorMostRecentBlockTimeslot types.Timeslot,
 	accumulatableWorkReports []workreport.WorkReport,
@@ -620,7 +632,7 @@ func accumulateAndIntegrate(
 	posteriorEntropyAccumulator [4][32]byte,
 ) (pvm.AccumulationStateComponents, map[pvm.BEEFYCommitment]struct{}, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(repo, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
@@ -665,7 +677,10 @@ func accumulateAndIntegrate(
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
 			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			_, gasUsed := pvm.OnTransfer(repo, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
+			_, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
+			if err != nil {
+				return
+			}
 			if len(selectedTransfers) > 0 {
 				mutex.Lock() // Lock before writing to the map
 				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{

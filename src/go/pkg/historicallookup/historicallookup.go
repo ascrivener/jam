@@ -4,42 +4,47 @@ package historicallookup
 
 import (
 	"jam/pkg/serviceaccount"
-	"jam/pkg/staterepository"
 	"jam/pkg/types"
 )
 
-func HistoricalLookup(repo staterepository.PebbleStateRepository, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) *[]byte {
-	p, ok := serviceAccount.GetPreimageForHash(repo, hash)
+func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) (*[]byte, error) {
+	p, ok, err := serviceAccount.GetPreimageForHash(hash)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
-	historicalStatus, ok := serviceAccount.GetPreimageLookupHistoricalStatus(repo, uint32(types.BlobLength(len(p))), hash)
+	historicalStatus, ok, err := serviceAccount.GetPreimageLookupHistoricalStatus(uint32(types.BlobLength(len(p))), hash)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	switch len(historicalStatus) {
 	case 0:
-		return nil
+		return nil, nil
 	case 1:
 		if historicalStatus[0] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return &byteSlice, nil
 		}
 	case 2:
 		if historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return &byteSlice, nil
 		}
 	default:
 		if (historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot) || historicalStatus[2] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice
+			return &byteSlice, nil
 		}
 	}
 
-	return nil
+	return nil, nil
 }
 
 // gets posterior service accounts for a particular block with a header hash headerHash, timeslot timeslot

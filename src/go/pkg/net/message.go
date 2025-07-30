@@ -55,65 +55,6 @@ func WriteMessage(w io.Writer, data []byte) error {
 	return nil
 }
 
-// ParseBlockAnnouncement parses a block announcement message
-func ParseBlockAnnouncement(data []byte) (*BlockAnnouncement, error) {
-	if len(data) < 36 { // At minimum, we need finalized hash (32) + slot (4)
-		return nil, fmt.Errorf("block announcement message too short: %d bytes", len(data))
-	}
-
-	// The finalized block info is at the end of the message
-	finalizedPos := len(data) - 36
-	finalizedHash := make([]byte, 32)
-	copy(finalizedHash, data[finalizedPos:finalizedPos+32])
-
-	finalizedSlot := binary.LittleEndian.Uint32(data[finalizedPos+32 : finalizedPos+36])
-
-	// Any remaining data before the finalized info is headers
-	var headers [][]byte
-
-	// If there's data before the finalized block info, parse it as headers
-	if finalizedPos > 0 {
-		// First uint32 is the number of headers
-		if finalizedPos < 4 {
-			return nil, fmt.Errorf("invalid block announcement format")
-		}
-
-		headersCount := binary.LittleEndian.Uint32(data[0:4])
-		if headersCount > 0 {
-			// Parse headers
-			pos := 4
-			headers = make([][]byte, 0, headersCount)
-
-			for i := uint32(0); i < headersCount && pos < finalizedPos; i++ {
-				// Each header is prefixed by its length (4 bytes)
-				if pos+4 > finalizedPos {
-					return nil, fmt.Errorf("truncated block announcement message")
-				}
-
-				headerLen := binary.LittleEndian.Uint32(data[pos : pos+4])
-				pos += 4
-
-				if pos+int(headerLen) > finalizedPos {
-					return nil, fmt.Errorf("truncated block header in announcement")
-				}
-
-				header := make([]byte, headerLen)
-				copy(header, data[pos:pos+int(headerLen)])
-				headers = append(headers, header)
-				pos += int(headerLen)
-			}
-		}
-	}
-
-	return &BlockAnnouncement{
-		Headers: headers,
-		FinalizedRef: BlockReference{
-			Hash: finalizedHash,
-			Slot: finalizedSlot,
-		},
-	}, nil
-}
-
 // EncodeBlockAnnouncement encodes a block announcement message
 func EncodeBlockAnnouncement(announcement *BlockAnnouncement) []byte {
 	// Calculate total size:

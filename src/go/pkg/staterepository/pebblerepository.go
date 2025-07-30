@@ -17,8 +17,8 @@ type PebbleStateRepository struct {
 	batch *pebble.Batch // For transaction support
 }
 
-// NewPebbleStateRepository creates a new PebbleDB-backed repository
-func NewPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
+// newPebbleStateRepository creates a new PebbleDB-backed repository
+func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
 	db, err := pebble.Open(dbPath, &pebble.Options{})
 	if err != nil {
 		return nil, err

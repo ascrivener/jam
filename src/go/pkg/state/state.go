@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"jam/pkg/constants"
@@ -66,7 +67,11 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	}
 }
 
-func GetState(repo staterepository.PebbleStateRepository) (State, error) {
+func GetState() (State, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return State{}, errors.New("global repository not initialized")
+	}
 	state := State{
 		ServiceAccounts: make(map[types.ServiceIndex]*serviceaccount.ServiceAccount),
 	}
@@ -112,7 +117,7 @@ func GetState(repo staterepository.PebbleStateRepository) (State, error) {
 	}
 
 	// Load service accounts (just metadata, not storage)
-	if err := state.loadServiceAccounts(repo); err != nil {
+	if err := state.loadServiceAccounts(*repo); err != nil {
 		return State{}, err
 	}
 
@@ -202,7 +207,11 @@ func (state *State) loadServiceAccounts(repo staterepository.PebbleStateReposito
 }
 
 // SetState stores the entire blockchain state
-func (state *State) Set(repo staterepository.PebbleStateRepository) error {
+func (state *State) Set() error {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return errors.New("global repository not initialized")
+	}
 	// Create a new batch if one isn't already in progress
 	batch := repo.GetBatch()
 	ownBatch := batch == nil

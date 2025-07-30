@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"jam/pkg/state"
-	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
 	"math"
@@ -254,10 +253,10 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 }
 
 // Start starts the node. Initiate connections and UP 0 stream
-func (n *Node) Start(ctx context.Context, repo *staterepository.PebbleStateRepository) error {
-	state, err := state.GetState(*repo)
+func (n *Node) Start(ctx context.Context) error {
+	state, err := state.GetState()
 	if err != nil {
-		log.Fatalf("Failed to get state: %v", err)
+		return fmt.Errorf("failed to get state: %w", err)
 	}
 
 	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
@@ -324,7 +323,7 @@ func (n *Node) Start(ctx context.Context, repo *staterepository.PebbleStateRepos
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		n.acceptConnections(ctx, theyAreInitiator)
+		n.acceptConnections(ctx, theyAreInitiator, len(state.ValidatorKeysetsActive))
 	}()
 
 	// Start outbound connections to validators where I am the initiator
@@ -332,25 +331,21 @@ func (n *Node) Start(ctx context.Context, repo *staterepository.PebbleStateRepos
 		wg.Add(1)
 		go func(validator ValidatorInfo) {
 			defer wg.Done()
-			n.initiateConnection(ctx, validator)
+			n.initiateConnection(ctx, validator, len(state.ValidatorKeysetsActive))
 		}(v)
 	}
 
 	// Wait for all connections (both incoming and outgoing) to be established
 	wg.Wait()
 
-	// Now open UP 0 streams to all grid neighbors where we are the initiator
-	log.Printf("All connections established. Opening UP 0 streams to grid neighbors...")
-	n.openAllRequiredBlockAnnouncementStreams(ctx, len(state.ValidatorKeysetsActive))
-
 	log.Printf("Network node started, listening at %s", n.listenAddr)
 	return nil
 }
 
 // createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
-func (n *Node) createAndStoreConnection(quicConn quic.Connection, validatorInfo ValidatorInfo, initializedByRemote bool) error {
-	// Create JAMNP-S connection
-	conn, err := NewConnection(quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey), validatorInfo, initializedByRemote)
+func (n *Node) createAndStoreConnection(ctx context.Context, quicConn quic.Connection, validatorInfo ValidatorInfo, initializedByRemote bool, totalValidators int) error {
+	// Create JAMNP-S connection (this will register handlers, start accepting streams, and open required streams)
+	conn, err := NewConnection(ctx, quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey), validatorInfo, initializedByRemote, n.myValidator.Index, totalValidators)
 	if err != nil {
 		quicConn.CloseWithError(0, "failed to create connection")
 		return fmt.Errorf("failed to create JAMNP-S connection: %w", err)
@@ -363,7 +358,7 @@ func (n *Node) createAndStoreConnection(quicConn quic.Connection, validatorInfo 
 }
 
 // acceptConnections accepts incoming connections
-func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []ValidatorInfo) {
+func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []ValidatorInfo, totalValidators int) {
 	// Create a map for faster lookup of expected validators by public key
 	expectedValidators := make(map[string]ValidatorInfo)
 	for _, validator := range theyAreInitiator {
@@ -449,7 +444,7 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []Validat
 					return
 				}
 
-				err := n.createAndStoreConnection(conn, validatorInfo, true)
+				err := n.createAndStoreConnection(ctx, conn, validatorInfo, true, totalValidators)
 				if err != nil {
 					fmt.Printf("Failed to create connection for validator %s: %v\n", remoteKeyStr, err)
 					return
@@ -472,10 +467,10 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []Validat
 }
 
 // initiateConnection establishes an outbound connection to a validator where this node is the initiator
-func (n *Node) initiateConnection(ctx context.Context, validator ValidatorInfo) {
+func (n *Node) initiateConnection(ctx context.Context, validator ValidatorInfo, totalValidators int) {
 	// Establish connection with retry logic
 	for attempts := 0; attempts < 3; attempts++ {
-		err := n.Connect(ctx, validator)
+		err := n.Connect(ctx, validator, totalValidators)
 		if err == nil {
 			log.Printf("Successfully connected to validator %d", validator.Index)
 			return
@@ -496,7 +491,7 @@ func (n *Node) initiateConnection(ctx context.Context, validator ValidatorInfo) 
 }
 
 // Connect establishes an outbound connection to the given address
-func (n *Node) Connect(ctx context.Context, validatorInfo ValidatorInfo) error {
+func (n *Node) Connect(ctx context.Context, validatorInfo ValidatorInfo, totalValidators int) error {
 	// Extract the last 128 bytes which contain network information
 	networkInfo := validatorInfo.Keyset[len(validatorInfo.Keyset)-128:]
 
@@ -522,7 +517,7 @@ func (n *Node) Connect(ctx context.Context, validatorInfo ValidatorInfo) error {
 		return fmt.Errorf("failed to establish QUIC connection: %w", err)
 	}
 
-	if err = n.createAndStoreConnection(conn, validatorInfo, false); err != nil {
+	if err = n.createAndStoreConnection(ctx, conn, validatorInfo, false, totalValidators); err != nil {
 		return fmt.Errorf("failed to create and store connection: %w", err)
 	}
 
@@ -767,60 +762,6 @@ func (n *Node) RequestWorkReport(ctx context.Context, conn Connection, hash [32]
 	return report, nil
 }
 
-// HandleBlockAnnouncements registers a handler for block announcements
-func (n *Node) HandleBlockAnnouncements(conn Connection, handler func(*BlockAnnouncement) error) error {
-	streamHandler := func(stream Stream) error {
-		for {
-			// Read message
-			msg, err := ReadMessage(stream)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
-				return err
-			}
-
-			// Parse announcement
-			announcement, err := ParseBlockAnnouncement(msg)
-			if err != nil {
-				return err
-			}
-
-			// Call handler
-			if err := handler(announcement); err != nil {
-				return err
-			}
-		}
-	}
-
-	conn.RegisterHandler(StreamKindUP0BlockAnnouncement, streamHandler)
-	return nil
-}
-
-// HandleAssuranceDistributions registers a handler for assurance distributions
-func (n *Node) HandleAssuranceDistributions(conn Connection, handler func([]byte) error) error {
-	streamHandler := func(stream Stream) error {
-		for {
-			// Read message
-			msg, err := ReadMessage(stream)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
-				return err
-			}
-
-			// Call handler
-			if err := handler(msg); err != nil {
-				return err
-			}
-		}
-	}
-
-	conn.RegisterHandler(StreamKindCE141AssuranceDistribution, streamHandler)
-	return nil
-}
-
 // isGridNeighbor checks if two validators are neighbors in the grid structure
 func isGridNeighbor(myIndex, theirIndex, totalValidators int) bool {
 	if totalValidators <= 1 {
@@ -836,91 +777,4 @@ func isGridNeighbor(myIndex, theirIndex, totalValidators int) bool {
 
 	// Same row or same column
 	return myRow == theirRow || myCol == theirCol
-}
-
-// openAllRequiredBlockAnnouncementStreams opens UP 0 streams to all grid neighbors where we are the initiator
-func (n *Node) openAllRequiredBlockAnnouncementStreams(ctx context.Context, totalValidators int) {
-	n.connections.Range(func(key any, value any) bool {
-		conn := value.(Connection)
-		if conn.InitializedByRemote() {
-			log.Printf("Skipping UP 0 stream - not required for validator %d (initialized by remote)", conn.ValidatorIdx())
-			return true
-		}
-		if !isGridNeighbor(n.myValidator.Index, conn.ValidatorIdx(), totalValidators) {
-			log.Printf("Skipping UP 0 stream - not required for validator %d (not a grid neighbor)", conn.ValidatorIdx())
-			return true
-		}
-		err := n.openBlockAnnouncementStream(ctx, conn)
-		if err != nil {
-			log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", conn.RemoteKey(), err)
-		} else {
-			log.Printf("Successfully opened UP 0 stream for validator %s", conn.RemoteKey())
-		}
-		return true
-	})
-}
-
-// openBlockAnnouncementStream opens just the UP 0 stream without registering handlers
-func (n *Node) openBlockAnnouncementStream(ctx context.Context, conn Connection) error {
-	// Open the UP 0 stream as the initiator
-	stream, err := conn.OpenStream(StreamKindUP0BlockAnnouncement)
-	if err != nil {
-		return fmt.Errorf("failed to open block announcement stream: %w", err)
-	}
-
-	// Create a handshake message with our known leaves
-	// For now, just send an empty handshake as we don't have any known blocks yet
-	finalizedBlockHash := [32]byte{} // Empty hash for now
-	finalizedBlockSlot := uint32(0)  // Slot 0
-
-	// No leaves to send initially
-	var leaves [][32]byte
-	var leafSlots []uint32
-
-	// Encode and send handshake
-	handshakeData := encodeBlockAnnouncementHandshake(finalizedBlockHash, finalizedBlockSlot, leaves, leafSlots)
-
-	// Use the WriteMessage function from the net package to send the handshake
-	if err := WriteMessage(stream, handshakeData); err != nil {
-		return fmt.Errorf("failed to send block announcement handshake: %w", err)
-	}
-
-	log.Printf("Sent initial block announcement handshake")
-	return nil
-}
-
-// encodeBlockAnnouncementHandshake encodes a block announcement handshake message
-// according to the JAMNP-S specification
-func encodeBlockAnnouncementHandshake(finalHash [32]byte, finalSlot uint32, leaves [][32]byte, leafSlots []uint32) []byte {
-	if len(leaves) != len(leafSlots) {
-		log.Printf("Warning: mismatched leaves and slots arrays, ignoring leaves")
-		leaves = nil
-		leafSlots = nil
-	}
-
-	// Format according to JAMNP-S:
-	// Handshake = Final ++ len++[Leaf]
-	// Final = Header Hash ++ Slot
-	// Leaf = Header Hash ++ Slot
-
-	// Start with final hash and slot
-	result := make([]byte, 36) // 32 + 4
-	copy(result[:32], finalHash[:])
-	binary.LittleEndian.PutUint32(result[32:36], finalSlot)
-
-	// Add leaf count
-	leafCount := uint32(len(leaves))
-	leafCountBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(leafCountBytes, leafCount)
-	result = append(result, leafCountBytes...)
-
-	// Add leaves (hash + slot for each)
-	for i, leaf := range leaves {
-		leafData := make([]byte, 36) // 32 + 4
-		copy(leafData[:32], leaf[:])
-		binary.LittleEndian.PutUint32(leafData[32:], leafSlots[i])
-		result = append(result, leafData...)
-	}
-
-	return result
 }
