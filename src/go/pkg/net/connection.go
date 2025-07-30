@@ -8,14 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"jam/pkg/block"
 	"jam/pkg/block/header"
 	"jam/pkg/serializer"
+	"jam/pkg/state"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"golang.org/x/crypto/blake2b"
 )
 
 var (
@@ -397,12 +401,12 @@ func (c *jamnpsConnection) openBlockAnnouncementStream(ctx context.Context) erro
 
 type HandshakeFinal struct {
 	HeaderHash [32]byte
-	Slot       uint32
+	Slot       types.Timeslot
 }
 
 type HandshakeLeaf struct {
 	HeaderHash [32]byte
-	Slot       uint32
+	Slot       types.Timeslot
 }
 
 type Handshake struct {
@@ -411,11 +415,25 @@ type Handshake struct {
 }
 
 // createHandshake creates a handshake message with current finalized block info and known leaves
-func createHandshake() Handshake {
+func createHandshake() (Handshake, error) {
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return Handshake{}, errors.New("global repository not initialized")
+	}
+	state, err := state.GetState()
+	if err != nil {
+		return Handshake{}, fmt.Errorf("failed to get state: %w", err)
+	}
 	// TODO: Get actual finalized block info from state
 	// For now, use placeholder values
-	finalHash := [32]byte{} // Should be latest finalized block hash
-	finalSlot := uint32(0)  // Should be latest finalized block slot
+	latestFinalizedBlock := state.RecentBlocks[len(state.RecentBlocks)-1]
+
+	latestFinalizedBlockInfo, err := block.Get(latestFinalizedBlock.HeaderHash)
+	if err != nil {
+		return Handshake{}, fmt.Errorf("failed to get latest finalized block info: %w", err)
+	}
+	finalHash := blake2b.Sum256(serializer.Serialize(latestFinalizedBlockInfo.Block.Header))
+	finalSlot := latestFinalizedBlockInfo.Block.Header.TimeSlot
 
 	// TODO: Get actual leaves (descendants of finalized block with no known children)
 	// For now, use empty leaves array
@@ -427,7 +445,7 @@ func createHandshake() Handshake {
 			Slot:       finalSlot,
 		},
 		Leaves: leaves,
-	}
+	}, nil
 }
 
 // processHandshake processes a received handshake message
@@ -453,7 +471,10 @@ func (c *jamnpsConnection) processHandshake(handshake Handshake) error {
 // Both sides send their handshake and receive the peer's handshake
 func (c *jamnpsConnection) performHandshakeExchange(stream Stream) error {
 	// Send our handshake first
-	handshake := createHandshake()
+	handshake, err := createHandshake()
+	if err != nil {
+		return fmt.Errorf("failed to create handshake: %w", err)
+	}
 	handshakeData := serializer.Serialize(handshake)
 	if err := WriteMessage(stream, handshakeData); err != nil {
 		return fmt.Errorf("failed to send handshake: %w", err)

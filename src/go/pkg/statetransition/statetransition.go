@@ -668,30 +668,24 @@ func accumulateAndIntegrate(
 		}
 	}
 
-	var wg sync.WaitGroup
 	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}
 	var mutex sync.Mutex // Add mutex to protect map access
 
 	for serviceIndex := range o.ServiceAccounts {
-		wg.Add(1)
-		go func(sIndex types.ServiceIndex) {
-			defer wg.Done()
-			selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, sIndex)
-			_, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, sIndex, posteriorEntropyAccumulator, selectedTransfers)
-			if err != nil {
-				return
+		selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, serviceIndex)
+		_, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
+		if err != nil {
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+		}
+		if len(selectedTransfers) > 0 {
+			mutex.Lock() // Lock before writing to the map
+			deferredTransferStatistics[serviceIndex] = validatorstatistics.ServiceTransferStatistics{
+				NumberOfTransfers: types.GenericNum(len(selectedTransfers)),
+				GasUsed:           types.GenericGasValue(gasUsed),
 			}
-			if len(selectedTransfers) > 0 {
-				mutex.Lock() // Lock before writing to the map
-				deferredTransferStatistics[sIndex] = validatorstatistics.ServiceTransferStatistics{
-					NumberOfTransfers: types.GenericNum(len(selectedTransfers)),
-					GasUsed:           types.GenericGasValue(gasUsed),
-				}
-				mutex.Unlock() // Don't forget to unlock
-			}
-		}(serviceIndex)
+			mutex.Unlock() // Don't forget to unlock
+		}
 	}
-	wg.Wait()
 
 	// Create a copy of the accumulation history before modifying it
 	posteriorAccumulationHistory := priorState.AccumulationHistory
