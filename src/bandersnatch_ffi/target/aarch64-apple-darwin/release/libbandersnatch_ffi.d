@@ -1,1 +1,0 @@
-/Users/adamscrivener/Projects/Jam/jam/bandersnatch_ffi/target/aarch64-apple-darwin/release/libbandersnatch_ffi.a: /Users/adamscrivener/Projects/Jam/jam/bandersnatch_ffi/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin /Users/adamscrivener/Projects/Jam/jam/bandersnatch_ffi/src/lib.rs

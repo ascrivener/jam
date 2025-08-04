@@ -1,1 +1,0 @@
-w3f_plonk_common::Proof<_, w3f_pcs::pcs::kzg::KZG<_>, w3f_ring_proof::piop::RingCommitments<_, w3f_pcs::pcs::kzg::commitment::KzgCommitment<_>>, w3f_ring_proof::piop::RingEvaluations<_>>

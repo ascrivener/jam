@@ -1,1 +1,0 @@
-/Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release/libbandersnatch_ffi.so: /Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin /Users/adamscrivener/Projects/Jam/jam/src/bandersnatch_ffi/src/lib.rs

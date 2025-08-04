@@ -1,1 +1,0 @@
-generic_array::GenericArray<u8, <<S as Suite>::Hasher as crypto_common::OutputSizeUser>::OutputSize>
