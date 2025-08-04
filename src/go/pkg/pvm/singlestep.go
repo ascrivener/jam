@@ -53,6 +53,13 @@ func (pvm *PVM) SingleStep() ExitReason {
 	var exitReason ExitReason
 	var nextIC types.Register
 
+	handler := dispatchTable[ctx.Instruction]
+	if handler == nil || !pvm.Opcodes.BitAt(int(pvm.InstructionCounter)) {
+		handler = dispatchTable[0]
+	}
+
+	exitReason, nextIC = handler(pvm, &ctx)
+
 	if handler := dispatchTable[ctx.Instruction]; handler != nil {
 		exitReason, nextIC = handler(pvm, &ctx)
 	} else {
