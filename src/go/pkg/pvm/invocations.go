@@ -101,7 +101,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	if preimage == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}, nil
 	}
-	if len(*preimage) > int(constants.ServiceCodeMaxSize) {
+	if len(preimage) > int(constants.ServiceCodeMaxSize) {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), [][]byte{}, nil
 	}
 
@@ -116,7 +116,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		IntegratedPVMs: map[uint64]IntegratedPVM{},
 		ExportSequence: [][]byte{},
 	}
-	r, _, err := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
+	r, _, err := ΨM(preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
 	if err != nil {
 		return r, [][]byte{}, err
 	}
