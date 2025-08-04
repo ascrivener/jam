@@ -2,9 +2,14 @@ package state
 
 import "jam/pkg/merklizer"
 
+type RecentActivity struct {
+	RecentBlocks          []RecentBlock
+	AccumulationOutputLog merklizer.MMBelt
+}
+
 type RecentBlock struct {
 	HeaderHash                      [32]byte              // h
-	AccumulationResultMMR           merklizer.MMRRange    // b
+	MMRSuperPeak                    [32]byte              // b
 	StateRoot                       [32]byte              // s
 	WorkPackageHashesToSegmentRoots map[[32]byte][32]byte // p
 }
@@ -12,13 +17,9 @@ type RecentBlock struct {
 // DeepCopy creates a new RecentBlock with all nested structures properly copied
 func (rb RecentBlock) DeepCopy() RecentBlock {
 	newRB := RecentBlock{
-		HeaderHash: rb.HeaderHash, // [32]byte is already copied by value
-		StateRoot:  rb.StateRoot,  // [32]byte is already copied by value
-	}
-
-	// Deep copy the AccumulationResultMMR
-	if rb.AccumulationResultMMR != nil {
-		newRB.AccumulationResultMMR = rb.AccumulationResultMMR.DeepCopy()
+		HeaderHash:   rb.HeaderHash, // [32]byte is already copied by value
+		MMRSuperPeak: rb.MMRSuperPeak,
+		StateRoot:    rb.StateRoot, // [32]byte is already copied by value
 	}
 
 	// Deep copy the WorkPackageHashesToSegmentRoots map

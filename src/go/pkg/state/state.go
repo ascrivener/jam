@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"jam/pkg/constants"
+	"jam/pkg/pvm"
 	"jam/pkg/serializer"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
@@ -18,7 +19,7 @@ import (
 
 type State struct {
 	AuthorizersPool            [constants.NumCores][][32]byte                                               // α
-	RecentBlocks               []RecentBlock                                                                // β
+	RecentActivity             RecentActivity                                                               // β
 	SafroleBasicState          SafroleBasicState                                                            // γ
 	ServiceAccounts            serviceaccount.ServiceAccounts                                               // δ
 	EntropyAccumulator         [4][32]byte                                                                  // η
@@ -32,7 +33,8 @@ type State struct {
 	Disputes                   types.Disputes                                                               // ψ
 	ValidatorStatistics        validatorstatistics.ValidatorStatistics                                      // π
 	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
-	AccumulationHistory        AccumulationHistory                                                          // ξ
+	AccumulationHistory        AccumulationHistory                                                          //
+	AccumulationOutputLog      []pvm.BEEFYCommitment                                                        // ξ
 }
 
 type PendingReport struct {
@@ -83,7 +85,7 @@ func GetState() (State, error) {
 	}{
 		{staterepository.MakeComponentKey(1), &state.AuthorizersPool},
 		{staterepository.MakeComponentKey(2), &state.AuthorizerQueue},
-		{staterepository.MakeComponentKey(3), &state.RecentBlocks},
+		{staterepository.MakeComponentKey(3), &state.RecentActivity},
 		{staterepository.MakeComponentKey(4), &state.SafroleBasicState},
 		{staterepository.MakeComponentKey(5), &state.Disputes},
 		{staterepository.MakeComponentKey(6), &state.EntropyAccumulator},
@@ -235,7 +237,7 @@ func (state *State) Set() error {
 	}{
 		{staterepository.MakeComponentKey(1), state.AuthorizersPool},
 		{staterepository.MakeComponentKey(2), state.AuthorizerQueue},
-		{staterepository.MakeComponentKey(3), state.RecentBlocks},
+		{staterepository.MakeComponentKey(3), state.RecentActivity},
 		{staterepository.MakeComponentKey(4), state.SafroleBasicState},
 		{staterepository.MakeComponentKey(5), state.Disputes},
 		{staterepository.MakeComponentKey(6), state.EntropyAccumulator},

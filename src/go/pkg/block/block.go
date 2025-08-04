@@ -297,7 +297,7 @@ func (b Block) Verify(priorState state.State) error {
 		}
 	}
 
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for wph := range recentBlock.WorkPackageHashesToSegmentRoots {
 			existingWorkPackageHashes[wph] = struct{}{}
 		}
@@ -315,7 +315,7 @@ func (b Block) Verify(priorState state.State) error {
 
 	// (11.39)
 	recentBlockWorkPackageHashes := make(map[[32]byte]struct{})
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for _, wph := range recentBlock.WorkPackageHashesToSegmentRoots {
 			recentBlockWorkPackageHashes[wph] = struct{}{}
 		}
@@ -344,7 +344,7 @@ func (b Block) Verify(priorState state.State) error {
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		correctSegmentRootLookup[guarantee.WorkReport.WorkPackageSpecification.WorkPackageHash] = guarantee.WorkReport.WorkPackageSpecification.SegmentRoot
 	}
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		maps.Copy(correctSegmentRootLookup, recentBlock.WorkPackageHashesToSegmentRoots)
 	}
 	for _, guarantee := range b.Extrinsics.Guarantees {
