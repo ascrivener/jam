@@ -23,25 +23,3 @@ go.work.sum
 
 # env file
 .env
-
-
-######## rust
-# Ignore Cargo output for the Rust code in bandersnatch_ffi
-bandersnatch_ffi/target/
-
-# Cargo lock file - if you're building a library you might want to ignore it.
-bandersnatch_ffi/Cargo.lock
-
-# Optional: Ignore backup files and editor temporary files in the Rust code.
-bandersnatch_ffi/**/*.rs.bk
-bandersnatch_ffi/**/*~ 
-bandersnatch_ffi/.DS_Store
-
-# Ignore any generated documentation.
-bandersnatch_ffi/target/doc/
-
-# Optionally, ignore build scripts output
-bandersnatch_ffi/build/
-
-# If using rustfmt, ignore rustfmt configuration if it's generated.
-bandersnatch_ffi/rustfmt.toml
