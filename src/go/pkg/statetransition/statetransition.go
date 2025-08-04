@@ -673,9 +673,12 @@ func accumulateAndIntegrate(
 
 	for serviceIndex := range o.ServiceAccounts {
 		selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, serviceIndex)
-		_, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
+		serviceAccount, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
 		if err != nil {
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+		}
+		if _, exists := accumulationStatistics[serviceIndex]; exists {
+			serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
 		}
 		if len(selectedTransfers) > 0 {
 			mutex.Lock() // Lock before writing to the map

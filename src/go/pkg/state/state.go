@@ -178,12 +178,16 @@ func (state *State) loadServiceAccounts(repo staterepository.PebbleStateReposito
 		copy(value, iter.Value())
 
 		var serviceAccountData struct {
-			CodeHash                 [32]byte       // c
-			Balance                  types.Balance  // b
-			MinimumGasForAccumulate  types.GasValue // g
-			MinimumGasForOnTransfer  types.GasValue // m
-			TotalOctetsUsedInStorage uint64         // o
-			TotalItemsUsedInStorage  uint32         // i
+			CodeHash                       [32]byte           // c
+			Balance                        types.Balance      // b
+			MinimumGasForAccumulate        types.GasValue     // g
+			MinimumGasForOnTransfer        types.GasValue     // m
+			TotalOctetsUsedInStorage       uint64             // o
+			GratisStorageOffset            types.Balance      // f
+			TotalItemsUsedInStorage        uint32             // i
+			CreatedTimeSlot                types.Timeslot     // r
+			MostRecentAccumulationTimeslot types.Timeslot     // a
+			ParentServiceIndex             types.ServiceIndex // p
 		}
 
 		// Deserialize account
@@ -193,13 +197,17 @@ func (state *State) loadServiceAccounts(repo staterepository.PebbleStateReposito
 
 		// Add to state
 		state.ServiceAccounts[types.ServiceIndex(serviceIndex)] = &serviceaccount.ServiceAccount{
-			ServiceIndex:             types.ServiceIndex(serviceIndex),
-			CodeHash:                 serviceAccountData.CodeHash,
-			Balance:                  serviceAccountData.Balance,
-			MinimumGasForAccumulate:  serviceAccountData.MinimumGasForAccumulate,
-			MinimumGasForOnTransfer:  serviceAccountData.MinimumGasForOnTransfer,
-			TotalOctetsUsedInStorage: serviceAccountData.TotalOctetsUsedInStorage,
-			TotalItemsUsedInStorage:  serviceAccountData.TotalItemsUsedInStorage,
+			ServiceIndex:                   types.ServiceIndex(serviceIndex),
+			CodeHash:                       serviceAccountData.CodeHash,
+			Balance:                        serviceAccountData.Balance,
+			MinimumGasForAccumulate:        serviceAccountData.MinimumGasForAccumulate,
+			MinimumGasForOnTransfer:        serviceAccountData.MinimumGasForOnTransfer,
+			TotalOctetsUsedInStorage:       serviceAccountData.TotalOctetsUsedInStorage,
+			GratisStorageOffset:            serviceAccountData.GratisStorageOffset,
+			TotalItemsUsedInStorage:        serviceAccountData.TotalItemsUsedInStorage,
+			CreatedTimeSlot:                serviceAccountData.CreatedTimeSlot,
+			MostRecentAccumulationTimeslot: serviceAccountData.MostRecentAccumulationTimeslot,
+			ParentServiceIndex:             serviceAccountData.ParentServiceIndex,
 		}
 	}
 
@@ -261,19 +269,27 @@ func (state *State) Set() error {
 		prefixedKey := append([]byte("state:"), rawKey[:]...)
 
 		var serviceAccountData = struct {
-			CodeHash                 [32]byte       // c
-			Balance                  types.Balance  // b
-			MinimumGasForAccumulate  types.GasValue // g
-			MinimumGasForOnTransfer  types.GasValue // m
-			TotalOctetsUsedInStorage uint64         // o
-			TotalItemsUsedInStorage  uint32         // i
+			CodeHash                       [32]byte           // c
+			Balance                        types.Balance      // b
+			MinimumGasForAccumulate        types.GasValue     // g
+			MinimumGasForOnTransfer        types.GasValue     // m
+			TotalOctetsUsedInStorage       uint64             // o
+			GratisStorageOffset            types.Balance      // f
+			TotalItemsUsedInStorage        uint32             // i
+			CreatedTimeSlot                types.Timeslot     // r
+			MostRecentAccumulationTimeslot types.Timeslot     // a
+			ParentServiceIndex             types.ServiceIndex // p
 		}{
-			CodeHash:                 account.CodeHash,
-			Balance:                  account.Balance,
-			MinimumGasForAccumulate:  account.MinimumGasForAccumulate,
-			MinimumGasForOnTransfer:  account.MinimumGasForOnTransfer,
-			TotalOctetsUsedInStorage: account.TotalOctetsUsedInStorage,
-			TotalItemsUsedInStorage:  account.TotalItemsUsedInStorage,
+			CodeHash:                       account.CodeHash,
+			Balance:                        account.Balance,
+			MinimumGasForAccumulate:        account.MinimumGasForAccumulate,
+			MinimumGasForOnTransfer:        account.MinimumGasForOnTransfer,
+			TotalOctetsUsedInStorage:       account.TotalOctetsUsedInStorage,
+			GratisStorageOffset:            account.GratisStorageOffset,
+			TotalItemsUsedInStorage:        account.TotalItemsUsedInStorage,
+			CreatedTimeSlot:                account.CreatedTimeSlot,
+			MostRecentAccumulationTimeslot: account.MostRecentAccumulationTimeslot,
+			ParentServiceIndex:             account.ParentServiceIndex,
 		}
 		data := serializer.Serialize(serviceAccountData)
 		if err := batch.Set(prefixedKey, data, nil); err != nil {
