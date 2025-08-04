@@ -267,18 +267,12 @@ func (c *jamnpsConnection) registerHandler(kind StreamKind, handler StreamHandle
 // RegisterHandlers registers handlers for all active connections
 func (c *jamnpsConnection) registerHandlers() {
 	// Register handler for incoming block announcements (UP 0)
-	err := c.HandleBlockAnnouncements(func(announcement *Announcement) error {
-		log.Printf("Received block announcement from validator %d", c.ValidatorIdx())
-		// TODO: Process the block announcement
-		return nil
+	c.registerHandler(StreamKindUP0BlockAnnouncement, func(stream Stream) error {
+		return c.handleBlockAnnouncementStream(stream)
 	})
-	if err != nil {
-		log.Printf("Warning: Failed to register block announcement handler for validator %d: %v",
-			c.ValidatorIdx(), err)
-	}
 
 	// Register handler for incoming assurance distributions (CE 141)
-	err = c.HandleAssuranceDistributions(func(data []byte) error {
+	err := c.HandleAssuranceDistributions(func(data []byte) error {
 		log.Printf("Received assurance distribution from validator %d: %d bytes",
 			c.ValidatorIdx(), len(data))
 		// TODO: Process the assurance distribution
@@ -298,43 +292,6 @@ type Announcement struct {
 type Final struct {
 	HeaderHash    [32]byte
 	FinalizedSlot types.Timeslot
-}
-
-// HandleBlockAnnouncements registers a handler for block announcements
-func (c *jamnpsConnection) HandleBlockAnnouncements(handler func(*Announcement) error) error {
-	streamHandler := func(stream Stream) error {
-		// Perform handshake exchange first
-		err := c.performHandshakeExchange(stream)
-		if err != nil {
-			return fmt.Errorf("handshake exchange failed: %w", err)
-		}
-
-		// Now enter the announcement loop
-		for {
-			// Read message
-			msg, err := ReadMessage(stream)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
-				return err
-			}
-
-			announcement := &Announcement{}
-			err = serializer.Deserialize(msg, announcement)
-			if err != nil {
-				return err
-			}
-
-			// Call handler
-			if err := handler(announcement); err != nil {
-				return err
-			}
-		}
-	}
-
-	c.registerHandler(StreamKindUP0BlockAnnouncement, streamHandler)
-	return nil
 }
 
 // HandleAssuranceDistributions registers a handler for assurance distributions
@@ -371,26 +328,29 @@ func (c *jamnpsConnection) openRequiredBlockAnnouncementStreams(ctx context.Cont
 		log.Printf("Skipping UP 0 stream - not required for validator %d (not a grid neighbor)", c.validatorInfo.Index)
 		return
 	}
-	err := c.openBlockAnnouncementStream(ctx)
-	if err != nil {
-		log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", c.RemoteKey(), err)
-	} else {
-		log.Printf("Successfully opened UP 0 stream for validator %s", c.RemoteKey())
-	}
+	panic("unused rn")
+	// err := c.openBlockAnnouncementStream(ctx)
+	// if err != nil {
+	// 	log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", c.RemoteKey(), err)
+	// } else {
+	// 	log.Printf("Successfully opened UP 0 stream for validator %s", c.RemoteKey())
+	// }
 }
 
-// openBlockAnnouncementStream opens just the UP 0 stream without registering handlers
-func (c *jamnpsConnection) openBlockAnnouncementStream(ctx context.Context) error {
+// openBlockAnnouncementStream opens a UP 0 stream to a specific validator and performs handshake
+func (c *jamnpsConnection) openBlockAnnouncementStream() error {
 	// Open the UP 0 stream as the initiator
 	stream, err := c.OpenStream(StreamKindUP0BlockAnnouncement)
 	if err != nil {
 		return fmt.Errorf("failed to open block announcement stream: %w", err)
 	}
-	if err := c.performHandshakeExchange(stream); err != nil {
-		return fmt.Errorf("failed to perform handshake exchange: %w", err)
+
+	// Use the unified parallel handshake and announcement handling
+	if err := c.handleBlockAnnouncementStream(stream); err != nil {
+		return fmt.Errorf("failed to handle block announcement stream: %w", err)
 	}
 
-	log.Printf("Sent initial block announcement handshake")
+	log.Printf("Completed block announcement stream handling")
 	return nil
 }
 
@@ -437,7 +397,12 @@ func createHandshake() (Handshake, error) {
 
 	// TODO: Get actual leaves (descendants of finalized block with no known children)
 	// For now, use empty leaves array
-	leaves := []HandshakeLeaf{}
+	leaves := []HandshakeLeaf{
+		{
+			HeaderHash: finalHash,
+			Slot:       finalSlot,
+		},
+	}
 
 	return Handshake{
 		Final: HandshakeFinal{
@@ -446,6 +411,106 @@ func createHandshake() (Handshake, error) {
 		},
 		Leaves: leaves,
 	}, nil
+}
+
+// handleBlockAnnouncementStream handles both handshake and announcements in parallel
+func (c *jamnpsConnection) handleBlockAnnouncementStream(stream Stream) error {
+	errChan := make(chan error, 2)
+
+	// Goroutine 1: Sender (handshake + outbound announcements)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("sender panic: %v", r)
+			}
+		}()
+
+		// Send our handshake immediately
+		handshake, err := createHandshake()
+		if err != nil {
+			errChan <- fmt.Errorf("failed to create handshake: %w", err)
+			return
+		}
+		handshakeData := serializer.Serialize(handshake)
+		if err := WriteMessage(stream, handshakeData); err != nil {
+			errChan <- fmt.Errorf("failed to send handshake: %w", err)
+			return
+		}
+
+		log.Printf("Sent handshake to validator %d", c.ValidatorIdx())
+
+		// Keep the sender goroutine alive to maintain the bidirectional stream
+		// Even if we don't have announcements to send, we need to keep this side open
+		// for announcement := range c.outboundAnnouncements {
+		//     WriteMessage(stream, announcement)
+		// }
+
+		// Block indefinitely to keep the stream alive
+		// In a full implementation, this would listen for outbound announcements
+		select {} // Block forever
+	}()
+
+	// Goroutine 2: Receiver (handshake + inbound announcements)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				errChan <- fmt.Errorf("receiver panic: %v", r)
+			}
+		}()
+
+		// Receive peer's handshake first
+		handshakeMsg, err := ReadMessage(stream)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to read peer handshake: %w", err)
+			return
+		}
+
+		log.Printf("Received handshake from validator %d: %d bytes", c.ValidatorIdx(), len(handshakeMsg))
+
+		// Parse the handshake message
+		peerHandshake := Handshake{}
+		err = serializer.Deserialize(handshakeMsg, &peerHandshake)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to parse peer handshake: %w", err)
+			return
+		}
+
+		// Process the parsed handshake
+		if err := c.processHandshake(peerHandshake); err != nil {
+			errChan <- fmt.Errorf("failed to process peer handshake: %w", err)
+			return
+		}
+
+		// Now enter the announcement loop
+		for {
+			// Read message
+			msg, err := ReadMessage(stream)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					errChan <- nil
+					return
+				}
+				errChan <- err
+				return
+			}
+
+			announcement := &Announcement{}
+			err = serializer.Deserialize(msg, announcement)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			// Call handler
+			if err := c.processBlockAnnouncement(announcement); err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+
+	// Wait for either goroutine to complete (or error)
+	return <-errChan
 }
 
 // processHandshake processes a received handshake message
@@ -467,42 +532,52 @@ func (c *jamnpsConnection) processHandshake(handshake Handshake) error {
 	return nil
 }
 
-// performHandshakeExchange handles the complete handshake exchange for UP 0 streams
-// Both sides send their handshake and receive the peer's handshake
-func (c *jamnpsConnection) performHandshakeExchange(stream Stream) error {
-	// Send our handshake first
-	handshake, err := createHandshake()
+// RequestBlocks requests blocks from a node
+func (c *jamnpsConnection) RequestBlocks(ctx context.Context, hash [32]byte, direction Direction, maxBlocks uint32) ([][]byte, error) {
+	log.Printf("=== Starting block request ===")
+	log.Printf("Requesting from validator %d: hash=%x, direction=%d, maxBlocks=%d", c.ValidatorIdx(), hash, direction, maxBlocks)
+
+	// Open a block request stream
+	stream, err := c.OpenStream(StreamKindCE128BlockRequest)
 	if err != nil {
-		return fmt.Errorf("failed to create handshake: %w", err)
-	}
-	handshakeData := serializer.Serialize(handshake)
-	if err := WriteMessage(stream, handshakeData); err != nil {
-		return fmt.Errorf("failed to send handshake: %w", err)
+		log.Printf("Failed to open stream: %v", err)
+		return nil, fmt.Errorf("failed to open block request stream: %w", err)
 	}
 
-	log.Printf("Sent handshake to validator %d", c.ValidatorIdx())
+	log.Printf("Successfully opened CE 128 stream")
 
-	// Receive peer's handshake
-	handshakeMsg, err := ReadMessage(stream)
+	// Encode request
+	req := BlockRequest{
+		Hash:      hash,
+		Direction: direction,
+		MaxBlocks: maxBlocks,
+	}
+	data := serializer.Serialize(req)
+
+	log.Printf("hash: %x", req.Hash)
+
+	log.Printf("Encoded request data (%d bytes): %x", len(data), data)
+	log.Printf("Request breakdown: hash=%x, direction=%d, maxBlocks=%d", req.Hash, req.Direction, req.MaxBlocks)
+
+	// Write raw data (no message framing for JAMNP-S)
+	err = WriteMessage(stream, data)
 	if err != nil {
-		return fmt.Errorf("failed to read peer handshake: %w", err)
+		log.Printf("Failed to write to stream: %v", err)
+		return nil, fmt.Errorf("failed to write block request: %w", err)
 	}
 
-	log.Printf("Received handshake from validator %d: %d bytes", c.ValidatorIdx(), len(handshakeMsg))
+	stream.CloseWrite()
 
-	// Parse the handshake message
-	peerHandshake := Handshake{}
-	err = serializer.Deserialize(handshakeMsg, &peerHandshake)
+	response, err := ReadMessage(stream)
 	if err != nil {
-		return fmt.Errorf("failed to parse peer handshake: %w", err)
+		log.Printf("Failed to read from stream: %v", err)
+		return nil, fmt.Errorf("failed to read block response: %w", err)
 	}
 
-	// Process the parsed handshake
-	if err := c.processHandshake(peerHandshake); err != nil {
-		return fmt.Errorf("failed to process peer handshake: %w", err)
-	}
+	stream.Close()
 
-	return nil
+	fmt.Println(response)
+	return nil, nil
 }
 
 // Close closes the connection
@@ -606,4 +681,31 @@ func (s *jamnpsStream) Reset() error {
 // Kind returns the stream kind
 func (s *jamnpsStream) Kind() StreamKind {
 	return s.kind
+}
+
+func (c *jamnpsConnection) processBlockAnnouncement(announcement *Announcement) error {
+
+	// Calculate the hash of the announced block (not the finalized block)
+	announcedBlockData := serializer.Serialize(announcement.Header)
+	announcedBlockHash := blake2b.Sum256(announcedBlockData)
+
+	log.Printf("Announced block hash: %x", announcedBlockHash)
+	log.Printf("Finalized block hash: %x", announcement.Final.HeaderHash)
+
+	// Request the actual announced block in a separate goroutine to avoid blocking the stream
+	go func() {
+		blocks, err := c.RequestBlocks(c.ctx, announcedBlockHash, DirectionAncestors, 1)
+		if err != nil {
+			log.Printf("Failed to request announced block from validator %d: %v", c.ValidatorIdx(), err)
+			// Don't propagate the error - just log it to keep the announcement stream alive
+			return
+		}
+
+		if len(blocks) > 0 {
+			log.Printf("Successfully received %d blocks from validator %d", len(blocks), c.ValidatorIdx())
+		}
+	}()
+
+	// Always return nil to keep the announcement stream alive
+	return nil
 }

@@ -16,8 +16,7 @@ const (
 	StreamKindUP0BlockAnnouncement StreamKind = 0
 
 	// CE streams (128-255)
-	StreamKindCE2BlockRequest            StreamKind = 2
-	StreamKindCE3WorkReportRequest       StreamKind = 3
+	StreamKindCE128BlockRequest          StreamKind = 128
 	StreamKindCE129StateRequest          StreamKind = 129
 	StreamKindCE131TicketDistribution    StreamKind = 131
 	StreamKindCE141AssuranceDistribution StreamKind = 141

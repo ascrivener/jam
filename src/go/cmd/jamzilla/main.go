@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	"jam/pkg/block"
@@ -20,7 +19,6 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -202,125 +200,4 @@ func main() {
 	case <-ctx.Done():
 		log.Println("Context cancelled, shutting down...")
 	}
-}
-
-// requestWorkReport requests a work report for the given hash
-func requestWorkReport(ctx context.Context, node *net.Node, conn net.Connection, hash [32]byte) {
-	log.Printf("Requesting work report for hash: %x", hash)
-
-	report, err := node.RequestWorkReport(ctx, conn, hash)
-	if err != nil {
-		log.Fatalf("Failed to request work report: %v", err)
-	}
-
-	log.Printf("Received work report: %d bytes", len(report))
-	log.Printf("Work report content: %x", report)
-}
-
-// requestBlocks requests blocks in the given direction from the starting hash
-func requestBlocks(ctx context.Context, node *net.Node, conn net.Connection, hash [32]byte, direction net.Direction, maxBlocks uint32, saveDir string) {
-	log.Printf("Requesting up to %d blocks %s from %x", maxBlocks, directionString(direction), hash)
-
-	blocks, err := node.RequestBlocks(ctx, conn, hash, direction, maxBlocks)
-	if err != nil {
-		log.Fatalf("Failed to request blocks: %v", err)
-	}
-
-	log.Printf("Received %d blocks", len(blocks))
-
-	// Save blocks if requested
-	if saveDir != "" {
-		err := saveBlocks(blocks, saveDir)
-		if err != nil {
-			log.Fatalf("Failed to save blocks: %v", err)
-		}
-	}
-}
-
-// requestState requests state for the given root hash
-func requestState(ctx context.Context, node *net.Node, conn net.Connection, stateRoot [32]byte) {
-	log.Printf("Requesting state for root: %x", stateRoot)
-
-	options := &net.StateRequestOptions{
-		StateRoot:   stateRoot[:],
-		StartKey:    nil,         // Start from the beginning
-		EndKey:      nil,         // No end key (full state)
-		MaximumSize: 1024 * 1024, // 1MB max size
-	}
-
-	response, err := node.RequestState(ctx, conn, options)
-	if err != nil {
-		log.Fatalf("Failed to request state: %v", err)
-	}
-
-	log.Printf("Received state response:")
-	log.Printf("- Boundary nodes: %d bytes", len(response.BoundaryNodes))
-	log.Printf("- Key/value pairs: %d", len(response.KeyValuePairs))
-
-	// Print key/value pairs
-	for i, kv := range response.KeyValuePairs {
-		if i < 10 { // Only print the first 10 pairs
-			log.Printf("  %d: Key: %x, Value: %d bytes", i, kv.Key, len(kv.Value))
-		} else {
-			log.Printf("  ... and %d more pairs", len(response.KeyValuePairs)-10)
-			break
-		}
-	}
-}
-
-// parseHash parses a hex-encoded hash
-func parseHash(hashStr string) ([32]byte, error) {
-	var hash [32]byte
-
-	// Remove 0x prefix if present
-	if len(hashStr) > 2 && hashStr[:2] == "0x" {
-		hashStr = hashStr[2:]
-	}
-
-	// Decode hex
-	hashBytes, err := hex.DecodeString(hashStr)
-	if err != nil {
-		return hash, fmt.Errorf("invalid hex: %w", err)
-	}
-
-	// Validate length
-	if len(hashBytes) != 32 {
-		return hash, fmt.Errorf("hash must be 32 bytes, got %d", len(hashBytes))
-	}
-
-	copy(hash[:], hashBytes)
-	return hash, nil
-}
-
-// saveBlocks saves blocks to individual files in the specified directory
-func saveBlocks(blocks [][]byte, saveDir string) error {
-	// Create directory if it doesn't exist
-	err := os.MkdirAll(saveDir, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Save each block to a file
-	for i, block := range blocks {
-		// Generate a unique filename
-		filename := filepath.Join(saveDir, fmt.Sprintf("block_%d_%s.bin", i, uuid.New().String()))
-
-		// Write block to file
-		err := os.WriteFile(filename, block, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to write block %d: %w", i, err)
-		}
-
-		log.Printf("Saved block %d (%d bytes) to %s", i, len(block), filename)
-	}
-
-	return nil
-}
-
-// directionString returns a string representation of the direction
-func directionString(direction net.Direction) string {
-	if direction == net.DirectionDescendants {
-		return "descendants"
-	}
-	return "ancestors"
 }

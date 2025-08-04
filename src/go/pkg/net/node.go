@@ -623,72 +623,6 @@ func generateCertificate(privateKey ed25519.PrivateKey) (tls.Certificate, error)
 	return tlsCert, nil
 }
 
-// OpenAssuranceDistributionStream opens a CE 141 assurance distribution stream
-func (n *Node) OpenAssuranceDistributionStream(ctx context.Context, conn Connection) (Stream, error) {
-	return conn.OpenStream(StreamKindCE141AssuranceDistribution)
-}
-
-// OpenStateRequestStream opens a CE 129 state request stream
-func (n *Node) OpenStateRequestStream(ctx context.Context, conn Connection) (Stream, error) {
-	return conn.OpenStream(StreamKindCE129StateRequest)
-}
-
-// OpenBlockRequestStream opens a CE 2 block request stream
-func (n *Node) OpenBlockRequestStream(ctx context.Context, conn Connection) (Stream, error) {
-	return conn.OpenStream(StreamKindCE2BlockRequest)
-}
-
-// RequestBlocks requests blocks from a node
-func (n *Node) RequestBlocks(ctx context.Context, conn Connection, hash [32]byte, direction Direction, maxBlocks uint32) ([][]byte, error) {
-	// Open a block request stream
-	stream, err := conn.OpenStream(StreamKindCE2BlockRequest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open block request stream: %w", err)
-	}
-	defer stream.Close()
-
-	// Encode request
-	req := &BlockRequest{
-		Hash:      hash,
-		Direction: direction,
-		MaxBlocks: maxBlocks,
-	}
-	data := EncodeBlockRequest(req)
-
-	// Write message
-	err = WriteMessage(stream, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write block request: %w", err)
-	}
-
-	// Read response
-	var blocks [][]byte
-
-	for {
-		// Read message
-		msg, err := ReadMessage(stream)
-		if err != nil {
-			// If we've received at least one block and got EOF, that's normal
-			if errors.Is(err, io.EOF) && len(blocks) > 0 {
-				break
-			}
-			return blocks, fmt.Errorf("failed to read block response: %w", err)
-		}
-
-		// Add block to result
-		blockCopy := make([]byte, len(msg))
-		copy(blockCopy, msg)
-		blocks = append(blocks, blockCopy)
-
-		// Break if we've received all requested blocks
-		if uint32(len(blocks)) >= maxBlocks {
-			break
-		}
-	}
-
-	return blocks, nil
-}
-
 // RequestState requests state from a node
 func (n *Node) RequestState(ctx context.Context, conn Connection, options *StateRequestOptions) (*StateResponse, error) {
 	// Open a state request stream
@@ -733,33 +667,6 @@ func (n *Node) RequestState(ctx context.Context, conn Connection, options *State
 	}
 
 	return response, nil
-}
-
-// RequestWorkReport requests a work report from a node
-func (n *Node) RequestWorkReport(ctx context.Context, conn Connection, hash [32]byte) ([]byte, error) {
-	// Open a work report request stream (CE 3)
-	stream, err := conn.OpenStream(StreamKindCE3WorkReportRequest)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open work report request stream: %w", err)
-	}
-	defer stream.Close()
-
-	// Encode request
-	data := EncodeWorkReportRequest(hash)
-
-	// Write message
-	err = WriteMessage(stream, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write work report request: %w", err)
-	}
-
-	// Read response
-	report, err := ReadMessage(stream)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read work report response: %w", err)
-	}
-
-	return report, nil
 }
 
 // isGridNeighbor checks if two validators are neighbors in the grid structure

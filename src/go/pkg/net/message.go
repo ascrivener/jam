@@ -89,17 +89,6 @@ func EncodeBlockAnnouncement(announcement *BlockAnnouncement) []byte {
 	return data
 }
 
-// EncodeBlockRequest encodes a block request message
-func EncodeBlockRequest(request *BlockRequest) []byte {
-	data := make([]byte, 37) // 32 (hash) + 1 (direction) + 4 (max blocks)
-
-	copy(data[0:32], request.Hash[:])
-	data[32] = byte(request.Direction)
-	binary.LittleEndian.PutUint32(data[33:37], request.MaxBlocks)
-
-	return data
-}
-
 // EncodeStateRequest encodes a state request message
 func EncodeStateRequest(options *StateRequestOptions) []byte {
 	data := make([]byte, 32+31+31+4) // state root + start key + end key + max size
