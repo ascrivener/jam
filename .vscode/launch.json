@@ -190,6 +190,24 @@
                 "/tmp/jam-debug"
             ],
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug Fuzzclient (In-Process)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient/main.go",
+            "args": [
+                "--in-process",
+                "--vectors",
+                "${workspaceFolder}/jam-test-vectors/traces/preimages"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "showLog": true,
+            "env": {
+                "GODEBUG": "gctrace=1"
+            }
         }
     ],
     "inputs": [

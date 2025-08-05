@@ -113,7 +113,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		resp, err := s.handleMessage(msg)
+		resp, err := s.HandleMessage(msg)
 		if err != nil {
 			log.Printf("Error handling message: %v", err)
 			return
@@ -155,8 +155,8 @@ func (s *Server) sendMessage(conn net.Conn, msg ResponseMessage) error {
 	return err
 }
 
-// handleMessage processes an incoming message and returns the appropriate response
-func (s *Server) handleMessage(msg RequestMessage) (ResponseMessage, error) {
+// HandleMessage processes an incoming message and returns the appropriate response
+func (s *Server) HandleMessage(msg RequestMessage) (ResponseMessage, error) {
 	switch {
 	case msg.PeerInfo != nil:
 		return ResponseMessage{PeerInfo: &s.peerInfo}, nil
