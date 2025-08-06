@@ -372,6 +372,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
+		// TODO: revert all changes made to db inside the above ΨM call since last checkpoint, or since beginning if no checkpoint
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
 	}
 	blob := *executionExitReason.Blob

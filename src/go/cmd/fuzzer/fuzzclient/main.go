@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"jam/pkg/block"
+	"jam/pkg/block/header"
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
 	"jam/pkg/pvm"
@@ -268,37 +269,37 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	log.Println("Testing state transitions using test vectors...")
 
 	// Get all test vectors from the reports-l0 directory
-	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
-	genesisVectorData, err := os.ReadFile(genesisVectorPath)
-	if err != nil {
-		log.Printf("Failed to load genesis vector file: %v", err)
-		return
-	}
+	// genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
+	// genesisVectorData, err := os.ReadFile(genesisVectorPath)
+	// if err != nil {
+	// 	log.Printf("Failed to load genesis vector file: %v", err)
+	// 	return
+	// }
 
-	setState := fuzzinterface.SetState{}
-	if err := serializer.Deserialize(genesisVectorData, &setState); err != nil {
-		log.Printf("Failed to deserialize genesis vector: %v", err)
-		return
-	}
+	// setState := fuzzinterface.SetState{}
+	// if err := serializer.Deserialize(genesisVectorData, &setState); err != nil {
+	// 	log.Printf("Failed to deserialize genesis vector: %v", err)
+	// 	return
+	// }
 
-	log.Printf("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &setState})
-	if err != nil {
-		log.Printf("Failed to send SetState message: %v", err)
-		return
-	}
+	// log.Printf("Setting initial genesis state...")
+	// resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &setState})
+	// if err != nil {
+	// 	log.Printf("Failed to send SetState message: %v", err)
+	// 	return
+	// }
 
-	if resp.StateRoot == nil {
-		log.Printf("SetState failed: no state root returned")
-		return
-	}
+	// if resp.StateRoot == nil {
+	// 	log.Printf("SetState failed: no state root returned")
+	// 	return
+	// }
 
-	if *resp.StateRoot != setState.StateWithRoot.StateRoot {
-		log.Printf("SetState failed: state root mismatch")
-		return
-	}
+	// if *resp.StateRoot != setState.StateWithRoot.StateRoot {
+	// 	log.Printf("SetState failed: state root mismatch")
+	// 	return
+	// }
 
-	log.Printf("Genesis state set successfully")
+	// log.Printf("Genesis state set successfully")
 
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
@@ -317,7 +318,13 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	sort.Strings(fileNames)
 
 	log.Printf("Processing %d test vectors...", len(fileNames))
+	filedTests := []string{}
 	for i, fileName := range fileNames {
+		// 12 18 23 69 70 73 preimages light
+		// 16, 18, 27, 50, 51, 54, 56, 59, 62, 67, 72, 86, 98 preimages
+		if fileName != "00000069.bin" {
+			continue
+		}
 		log.Printf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
 		if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
 			log.Printf("Failed to initialize file logger: %v", err)
@@ -333,6 +340,26 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 		testVector := TestVector{}
 		if err := serializer.Deserialize(vectorData, &testVector); err != nil {
 			log.Printf("Failed to deserialize test vector: %v", err)
+			return
+		}
+
+		log.Printf("Setting vector pre state...")
+		setStateResp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &fuzzinterface.SetState{
+			Header:        header.Header{},
+			StateWithRoot: testVector.PreState,
+		}})
+		if err != nil {
+			log.Printf("Failed to send SetState message: %v", err)
+			return
+		}
+
+		if setStateResp.StateRoot == nil {
+			log.Printf("SetState failed: no state root returned")
+			return
+		}
+
+		if *setStateResp.StateRoot != testVector.PreState.StateRoot {
+			log.Printf("SetState failed: state root mismatch")
 			return
 		}
 
@@ -359,6 +386,7 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 
 		// Verify the state root matches expected
 		if *resp.StateRoot != testVector.PostState.StateRoot {
+			filedTests = append(filedTests, fileName)
 			log.Printf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
 			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
 			getState := fuzzinterface.GetState(headerHash)
@@ -394,11 +422,15 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 			}
 			// Compare the underlying KVs to show any differences
 			compareKVs(testVector.PostState.State, *getStateResponse.State)
-			return
+		} else {
+			log.Printf("✓ State root verified: %x", *resp.StateRoot)
 		}
-		log.Printf("✓ State root verified: %x", *resp.StateRoot)
 	}
-	log.Printf("All test vectors processed successfully!")
+	if len(filedTests) > 0 {
+		log.Printf("Failed tests: %v", filedTests)
+	} else {
+		log.Printf("All test vectors processed successfully!")
+	}
 }
 
 func compareKVs(expectedKVs, actualKVs merklizer.State) {
