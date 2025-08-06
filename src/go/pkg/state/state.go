@@ -190,29 +190,25 @@ func (ds *kvDataSource) getValue(key [31]byte) ([]byte, error) {
 
 func (ds *kvDataSource) iterateServiceAccounts() (serviceAccountIterator, error) {
 	return &kvIterator{
-		kvMap:  ds.kvMap,
-		prefix: append([]byte("state:"), 255),
-		keys:   nil, // will be populated on first call
-		index:  -1,
+		kvMap: ds.kvMap,
+		keys:  nil, // will be populated on first call
+		index: -1,
 	}, nil
 }
 
 // kvIterator iterates over service account keys in a KV map
 type kvIterator struct {
-	kvMap  map[[31]byte][]byte
-	prefix []byte
-	keys   [][31]byte // filtered keys
-	index  int
+	kvMap map[[31]byte][]byte
+	keys  [][31]byte // all keys
+	index int
 }
 
 func (ki *kvIterator) First() bool {
 	if ki.keys == nil {
-		// Build filtered keys list on first access
+		// Build all keys list on first access
 		ki.keys = make([][31]byte, 0)
 		for key := range ki.kvMap {
-			if len(key) >= len(ki.prefix) && bytes.HasPrefix(key[:], ki.prefix) {
-				ki.keys = append(ki.keys, key)
-			}
+			ki.keys = append(ki.keys, key)
 		}
 	}
 
@@ -233,7 +229,8 @@ func (ki *kvIterator) Key() []byte {
 	if !ki.Valid() {
 		return nil
 	}
-	return ki.keys[ki.index][:]
+	// Add "state:" prefix to match repository format
+	return append([]byte("state:"), ki.keys[ki.index][:]...)
 }
 
 func (ki *kvIterator) Value() []byte {
@@ -451,7 +448,7 @@ func (state *State) Set() error {
 	// Store service accounts
 	for serviceIndex, account := range state.ServiceAccounts {
 		// Create the raw key
-		rawKey := staterepository.StateKeyConstructor(255, serviceIndex)
+		rawKey := staterepository.StateKeyConstructorFromServiceIndex(serviceIndex)
 
 		// Add state: prefix
 		prefixedKey := append([]byte("state:"), rawKey[:]...)

@@ -215,6 +215,7 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		freeAccumulationServices,
 		managerResult.PrivilegedServices,
 		posteriorEntropyAccumulator,
+		resultsByServiceIndex, // Pass existing results
 	)
 
 	if err != nil {
@@ -259,8 +260,12 @@ func ParallelizedAccumulation(accumulationStateComponents *AccumulationStateComp
 		}
 		blob := []byte(preimageProvision.BlobString)
 		preimage := blake2b.Sum256(blob)
-		serviceAccount.SetPreimageLookupHistoricalStatus(uint32(len(blob)), preimage, []types.Timeslot{timeslot})
-		serviceAccount.SetPreimageForHash(preimage, blob)
+		if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(len(blob)), preimage, []types.Timeslot{timeslot}); err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
+		}
+		if err := serviceAccount.SetPreimageForHash(preimage, blob); err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
+		}
 	}
 
 	return AccumulationStateComponents{
@@ -281,6 +286,7 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	freeAccumulationServices map[types.ServiceIndex]types.GasValue,
 	managerPrivilegedServices types.PrivilegedServices,
 	posteriorEntropyAccumulator [4][32]byte,
+	existingResults map[types.ServiceIndex]AccumulationStateComponents, // Reuse existing results
 ) (types.PrivilegedServices, error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -292,34 +298,39 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 		uniqueServiceIndices[idx] = struct{}{}
 	}
 
-	// Map to store results by service index
+	// Map to store results by service index (start with existing results)
 	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
+	for k, v := range existingResults {
+		resultsByServiceIndex[k] = v
+	}
 
 	var accumulationErrors []error
 
-	// Process each unique service index in parallel
+	// Only process service indices that don't already have results
 	for serviceIndex := range uniqueServiceIndices {
-		wg.Add(1)
-		go func(sIndex types.ServiceIndex) {
-			defer wg.Done()
-			result, _, _, _, _, err := SingleServiceAccumulation(
-				accumulationStateComponents,
-				timeslot,
-				workReports,
-				freeAccumulationServices,
-				sIndex,
-				posteriorEntropyAccumulator,
-			)
-			if err != nil {
+		if _, exists := resultsByServiceIndex[serviceIndex]; !exists {
+			wg.Add(1)
+			go func(sIndex types.ServiceIndex) {
+				defer wg.Done()
+				result, _, _, _, _, err := SingleServiceAccumulation(
+					accumulationStateComponents,
+					timeslot,
+					workReports,
+					freeAccumulationServices,
+					sIndex,
+					posteriorEntropyAccumulator,
+				)
+				if err != nil {
+					mu.Lock()
+					accumulationErrors = append(accumulationErrors, err)
+					mu.Unlock()
+					return
+				}
 				mu.Lock()
-				accumulationErrors = append(accumulationErrors, err)
+				resultsByServiceIndex[sIndex] = result
 				mu.Unlock()
-				return
-			}
-			mu.Lock()
-			resultsByServiceIndex[sIndex] = result
-			mu.Unlock()
-		}(serviceIndex)
+			}(serviceIndex)
+		}
 	}
 
 	// Wait for all parallel processing to complete

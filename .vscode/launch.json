@@ -200,7 +200,7 @@
             "args": [
                 "--in-process",
                 "--vectors",
-                "${workspaceFolder}/jam-test-vectors/traces/preimages"
+                "${workspaceFolder}/jam-test-vectors/traces/preimages_light"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",

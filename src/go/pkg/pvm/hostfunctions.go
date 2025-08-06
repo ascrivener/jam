@@ -130,32 +130,23 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 		}
 
 		// Determine 'v'
-		var preImage *[]byte
+		var preImage []byte
 
 		if a != nil {
 			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-			var keyArray [32]byte
-			copy(keyArray[:], keyBytes)
 
 			// Look up in state if available
-			val, ok, err := a.GetServiceStorageItem(keyArray)
+			val, ok, err := a.GetServiceStorageItem(keyBytes)
 			if err != nil {
 				return ExitReason{}, err
 			}
 			if ok {
-				byteSlice := []byte(val)
-				preImage = &byteSlice
+				preImage = []byte(val)
 			}
 		}
 
-		// Calculate f and l
-		var preImageLen int
-		if preImage != nil {
-			preImageLen = len(*preImage)
-		}
-
-		f := min(ctx.State.Registers[11], types.Register(preImageLen))
-		l := min(ctx.State.Registers[12], types.Register(preImageLen)-f)
+		f := min(ctx.State.Registers[11], types.Register(len(preImage)))
+		l := min(ctx.State.Registers[12], types.Register(len(preImage))-f)
 
 		// Check if output memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
@@ -166,9 +157,8 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 		if preImage == nil {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
-			ctx.State.Registers[7] = types.Register(preImageLen)
-			slicedData := (*preImage)[int(f):int(f+l)]
-			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
+			ctx.State.Registers[7] = types.Register(len(preImage))
+			ctx.State.RAM.MutateRange(uint64(o), preImage[int(f):int(f+l)], ram.NoWrap, false)
 		}
 
 		return NewSimpleExitReason(ExitGo), nil
@@ -189,12 +179,10 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		}
 
 		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
-		var keyArray [32]byte
-		copy(keyArray[:], keyBytes)
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
-		val, ok, err := serviceAccount.GetServiceStorageItem(keyArray)
+		val, ok, err := serviceAccount.GetServiceStorageItem(keyBytes)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -204,7 +192,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 			l = types.Register(HostCallNone)
 		}
 
-		oldValue, ok, err := serviceAccount.GetServiceStorageItem(keyArray)
+		oldValue, ok, err := serviceAccount.GetServiceStorageItem(keyBytes)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -212,7 +200,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			if err := serviceAccount.DeleteServiceStorageItem(keyArray); err != nil {
+			if err := serviceAccount.DeleteServiceStorageItem(keyBytes); err != nil {
 				return ExitReason{}, err
 			}
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
@@ -220,18 +208,18 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			if err := serviceAccount.SetServiceStorageItem(keyArray, valueBytes); err != nil {
+			if err := serviceAccount.SetServiceStorageItem(keyBytes, valueBytes); err != nil {
 				return ExitReason{}, err
 			}
 		}
 
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			if !ok {
-				if err := serviceAccount.DeleteServiceStorageItem(keyArray); err != nil {
+				if err := serviceAccount.DeleteServiceStorageItem(keyBytes); err != nil {
 					return ExitReason{}, err
 				}
 			} else {
-				if err := serviceAccount.SetServiceStorageItem(keyArray, oldValue); err != nil {
+				if err := serviceAccount.SetServiceStorageItem(keyBytes, oldValue); err != nil {
 					return ExitReason{}, err
 				}
 			}
@@ -302,8 +290,8 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 
 		}
 
-		f := min(ctx.State.Registers[11], types.Register(len(v)))
-		l := min(ctx.State.Registers[12], types.Register(len(v))-f)
+		f := min(ctx.State.Registers[9], types.Register(len(v)))
+		l := min(ctx.State.Registers[10], types.Register(len(v))-f)
 
 		// Check if memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(l), ram.NoWrap) {
@@ -411,14 +399,14 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 			return NewSimpleExitReason(ExitPanic), nil
 		}
 
-		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.AssignServiceIndices[coreIndex] {
-			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
-		}
-
 		// Check if core index is within valid range
 		if coreIndex >= types.Register(constants.NumCores) {
 			ctx.State.Registers[7] = types.Register(HostCallCore)
+			return NewSimpleExitReason(ExitGo), nil
+		}
+
+		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.AssignServiceIndices[coreIndex] {
+			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo), nil
 		}
 
@@ -545,7 +533,9 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.T
 
 		// Get current service accounts and update them
 		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[currentDerivedServiceIndex] = newAccount
-		newAccount.SetPreimageLookupHistoricalStatus(uint32(labelLength), codeHash, []types.Timeslot{})
+		if err := newAccount.SetPreimageLookupHistoricalStatus(uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
+			return ExitReason{}, err
+		}
 
 		ctx.State.Registers[7] = types.Register(currentDerivedServiceIndex)
 		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, &ctx.Argument.AccumulationResultContext.StateComponents)
@@ -1042,8 +1032,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 		w12 := ctx.State.Registers[12]
 		switch ctx.State.Registers[10] {
 		case 0:
-			serialized := serializer.SerializeChainParameters()
-			preimage = serialized
+			preimage = serializer.SerializeChainParameters()
 		case 1:
 			if n == nil {
 				break
@@ -1155,8 +1144,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			if operandTuples == nil {
 				break
 			}
-			serialized := serializer.Serialize(*operandTuples)
-			preimage = serialized
+			preimage = serializer.Serialize(*operandTuples)
 		case 15:
 			if operandTuples == nil {
 				break
@@ -1183,15 +1171,11 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			preimage = serialized
 		}
 
-		preimageLen := 0
-		if preimage != nil {
-			preimageLen = len(preimage)
-		}
+		preimageLen := len(preimage)
 
 		o := ctx.State.Registers[7]
 		f := min(ctx.State.Registers[8], types.Register(preimageLen))
 
-		// l = min(ω9, |v| - f)
 		l := min(ctx.State.Registers[9], types.Register(preimageLen)-f)
 
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
@@ -1200,8 +1184,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(preimageLen)
-			slicedData := preimage[int(f):int(f+l)]
-			ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
+			ctx.State.RAM.MutateRange(uint64(o), preimage[int(f):int(f+l)], ram.NoWrap, false)
 		}
 		return NewSimpleExitReason(ExitGo), nil
 	})

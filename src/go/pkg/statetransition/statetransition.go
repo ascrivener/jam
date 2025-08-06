@@ -193,7 +193,9 @@ func stfHelper(curBlock block.Block) error {
 	posteriorRecentActivity := computeRecentActivity(curBlock.Header, curBlock.Extrinsics.Guarantees, intermediateRecentBlocks, priorState.RecentActivity.AccumulationOutputLog, accumulationOutputSequence)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	computeServiceAccounts(curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts)
+	if err := computeServiceAccounts(curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
+		return fmt.Errorf("failed to compute service accounts: %w", err)
+	}
 
 	authorizersPool := computeAuthorizersPool(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 

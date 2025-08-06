@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"flag"
@@ -17,6 +18,7 @@ import (
 	"jam/pkg/block"
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
+	"jam/pkg/pvm"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
@@ -317,7 +319,10 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	log.Printf("Processing %d test vectors...", len(fileNames))
 	for i, fileName := range fileNames {
 		log.Printf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
-
+		if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
+			log.Printf("Failed to initialize file logger: %v", err)
+			return
+		}
 		vectorPath := filepath.Join(vectorsDir, fileName)
 		vectorData, err := os.ReadFile(vectorPath)
 		if err != nil {
@@ -357,13 +362,13 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 			log.Printf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
 			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
 			getState := fuzzinterface.GetState(headerHash)
-			resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
+			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {
 				log.Printf("Failed to send GetState message: %v", err)
 				return
 			}
 
-			if resp.State == nil {
+			if getStateResponse.State == nil {
 				log.Printf("GetState failed: no state returned")
 				return
 			}
@@ -374,7 +379,7 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 				return
 			}
 
-			actualState, err := state.GetStateFromKVs(*resp.State)
+			actualState, err := state.GetStateFromKVs(*getStateResponse.State)
 			if err != nil {
 				log.Printf("Failed to get state from KVs: %v", err)
 				return
@@ -387,11 +392,80 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 			} else {
 				log.Printf("✓ State comparison passed: states are identical")
 			}
+			// Compare the underlying KVs to show any differences
+			compareKVs(testVector.PostState.State, *getStateResponse.State)
 			return
 		}
 		log.Printf("✓ State root verified: %x", *resp.StateRoot)
 	}
 	log.Printf("All test vectors processed successfully!")
+}
+
+func compareKVs(expectedKVs, actualKVs merklizer.State) {
+	// Compare the underlying KVs to show any differences
+	expectedKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range expectedKVs {
+		expectedKVsMap[kv.OriginalKey] = kv.Value
+	}
+
+	actualKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range actualKVs {
+		actualKVsMap[kv.OriginalKey] = kv.Value
+	}
+
+	missingKVs := make([][31]byte, 0)
+	extraKVs := make([][31]byte, 0)
+	differentValues := make([][31]byte, 0)
+
+	for key := range expectedKVsMap {
+		if _, ok := actualKVsMap[key]; !ok {
+			missingKVs = append(missingKVs, key)
+		}
+	}
+
+	for key := range actualKVsMap {
+		if _, ok := expectedKVsMap[key]; !ok {
+			extraKVs = append(extraKVs, key)
+		}
+	}
+
+	// Check for keys with different values
+	for key, expectedValue := range expectedKVsMap {
+		if actualValue, exists := actualKVsMap[key]; exists {
+			if !bytes.Equal(expectedValue, actualValue) {
+				differentValues = append(differentValues, key)
+			}
+		}
+	}
+
+	if len(missingKVs) > 0 {
+		log.Printf("Missing KVs:")
+		for _, key := range missingKVs {
+			log.Printf("- %x: %x", key, expectedKVsMap[key])
+		}
+	}
+
+	if len(extraKVs) > 0 {
+		log.Printf("Extra KVs:")
+		for _, key := range extraKVs {
+			log.Printf("+ %x: %x", key, actualKVsMap[key])
+		}
+	}
+
+	if len(differentValues) > 0 {
+		log.Printf("Keys with different values:")
+		for _, key := range differentValues {
+			log.Printf("~ %x:", key)
+			log.Printf("  Expected: %x", expectedKVsMap[key])
+			log.Printf("  Actual:   %x", actualKVsMap[key])
+		}
+	}
+
+	if len(missingKVs) == 0 && len(extraKVs) == 0 && len(differentValues) == 0 {
+		log.Printf("KV comparison passed: KVs are identical")
+	} else {
+		log.Printf("KV comparison failed")
+	}
 }
 
 func main() {

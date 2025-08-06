@@ -57,7 +57,7 @@ var fullConstants = map[string]map[string]string{
 var additionalConstants = map[string]map[string]string{
 	"MaxExtrinsicsInWorkPackage":        {"type": "uint16", "value": "128", "comment": "T"},
 	"IsAuthorizedCodeMaxSizeOctets":     {"type": "uint32", "value": "64000", "comment": "W_A"},
-	"MaxSizeEncodedWorkPackage":         {"type": "uint32", "value": "12 << 20", "comment": "W_B"},
+	"MaxSizeEncodedWorkPackage":         {"type": "uint32", "value": "13794305", "comment": "W_B"},
 	"ServiceCodeMaxSize":                {"type": "uint32", "value": "4000000", "comment": "W_C"},
 	"ServiceMinimumBalance":             {"type": "uint64", "value": "100", "comment": "B_S"},
 	"ServiceMinimumBalancePerItem":      {"type": "uint64", "value": "10", "comment": "B_I"},

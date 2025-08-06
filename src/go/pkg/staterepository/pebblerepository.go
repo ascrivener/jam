@@ -33,6 +33,10 @@ func MakeComponentKey(i uint8) [31]byte {
 	return StateKeyConstructor(i, types.ServiceIndex(0))
 }
 
+func StateKeyConstructorFromServiceIndex(s types.ServiceIndex) [31]byte {
+	return StateKeyConstructor(255, s)
+}
+
 func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	var key [31]byte
 
@@ -46,8 +50,10 @@ func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	return key
 }
 
-func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
+func StateKeyConstructorFromData(s types.ServiceIndex, data []byte) [31]byte {
 	var key [31]byte
+
+	h := blake2b.Sum256(data)
 
 	// Extract little-endian bytes of the ServiceIndex (s)
 	n0 := byte(s)
@@ -73,41 +79,28 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 
 // Helper to create a storage key for service account's storage dictionary
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-1) + key[0...28])
-func MakeServiceStorageKey(serviceIndex types.ServiceIndex, key [32]byte) [31]byte {
-	var combinedHash [32]byte
+func MakeServiceStorageKey(serviceIndex types.ServiceIndex, key []byte) [31]byte {
 	// E4(2^32-1)
 	maxUint32Minus1 := uint32(0xFFFFFFFF)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus1))
-	copy(combinedHash[:4], le)
-	// Copy the first 28 bytes of the key
-	copy(combinedHash[4:], key[:28])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, key...))
 }
 
 // Helper to create a preimage lookup key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-2) + hash[1...29])
 func MakePreimageKey(serviceIndex types.ServiceIndex, hash [32]byte) [31]byte {
-	var combinedHash [32]byte
 	// E4(2^32-2)
 	maxUint32Minus2 := uint32(0xFFFFFFFF - 1)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus2))
-	copy(combinedHash[:4], le)
-	// Copy bytes 1-29 of the hash1
-	copy(combinedHash[4:], hash[1:29])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, hash[:]...))
 }
 
 // Helper to create a preimage lookup historical status key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(blobLength) + hashedPreimage[2...30])
 func MakeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) [31]byte {
-	var combinedHash [32]byte
 	// E4(blobLength)
 	le := serializer.EncodeLittleEndian(4, uint64(blobLength))
-	copy(combinedHash[:4], le)
-	// Copy bytes 2-30 of the hashedPreimage
-	hashOfHash := blake2b.Sum256(hashedPreimage[:])
-	copy(combinedHash[4:], hashOfHash[2:30])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, hashedPreimage[:]...))
 }
 
 // Get retrieves a value from the database

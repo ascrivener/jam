@@ -56,23 +56,6 @@ type ServiceAccount struct {
 	ParentServiceIndex             types.ServiceIndex // p
 }
 
-// // o
-// func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
-// 	total := uint64(0)
-// 	for key := range s.PreimageLookupHistoricalStatus {
-// 		total += 81 + uint64(key.BlobLength)
-// 	}
-// 	for _, blob := range s.StorageDictionary {
-// 		total += 32 + uint64(len(blob))
-// 	}
-// 	return total
-// }
-
-// // i
-// func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
-// 	return uint32(2)*uint32(len(s.PreimageLookupHistoricalStatus)) + uint32(len(s.StorageDictionary))
-// }
-
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 	return types.Balance(max(0, constants.ServiceMinimumBalance+constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage)+constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage)-uint64(s.GratisStorageOffset)))
@@ -105,7 +88,7 @@ func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte, error) {
 }
 
 // GetServiceStorageItem retrieves a storage item for a service account
-func (s *ServiceAccount) GetServiceStorageItem(key [32]byte) ([]byte, bool, error) {
+func (s *ServiceAccount) GetServiceStorageItem(key []byte) ([]byte, bool, error) {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return nil, false, errors.New("global repository not initialized")
@@ -133,7 +116,7 @@ func (s *ServiceAccount) GetServiceStorageItem(key [32]byte) ([]byte, bool, erro
 }
 
 // SetServiceStorageItem sets a storage item for a service account
-func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error {
+func (s *ServiceAccount) SetServiceStorageItem(key []byte, value []byte) error {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return errors.New("global repository not initialized")
@@ -156,7 +139,7 @@ func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error
 	if !exists {
 		// New item
 		s.TotalItemsUsedInStorage++
-		s.TotalOctetsUsedInStorage += 32 + uint64(len(value)) // Key + value
+		s.TotalOctetsUsedInStorage += 34 + uint64(len(key)) + uint64(len(value)) // Key + value
 	} else {
 		// Update existing - subtract old size, add new size
 		s.TotalOctetsUsedInStorage -= uint64(len(oldItem))
@@ -183,7 +166,7 @@ func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error
 }
 
 // DeleteServiceStorageItem deletes a storage item for a service account
-func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
+func (s *ServiceAccount) DeleteServiceStorageItem(key []byte) error {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return errors.New("global repository not initialized")
@@ -207,7 +190,7 @@ func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
 
 	// Update storage metrics
 	s.TotalItemsUsedInStorage--
-	s.TotalOctetsUsedInStorage -= (32 + uint64(len(oldItem))) // Key + value
+	s.TotalOctetsUsedInStorage -= (34 + uint64(len(key)) + uint64(len(oldItem))) // Key + value
 
 	// Delete the storage item
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
@@ -310,13 +293,13 @@ func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
-		panic(fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
 	// If we created our own batch, commit it
 	if ownBatch {
 		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
+			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
 		}
 	}
 	return nil
@@ -465,7 +448,7 @@ func DeleteServiceAccountByServiceIndex(serviceIndex types.ServiceIndex) error {
 	}
 
 	// Delete the service account
-	dbKey := staterepository.StateKeyConstructor(255, serviceIndex)
+	dbKey := staterepository.StateKeyConstructorFromServiceIndex(serviceIndex)
 
 	// Add state: prefix
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
