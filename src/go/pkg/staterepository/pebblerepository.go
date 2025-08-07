@@ -13,8 +13,8 @@ import (
 
 // PebbleStateRepository implements StateRepository using PebbleDB
 type PebbleStateRepository struct {
-	db    *pebble.DB
-	batch *pebble.Batch // For transaction support
+	db         *pebble.DB
+	batchStack []*pebble.Batch // Stack of batches for nested transactions
 }
 
 // newPebbleStateRepository creates a new PebbleDB-backed repository
@@ -33,6 +33,10 @@ func MakeComponentKey(i uint8) [31]byte {
 	return StateKeyConstructor(i, types.ServiceIndex(0))
 }
 
+func StateKeyConstructorFromServiceIndex(s types.ServiceIndex) [31]byte {
+	return StateKeyConstructor(255, s)
+}
+
 func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	var key [31]byte
 
@@ -46,8 +50,10 @@ func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	return key
 }
 
-func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
+func StateKeyConstructorFromData(s types.ServiceIndex, data []byte) [31]byte {
 	var key [31]byte
+
+	h := blake2b.Sum256(data)
 
 	// Extract little-endian bytes of the ServiceIndex (s)
 	n0 := byte(s)
@@ -73,105 +79,116 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 
 // Helper to create a storage key for service account's storage dictionary
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-1) + key[0...28])
-func MakeServiceStorageKey(serviceIndex types.ServiceIndex, key [32]byte) [31]byte {
-	var combinedHash [32]byte
+func MakeServiceStorageKey(serviceIndex types.ServiceIndex, key []byte) [31]byte {
 	// E4(2^32-1)
 	maxUint32Minus1 := uint32(0xFFFFFFFF)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus1))
-	copy(combinedHash[:4], le)
-	// Copy the first 28 bytes of the key
-	copy(combinedHash[4:], key[:28])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, key...))
 }
 
 // Helper to create a preimage lookup key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-2) + hash[1...29])
 func MakePreimageKey(serviceIndex types.ServiceIndex, hash [32]byte) [31]byte {
-	var combinedHash [32]byte
 	// E4(2^32-2)
 	maxUint32Minus2 := uint32(0xFFFFFFFF - 1)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus2))
-	copy(combinedHash[:4], le)
-	// Copy bytes 1-29 of the hash1
-	copy(combinedHash[4:], hash[1:29])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, hash[:]...))
 }
 
 // Helper to create a preimage lookup historical status key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(blobLength) + hashedPreimage[2...30])
 func MakeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) [31]byte {
-	var combinedHash [32]byte
 	// E4(blobLength)
 	le := serializer.EncodeLittleEndian(4, uint64(blobLength))
-	copy(combinedHash[:4], le)
-	// Copy bytes 2-30 of the hashedPreimage
-	hashOfHash := blake2b.Sum256(hashedPreimage[:])
-	copy(combinedHash[4:], hashOfHash[2:30])
-	return StateKeyConstructorFromHash(serviceIndex, combinedHash)
+	return StateKeyConstructorFromData(serviceIndex, append(le, hashedPreimage[:]...))
+}
+
+// BeginTransaction starts a new transaction (pushes a new batch onto the stack)
+func (r *PebbleStateRepository) BeginTransaction() error {
+	batch := r.db.NewIndexedBatch()
+
+	// If there's already a batch on the stack, copy its contents to the new batch
+	// This ensures the new batch sees all prior changes
+	if len(r.batchStack) > 0 {
+		currentBatch := r.batchStack[len(r.batchStack)-1]
+		if err := batch.Apply(currentBatch, nil); err != nil {
+			batch.Close()
+			return fmt.Errorf("failed to apply parent batch to nested transaction: %w", err)
+		}
+	}
+
+	r.batchStack = append(r.batchStack, batch)
+	return nil
+}
+
+// CommitTransaction commits the current transaction (merges top batch into parent or database)
+func (r *PebbleStateRepository) CommitTransaction() error {
+	if len(r.batchStack) == 0 {
+		return fmt.Errorf("no transaction in progress")
+	}
+
+	topBatch := r.batchStack[len(r.batchStack)-1]
+	r.batchStack = r.batchStack[:len(r.batchStack)-1]
+
+	if len(r.batchStack) > 0 {
+		// Merge into parent batch
+		parentBatch := r.batchStack[len(r.batchStack)-1]
+		err := parentBatch.Apply(topBatch, nil)
+		topBatch.Close()
+		return err
+	} else {
+		// Commit to database (this is the root transaction)
+		err := topBatch.Commit(pebble.Sync)
+		return err
+	}
+}
+
+// RollbackTransaction aborts the current transaction (discards top batch)
+func (r *PebbleStateRepository) RollbackTransaction() error {
+	if len(r.batchStack) == 0 {
+		return fmt.Errorf("no transaction in progress")
+	}
+
+	topBatch := r.batchStack[len(r.batchStack)-1]
+	r.batchStack = r.batchStack[:len(r.batchStack)-1]
+	topBatch.Close()
+	return nil
+}
+
+// getCurrentBatch returns the current active batch (top of stack)
+func (r *PebbleStateRepository) GetCurrentBatch() *pebble.Batch {
+	if len(r.batchStack) == 0 {
+		return nil
+	}
+	return r.batchStack[len(r.batchStack)-1]
 }
 
 // Get retrieves a value from the database
 func (r *PebbleStateRepository) Get(key []byte) ([]byte, io.Closer, error) {
 	// If there's an active batch, use it exclusively
-	if r.batch != nil {
+	if batch := r.GetCurrentBatch(); batch != nil {
 		// Use the indexed batch for ALL reads when it's active
 		// This will show deletions correctly as NotFound
-		return r.batch.Get(key)
+		return batch.Get(key)
 	}
 	return r.db.Get(key)
 }
 
 // NewIter creates a new iterator with the given options
 func (r *PebbleStateRepository) NewIter(opts *pebble.IterOptions) (*pebble.Iterator, error) {
-	if r.batch != nil {
+	if batch := r.GetCurrentBatch(); batch != nil {
 		// When a transaction is in progress, create an iterator that merges pending changes with DB state
-		return r.batch.NewIter(opts)
+		return batch.NewIter(opts)
 	}
 	return r.db.NewIter(opts)
 }
 
-// GetBatch returns the current batch or creates a new one
-func (r *PebbleStateRepository) GetBatch() *pebble.Batch {
-	return r.batch
-}
-
-func (r *PebbleStateRepository) NewBatch() *pebble.Batch {
-	return r.db.NewIndexedBatch()
-}
-
-// BeginTransaction starts a new transaction
-func (r *PebbleStateRepository) BeginTransaction() error {
-	if r.batch != nil {
-		return fmt.Errorf("transaction already in progress")
-	}
-	r.batch = r.db.NewIndexedBatch()
-	return nil
-}
-
-// CommitTransaction commits the current transaction
-func (r *PebbleStateRepository) CommitTransaction() error {
-	if r.batch == nil {
-		return fmt.Errorf("no transaction in progress")
-	}
-	err := r.batch.Commit(pebble.Sync)
-	r.batch = nil
-	return err
-}
-
-// RollbackTransaction aborts the current transaction
-func (r *PebbleStateRepository) RollbackTransaction() error {
-	if r.batch == nil {
-		return fmt.Errorf("no transaction in progress")
-	}
-	r.batch.Close()
-	r.batch = nil
-	return nil
-}
-
 // Close closes the database
 func (r *PebbleStateRepository) Close() error {
-	if r.batch != nil {
-		r.batch.Close()
+	if len(r.batchStack) > 0 {
+		for _, batch := range r.batchStack {
+			batch.Close()
+		}
 	}
 	return r.db.Close()
 }

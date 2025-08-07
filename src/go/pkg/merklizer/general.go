@@ -151,9 +151,9 @@ func WellBalancedBinaryMerkle(blobs [][]byte, hash func([]byte) [32]byte) [32]by
 	return [32]byte(node(blobs, hash))
 }
 
-func MMRSuperPeak(mmrRange MMRRange) [32]byte {
+func MMRSuperPeak(belt MMBelt) [32]byte {
 	nonNullBelt := make([][32]byte, 0)
-	for _, node := range mmrRange {
+	for _, node := range belt {
 		if node != nil {
 			nonNullBelt = append(nonNullBelt, *node)
 		}

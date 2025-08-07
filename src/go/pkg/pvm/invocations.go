@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"fmt"
 	"maps"
 
 	"jam/pkg/constants"
@@ -8,6 +9,7 @@ import (
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/serviceaccount"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
 	wp "jam/pkg/workpackage"
@@ -28,7 +30,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 		}
 	}
 	authorizationCode := workpackage.AuthorizationCode()
-	if len(authorizationCode) == 0 {
+	if authorizationCode == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), types.GasValue(0), nil
 	}
 	if len(authorizationCode) > int(constants.IsAuthorizedCodeMaxSizeOctets) {
@@ -44,7 +46,7 @@ type IntegratedPVM struct {
 }
 
 type IntegratedPVMsAndExportSequence struct {
-	IntegratedPVMs map[int]IntegratedPVM
+	IntegratedPVMs map[uint64]IntegratedPVM
 	ExportSequence [][]byte
 }
 
@@ -77,12 +79,10 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 			return Machine(ctx)
 		case PeekID:
 			return Peek(ctx)
-		case ZeroID:
-			return Zero(ctx)
+		case PagesID:
+			return Pages(ctx)
 		case PokeID:
 			return Poke(ctx)
-		case VoidID:
-			return Void(ctx)
 		case InvokeID:
 			return Invoke(ctx)
 		case ExpungeID:
@@ -103,7 +103,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	if preimage == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}, nil
 	}
-	if len(*preimage) > int(constants.ServiceCodeMaxSize) {
+	if len(preimage) > int(constants.ServiceCodeMaxSize) {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), [][]byte{}, nil
 	}
 
@@ -115,10 +115,10 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		Authorizer                     [32]byte
 	}{workItem.ServiceIdentifier, workItem.BlobHashesAndLengthsIntroduced, blake2b.Sum256(serializer.Serialize(workPackage)), workPackage.RefinementContext, workPackage.Authorizer()})
 	integratedPVMsAndExportSequence := &IntegratedPVMsAndExportSequence{
-		IntegratedPVMs: map[int]IntegratedPVM{},
+		IntegratedPVMs: map[uint64]IntegratedPVM{},
 		ExportSequence: [][]byte{},
 	}
-	r, _, err := ΨM(*preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
+	r, _, err := ΨM(preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
 	if err != nil {
 		return r, [][]byte{}, err
 	}
@@ -320,7 +320,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case CheckpointID:
 			return Checkpoint(ctx)
 		case NewID:
-			return New(ctx)
+			return New(ctx, timeslot)
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:
@@ -369,13 +369,34 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		ServiceIndex:     types.GenericNum(serviceIndex),
 		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
+
+	// Create a nested transaction for this ΨM execution
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("global repository not initialized")
+	}
+
+	if err := repo.BeginTransaction(); err != nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to begin nested transaction: %w", err)
+	}
+
 	executionExitReason, gasUsed, err := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
+		// Rollback nested transaction (discards all ΨM changes)
+		repo.RollbackTransaction()
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
+		// Rollback nested transaction (discards all ΨM changes)
+		repo.RollbackTransaction()
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
 	}
+
+	// Success - commit nested transaction (merges changes into parent transaction)
+	if err := repo.CommitTransaction(); err != nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to commit nested transaction: %w", err)
+	}
+
 	blob := *executionExitReason.Blob
 	if len(blob) == 32 {
 		var preimageResult [32]byte
@@ -436,7 +457,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return serviceAccount, 0, nil
 	}
-	_, gas, err := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
+	_, remainingGas, err := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
 		Timeslot             types.GenericNum
 		ServiceIndex         types.GenericNum
 		DeferredTransfersLen types.GenericNum
@@ -448,5 +469,5 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 	if err != nil {
 		return serviceAccount, 0, err
 	}
-	return serviceAccount, gas, nil
+	return serviceAccount, remainingGas, nil
 }

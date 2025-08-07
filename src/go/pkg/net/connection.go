@@ -386,7 +386,7 @@ func createHandshake() (Handshake, error) {
 	}
 	// TODO: Get actual finalized block info from state
 	// For now, use placeholder values
-	latestFinalizedBlock := state.RecentBlocks[len(state.RecentBlocks)-1]
+	latestFinalizedBlock := state.RecentActivity.RecentBlocks[len(state.RecentActivity.RecentBlocks)-1]
 
 	latestFinalizedBlockInfo, err := block.Get(latestFinalizedBlock.HeaderHash)
 	if err != nil {

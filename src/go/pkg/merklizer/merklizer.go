@@ -145,14 +145,11 @@ func (s State) OverwriteCurrentState() error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
-	}
 
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
+	}
 	// Delete all existing state entries by iterating through all keys with "state:" prefix
 	prefix := []byte("state:")
 	iter, err := repo.NewIter(&pebble.IterOptions{
@@ -182,13 +179,6 @@ func (s State) OverwriteCurrentState() error {
 		key := append([]byte("state:"), kv.OriginalKey[:]...)
 		if err := batch.Set(key, kv.Value, nil); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
-		}
-	}
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch: %w", err)
 		}
 	}
 

@@ -43,35 +43,22 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccount struct {
-	ServiceIndex             types.ServiceIndex
-	CodeHash                 [32]byte       // c
-	Balance                  types.Balance  // b
-	MinimumGasForAccumulate  types.GasValue // g
-	MinimumGasForOnTransfer  types.GasValue // m
-	TotalOctetsUsedInStorage uint64         // o
-	TotalItemsUsedInStorage  uint32         // i
+	ServiceIndex                   types.ServiceIndex
+	CodeHash                       [32]byte           // c
+	Balance                        types.Balance      // b
+	MinimumGasForAccumulate        types.GasValue     // g
+	MinimumGasForOnTransfer        types.GasValue     // m
+	TotalOctetsUsedInStorage       uint64             // o
+	GratisStorageOffset            types.Balance      // f
+	TotalItemsUsedInStorage        uint32             // i
+	CreatedTimeSlot                types.Timeslot     // r
+	MostRecentAccumulationTimeslot types.Timeslot     // a
+	ParentServiceIndex             types.ServiceIndex // p
 }
-
-// // o
-// func (s ServiceAccount) TotalOctetsUsedInStorage() uint64 {
-// 	total := uint64(0)
-// 	for key := range s.PreimageLookupHistoricalStatus {
-// 		total += 81 + uint64(key.BlobLength)
-// 	}
-// 	for _, blob := range s.StorageDictionary {
-// 		total += 32 + uint64(len(blob))
-// 	}
-// 	return total
-// }
-
-// // i
-// func (s ServiceAccount) TotalItemsUsedInStorage() uint32 {
-// 	return uint32(2)*uint32(len(s.PreimageLookupHistoricalStatus)) + uint32(len(s.StorageDictionary))
-// }
 
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
-	return types.Balance(constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage) + constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage))
+	return types.Balance(max(0, constants.ServiceMinimumBalance+constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage)+constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage)-uint64(s.GratisStorageOffset)))
 }
 
 // bold m, bold c
@@ -87,7 +74,7 @@ func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte, error) {
 	offset := 0
 	L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 	if !ok {
-		panic("failed to decode metadata length")
+		return nil, nil, nil
 	}
 	offset += n
 	m := preimage[offset : offset+int(L_m)]
@@ -101,7 +88,7 @@ func (s *ServiceAccount) MetadataAndCode() (*[]byte, *[]byte, error) {
 }
 
 // GetServiceStorageItem retrieves a storage item for a service account
-func (s *ServiceAccount) GetServiceStorageItem(key [32]byte) ([]byte, bool, error) {
+func (s *ServiceAccount) GetServiceStorageItem(key []byte) ([]byte, bool, error) {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return nil, false, errors.New("global repository not initialized")
@@ -129,17 +116,15 @@ func (s *ServiceAccount) GetServiceStorageItem(key [32]byte) ([]byte, bool, erro
 }
 
 // SetServiceStorageItem sets a storage item for a service account
-func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error {
+func (s *ServiceAccount) SetServiceStorageItem(key []byte, value []byte) error {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if this is a new key or an update
@@ -152,7 +137,7 @@ func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error
 	if !exists {
 		// New item
 		s.TotalItemsUsedInStorage++
-		s.TotalOctetsUsedInStorage += 32 + uint64(len(value)) // Key + value
+		s.TotalOctetsUsedInStorage += 34 + uint64(len(key)) + uint64(len(value)) // Key + value
 	} else {
 		// Update existing - subtract old size, add new size
 		s.TotalOctetsUsedInStorage -= uint64(len(oldItem))
@@ -169,27 +154,19 @@ func (s *ServiceAccount) SetServiceStorageItem(key [32]byte, value []byte) error
 		panic(fmt.Errorf("failed to set storage item for service %d: %w", s.ServiceIndex, err))
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
-		}
-	}
 	return nil
 }
 
 // DeleteServiceStorageItem deletes a storage item for a service account
-func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
+func (s *ServiceAccount) DeleteServiceStorageItem(key []byte) error {
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if the item exists
@@ -203,7 +180,7 @@ func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
 
 	// Update storage metrics
 	s.TotalItemsUsedInStorage--
-	s.TotalOctetsUsedInStorage -= (32 + uint64(len(oldItem))) // Key + value
+	s.TotalOctetsUsedInStorage -= (34 + uint64(len(key)) + uint64(len(oldItem))) // Key + value
 
 	// Delete the storage item
 	dbKey := staterepository.MakeServiceStorageKey(s.ServiceIndex, key)
@@ -215,12 +192,6 @@ func (s *ServiceAccount) DeleteServiceStorageItem(key [32]byte) error {
 		return fmt.Errorf("failed to delete storage item for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
 	return nil
 }
 
@@ -258,12 +229,10 @@ func (s *ServiceAccount) SetPreimageForHash(hash [32]byte, preimage []byte) erro
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Set the preimage
@@ -276,12 +245,6 @@ func (s *ServiceAccount) SetPreimageForHash(hash [32]byte, preimage []byte) erro
 		return fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
 	return nil
 }
 
@@ -291,12 +254,9 @@ func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Delete the preimage
@@ -306,15 +266,9 @@ func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
-		panic(fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err))
+		return fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
-		}
-	}
 	return nil
 }
 
@@ -356,12 +310,9 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(blobLength uint32, ha
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if this is a new key or an update
@@ -388,13 +339,6 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(blobLength uint32, ha
 		return fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
-
 	return nil
 }
 
@@ -405,11 +349,9 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(blobLength uint32,
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if the status exists
@@ -437,13 +379,6 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(blobLength uint32,
 		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
-
 	return nil
 }
 
@@ -452,29 +387,20 @@ func DeleteServiceAccountByServiceIndex(serviceIndex types.ServiceIndex) error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Delete the service account
-	dbKey := staterepository.StateKeyConstructor(255, serviceIndex)
+	dbKey := staterepository.StateKeyConstructorFromServiceIndex(serviceIndex)
 
 	// Add state: prefix
 	prefixedKey := append([]byte("state:"), dbKey[:]...)
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
 		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
-	}
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", serviceIndex, err)
-		}
 	}
 
 	return nil

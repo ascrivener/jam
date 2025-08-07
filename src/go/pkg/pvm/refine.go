@@ -7,7 +7,6 @@ import (
 	"jam/pkg/erasurecoding"
 	"jam/pkg/merklizer"
 	"jam/pkg/preimages"
-	"jam/pkg/state"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
 	"jam/pkg/workreport"
@@ -16,10 +15,10 @@ import (
 )
 
 func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (workreport.WorkReport, error) {
-	state, err := state.GetState()
-	if err != nil {
-		return workreport.WorkReport{}, err
-	}
+	// state, err := state.GetState()
+	// if err != nil {
+	// 	return workreport.WorkReport{}, err
+	// }
 	exitReason, _, err := IsAuthorized(wp, core)
 	if err != nil {
 		return workreport.WorkReport{}, err
@@ -107,7 +106,7 @@ func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (
 		justifications[workItemIdx] = workItemJustifications
 		totalNumDataSegmentsExported += workItem.NumDataSegmentsExported
 	}
-	Refine(0, wp, nil, importSegments, 0, state.ServiceAccounts)
+	// Refine(0, wp, nil, importSegments, 0, state.ServiceAccounts)
 	return workreport.WorkReport{}, nil
 }
 

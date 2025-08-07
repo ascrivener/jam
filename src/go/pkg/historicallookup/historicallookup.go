@@ -7,7 +7,7 @@ import (
 	"jam/pkg/types"
 )
 
-func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) (*[]byte, error) {
+func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) ([]byte, error) {
 	p, ok, err := serviceAccount.GetPreimageForHash(hash)
 	if err != nil {
 		return nil, err
@@ -30,17 +30,17 @@ func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot ty
 	case 1:
 		if historicalStatus[0] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice, nil
+			return byteSlice, nil
 		}
 	case 2:
 		if historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice, nil
+			return byteSlice, nil
 		}
 	default:
 		if (historicalStatus[0] <= timeslot && historicalStatus[1] < timeslot) || historicalStatus[2] <= timeslot {
 			byteSlice := []byte(p)
-			return &byteSlice, nil
+			return byteSlice, nil
 		}
 	}
 

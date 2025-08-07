@@ -19,7 +19,6 @@ import (
 	"jam/pkg/ticket"
 	"jam/pkg/types"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/ed25519"
 )
@@ -297,7 +296,7 @@ func (b Block) Verify(priorState state.State) error {
 		}
 	}
 
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for wph := range recentBlock.WorkPackageHashesToSegmentRoots {
 			existingWorkPackageHashes[wph] = struct{}{}
 		}
@@ -315,7 +314,7 @@ func (b Block) Verify(priorState state.State) error {
 
 	// (11.39)
 	recentBlockWorkPackageHashes := make(map[[32]byte]struct{})
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		for _, wph := range recentBlock.WorkPackageHashesToSegmentRoots {
 			recentBlockWorkPackageHashes[wph] = struct{}{}
 		}
@@ -344,7 +343,7 @@ func (b Block) Verify(priorState state.State) error {
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		correctSegmentRootLookup[guarantee.WorkReport.WorkPackageSpecification.WorkPackageHash] = guarantee.WorkReport.WorkPackageSpecification.SegmentRoot
 	}
-	for _, recentBlock := range priorState.RecentBlocks {
+	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
 		maps.Copy(correctSegmentRootLookup, recentBlock.WorkPackageHashesToSegmentRoots)
 	}
 	for _, guarantee := range b.Extrinsics.Guarantees {
@@ -659,12 +658,9 @@ func (block BlockWithInfo) Set() error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Calculate the header hash
@@ -680,13 +676,6 @@ func (block BlockWithInfo) Set() error {
 	// Store the serialized block in the repository
 	if err := batch.Set(key, data, nil); err != nil { // Use batch instead of repo
 		return fmt.Errorf("failed to store block %x: %w", headerHash, err)
-	}
-
-	// Commit the batch if we created it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch: %w", err)
-		}
 	}
 
 	return nil

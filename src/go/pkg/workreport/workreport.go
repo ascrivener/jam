@@ -8,8 +8,6 @@ import (
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
-
-	"github.com/cockroachdb/pebble"
 )
 
 type WorkReport struct {
@@ -55,11 +53,9 @@ func (workReport WorkReport) Set(repo staterepository.PebbleStateRepository) err
 	segmentRoot := workReport.WorkPackageSpecification.SegmentRoot
 
 	// Create a batch for atomic operations
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in a batch")
 	}
 
 	// Serialize the work report once
@@ -75,10 +71,6 @@ func (workReport WorkReport) Set(repo staterepository.PebbleStateRepository) err
 	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
 	if err := batch.Set(indexKey, segmentRoot[:], nil); err != nil {
 		return fmt.Errorf("failed to store work package hash index: %w", err)
-	}
-
-	if ownBatch {
-		return batch.Commit(pebble.Sync)
 	}
 
 	return nil

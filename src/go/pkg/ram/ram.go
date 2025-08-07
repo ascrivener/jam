@@ -310,6 +310,31 @@ func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
 	r.access[pageNum] = access
 }
 
+// ZeroPage removes a page from the pages map, effectively zeroing it out
+// This is more memory efficient than storing a page full of zeros
+func (r *RAM) ZeroPage(pageNum uint32) {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to zero invalid page %d (max is %d)", pageNum, NumRamPages-1))
+	}
+
+	// Delete the page from the pages map if it exists
+	// Since non-existent pages default to zeros, this effectively zeroes the page
+	delete(r.pages, pageNum)
+}
+
+// ClearPageAccess removes a page from the access map
+// This resets the page's access permissions to the default (typically Inaccessible)
+func (r *RAM) ClearPageAccess(pageNum uint32) {
+	// Bounds check
+	if pageNum >= NumRamPages {
+		panic(fmt.Sprintf("Attempted to clear access for invalid page %d (max is %d)", pageNum, NumRamPages-1))
+	}
+
+	// Delete the page from the access map if it exists
+	delete(r.access, pageNum)
+}
+
 // MutateAccess sets the access type for a page containing the given index
 func (r *RAM) MutateAccess(index uint64, access RamAccess, mode MemoryAccessMode) {
 	if mode == Wrap {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"flag"
@@ -18,6 +19,10 @@ import (
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
+	"jam/pkg/state"
+	"jam/pkg/staterepository"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // FuzzerClient connects to a JAM protocol server and tests its implementation
@@ -25,6 +30,9 @@ type FuzzerClient struct {
 	conn       net.Conn
 	socketPath string
 	peerInfo   fuzzinterface.PeerInfo
+	// In-process mode fields
+	inProcess bool
+	server    *fuzzinterface.Server
 }
 
 type StateWithRoot struct {
@@ -40,24 +48,38 @@ type TestVector struct {
 }
 
 // NewFuzzerClient creates a new fuzzer client
-func NewFuzzerClient(socketPath string) *FuzzerClient {
-	return &FuzzerClient{
+func NewFuzzerClient(socketPath string, inProcess bool) *FuzzerClient {
+	fc := &FuzzerClient{
 		socketPath: socketPath,
+		inProcess:  inProcess,
 	}
+
+	if inProcess {
+		fc.server = fuzzinterface.NewServer()
+	}
+
+	return fc
 }
 
-// Connect establishes a connection to the server
+// Connect establishes a connection to the server or initializes in-process mode
 func (fc *FuzzerClient) Connect() error {
+	if fc.inProcess {
+		log.Println("Running in in-process mode - no socket connection needed")
+		// Initialize state repository for in-process mode
+		return staterepository.InitializeGlobalRepository("./data/state")
+	}
+
 	conn, err := net.Dial("unix", fc.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to connect to server: %w", err)
+		return fmt.Errorf("failed to connect to socket %s: %w", fc.socketPath, err)
 	}
 	fc.conn = conn
+	log.Printf("Connected to server at %s", fc.socketPath)
 
 	// Setup peer info before handshake
 	fc.setupPeerInfo()
 
-	// Perform initial handshake
+	// Perform handshake
 	if err := fc.handshake(); err != nil {
 		fc.conn.Close()
 		return fmt.Errorf("handshake failed: %w", err)
@@ -66,51 +88,52 @@ func (fc *FuzzerClient) Connect() error {
 	return nil
 }
 
-// Disconnect closes the connection
+// Disconnect closes the connection or cleans up in-process mode
 func (fc *FuzzerClient) Disconnect() {
+	if fc.inProcess {
+		staterepository.CloseGlobalRepository()
+		log.Println("In-process mode cleaned up")
+		return
+	}
+
 	if fc.conn != nil {
 		fc.conn.Close()
+		log.Println("Disconnected from server")
 	}
 }
 
 // handshake performs the initial PeerInfo exchange
 func (fc *FuzzerClient) handshake() error {
-	log.Println("Performing handshake with server...")
+	log.Println("Performing handshake...")
 
 	// Send our PeerInfo
 	req := fuzzinterface.RequestMessage{PeerInfo: &fc.peerInfo}
-	if err := fc.sendMessage(req); err != nil {
-		return fmt.Errorf("failed to send PeerInfo: %w", err)
-	}
-
-	// Receive server's PeerInfo
-	resp, err := fc.receiveResponse()
+	resp, err := fc.sendAndReceive(req)
 	if err != nil {
-		return fmt.Errorf("failed to receive PeerInfo response: %w", err)
+		return fmt.Errorf("failed to send PeerInfo: %w", err)
 	}
 
 	if resp.PeerInfo == nil {
 		return fmt.Errorf("server did not respond with PeerInfo")
 	}
 
-	log.Printf("Connected to server: %s (JAM v%d.%d.%d)",
-		string(resp.PeerInfo.Name),
-		resp.PeerInfo.JamVersion.Major, resp.PeerInfo.JamVersion.Minor, resp.PeerInfo.JamVersion.Patch)
-
+	log.Printf("Handshake successful with peer: %s", string(resp.PeerInfo.Name))
 	return nil
 }
 
 func (fc *FuzzerClient) setupPeerInfo() {
-	fc.peerInfo.Name = []byte("test-fuzzer")
-	fc.peerInfo.AppVersion = fuzzinterface.Version{
-		Major: 0,
-		Minor: 1,
-		Patch: 0,
-	}
-	fc.peerInfo.JamVersion = fuzzinterface.Version{
-		Major: 0,
-		Minor: 6,
-		Patch: 6,
+	fc.peerInfo = fuzzinterface.PeerInfo{
+		Name: []byte("fuzzer-client"),
+		AppVersion: fuzzinterface.Version{
+			Major: 0,
+			Minor: 1,
+			Patch: 0,
+		},
+		JamVersion: fuzzinterface.Version{
+			Major: 0,
+			Minor: 6,
+			Patch: 6,
+		},
 	}
 }
 
@@ -219,6 +242,20 @@ func (fc *FuzzerClient) receiveResponse() (fuzzinterface.ResponseMessage, error)
 	return decodeResponseMessage(messageData)
 }
 
+// sendAndReceive sends a message and receives response (works for both modes)
+func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzinterface.ResponseMessage, error) {
+	if fc.inProcess {
+		// Process message directly using server
+		return fc.server.HandleMessage(msg)
+	}
+
+	// Use existing socket-based communication
+	if err := fc.sendMessage(msg); err != nil {
+		return fuzzinterface.ResponseMessage{}, err
+	}
+	return fc.receiveResponse()
+}
+
 // RunTests executes a series of tests against the server
 func (fc *FuzzerClient) RunTests(vectorsDir string) {
 	// Run tests
@@ -244,29 +281,23 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	}
 
 	log.Printf("Setting initial genesis state...")
-	err = fc.sendMessage(fuzzinterface.RequestMessage{SetState: &setState})
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &setState})
 	if err != nil {
 		log.Printf("Failed to send SetState message: %v", err)
 		return
 	}
 
-	// Receive state root response
-	resp, err := fc.receiveResponse()
-	if err != nil {
-		log.Printf("Failed to receive response: %v", err)
-		return
-	}
-
 	if resp.StateRoot == nil {
-		log.Printf("Server did not respond with StateRoot")
+		log.Printf("SetState failed: no state root returned")
 		return
 	}
 
 	if *resp.StateRoot != setState.StateWithRoot.StateRoot {
-		log.Printf("State root mismatch: %x != %x", *resp.StateRoot, setState.StateWithRoot.StateRoot)
+		log.Printf("SetState failed: state root mismatch")
 		return
 	}
-	log.Printf("Genesis state set successfully, state root: %x", *resp.StateRoot)
+
+	log.Printf("Genesis state set successfully")
 
 	vectorFiles, err := os.ReadDir(vectorsDir)
 	if err != nil {
@@ -285,9 +316,17 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	sort.Strings(fileNames)
 
 	log.Printf("Processing %d test vectors...", len(fileNames))
+	filedTests := []string{}
 	for i, fileName := range fileNames {
+		// 12 18 23 35 56 58 60 62 65 69 70 73 74 82 88 94 97 98 preimages light
+		// if fileName != "00000056.bin" {
+		// 	continue
+		// }
 		log.Printf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
-
+		// if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
+		// 	log.Printf("Failed to initialize file logger: %v", err)
+		// 	return
+		// }
 		vectorPath := filepath.Join(vectorsDir, fileName)
 		vectorData, err := os.ReadFile(vectorPath)
 		if err != nil {
@@ -306,69 +345,154 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 		// Start timing the block import and response
 		importStartTime := time.Now()
 
-		err = fc.sendMessage(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
+		resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
 		if err != nil {
 			log.Printf("Failed to send ImportBlock message: %v", err)
 			return
 		}
 
-		// Receive state root response
-		resp, err := fc.receiveResponse()
-		if err != nil {
-			log.Printf("Failed to receive response: %v", err)
-			return
-		}
-
 		importDuration := time.Since(importStartTime)
-		log.Printf("Block import and response took %v", importDuration)
+		log.Printf("Block %d imported in %v", i, importDuration)
 
 		if resp.StateRoot == nil {
-			log.Printf("Server did not respond with StateRoot")
+			log.Printf("No state root returned from ImportBlock")
 			return
 		}
 
+		log.Printf("Block %d imported in %v, state root: %x", i, importDuration, *resp.StateRoot)
+
+		// Verify the state root matches expected
 		if *resp.StateRoot != testVector.PostState.StateRoot {
+			filedTests = append(filedTests, fileName)
 			log.Printf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
 			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
 			getState := fuzzinterface.GetState(headerHash)
-			err = fc.sendMessage(fuzzinterface.RequestMessage{GetState: &getState})
+			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {
 				log.Printf("Failed to send GetState message: %v", err)
 				return
 			}
 
-			// Receive state response
-			resp, err := fc.receiveResponse()
+			if getStateResponse.State == nil {
+				log.Printf("GetState failed: no state returned")
+				return
+			}
+
+			expectedState, err := state.GetStateFromKVs(testVector.PostState.State)
 			if err != nil {
-				log.Printf("Failed to receive response: %v", err)
+				log.Printf("Failed to get state from KVs: %v", err)
 				return
 			}
 
-			if resp.State == nil {
-				log.Printf("Server did not respond with State")
+			actualState, err := state.GetStateFromKVs(*getStateResponse.State)
+			if err != nil {
+				log.Printf("Failed to get state from KVs: %v", err)
 				return
 			}
 
-			log.Printf("State: %x", *resp.State)
-
-			return
+			// compare expectedState with actualState
+			if diff := cmp.Diff(expectedState, actualState); diff != "" {
+				log.Printf("✗ State comparison failed:")
+				log.Printf("State mismatch (-expected +actual):\n%s", diff)
+			} else {
+				log.Printf("✓ State comparison passed: states are identical")
+			}
+			// Compare the underlying KVs to show any differences
+			compareKVs(testVector.PostState.State, *getStateResponse.State)
+		} else {
+			log.Printf("✓ State root verified: %x", *resp.StateRoot)
 		}
-		log.Printf("✓ State root verified: %x", *resp.StateRoot)
 	}
-	log.Printf("All test vectors processed successfully!")
+	if len(filedTests) > 0 {
+		log.Printf("Failed tests: %v", filedTests)
+	} else {
+		log.Printf("All test vectors processed successfully!")
+	}
+}
+
+func compareKVs(expectedKVs, actualKVs merklizer.State) {
+	// Compare the underlying KVs to show any differences
+	expectedKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range expectedKVs {
+		expectedKVsMap[kv.OriginalKey] = kv.Value
+	}
+
+	actualKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range actualKVs {
+		actualKVsMap[kv.OriginalKey] = kv.Value
+	}
+
+	missingKVs := make([][31]byte, 0)
+	extraKVs := make([][31]byte, 0)
+	differentValues := make([][31]byte, 0)
+
+	for key := range expectedKVsMap {
+		if _, ok := actualKVsMap[key]; !ok {
+			missingKVs = append(missingKVs, key)
+		}
+	}
+
+	for key := range actualKVsMap {
+		if _, ok := expectedKVsMap[key]; !ok {
+			extraKVs = append(extraKVs, key)
+		}
+	}
+
+	// Check for keys with different values
+	for key, expectedValue := range expectedKVsMap {
+		if actualValue, exists := actualKVsMap[key]; exists {
+			if !bytes.Equal(expectedValue, actualValue) {
+				differentValues = append(differentValues, key)
+			}
+		}
+	}
+
+	if len(missingKVs) > 0 {
+		log.Printf("Missing KVs:")
+		for _, key := range missingKVs {
+			log.Printf("- %x: %x", key, expectedKVsMap[key])
+		}
+	}
+
+	if len(extraKVs) > 0 {
+		log.Printf("Extra KVs:")
+		for _, key := range extraKVs {
+			log.Printf("+ %x: %x", key, actualKVsMap[key])
+		}
+	}
+
+	if len(differentValues) > 0 {
+		log.Printf("Keys with different values:")
+		for _, key := range differentValues {
+			log.Printf("~ %x:", key)
+			log.Printf("  Expected: %x", expectedKVsMap[key])
+			log.Printf("  Actual:   %x", actualKVsMap[key])
+		}
+	}
+
+	if len(missingKVs) == 0 && len(extraKVs) == 0 && len(differentValues) == 0 {
+		log.Printf("KV comparison passed: KVs are identical")
+	} else {
+		log.Printf("KV comparison failed")
+	}
 }
 
 func main() {
 	// Parse command line arguments
 	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
-	vectorsPath := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/reports-l1", "Path to the test vectors directory")
+	vectorsPath := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/fallback", "Path to the test vectors directory")
+	inProcess := flag.Bool("in-process", false, "Run in in-process mode (no socket communication)")
 	flag.Parse()
 
-	log.Printf("Starting fuzzer client")
-	log.Printf("Socket path: %s", *socketPath)
+	if *inProcess {
+		log.Printf("Starting fuzzer client in IN-PROCESS mode")
+	} else {
+		log.Printf("Starting fuzzer client in SOCKET mode")
+		log.Printf("Socket path: %s", *socketPath)
+	}
 	log.Printf("Test vectors: %s", *vectorsPath)
 
-	fuzzer := NewFuzzerClient(*socketPath)
+	fuzzer := NewFuzzerClient(*socketPath, *inProcess)
 	if err := fuzzer.Connect(); err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
