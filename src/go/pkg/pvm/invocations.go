@@ -21,12 +21,13 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 	var hf HostFunction[struct{}] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		switch n {
 		case GasID:
-			return Gas(ctx, struct{}{})
+			return Gas(ctx)
 		case FetchID:
 			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil, nil)
+		case LogID:
+			return Log(ctx)
 		default:
-			ctx.State.Registers[7] = types.Register(HostCallWhat)
-			return NewSimpleExitReason(ExitGo), nil
+			return Default(ctx)
 		}
 	}
 	authorizationCode := workpackage.AuthorizationCode()
@@ -74,7 +75,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 		case GasID:
 			return Gas(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
-				Argument: &struct{}{}}, struct{}{})
+				Argument: &struct{}{}})
 		case MachineID:
 			return Machine(ctx)
 		case PeekID:
@@ -87,9 +88,16 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 			return Invoke(ctx)
 		case ExpungeID:
 			return Expunge(ctx)
+		case LogID:
+			return Log(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		default:
-			ctx.State.Registers[7] = types.Register(HostCallWhat)
-			return NewSimpleExitReason(ExitGo), nil
+			return Default(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		}
 	}
 	serviceAccount, ok := serviceAccounts[workItem.ServiceIdentifier]
@@ -337,9 +345,16 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 			return Yield(ctx)
 		case ProvideID:
 			return Provide(ctx, serviceIndex)
+		case LogID:
+			return Log(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		default:
-			ctx.State.Registers[7] = types.Register(HostCallWhat)
-			return NewSimpleExitReason(ExitGo), nil
+			return Default(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		}
 	}
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
@@ -436,9 +451,16 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 				State:    ctx.State,
 				Argument: &struct{}{},
 			}, serviceIndex, serviceAccounts)
+		case LogID:
+			return Log(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		default:
-			ctx.State.Registers[7] = types.Register(HostCallWhat)
-			return NewSimpleExitReason(ExitGo), nil
+			return Default(&HostFunctionContext[struct{}]{
+				State:    ctx.State,
+				Argument: &struct{}{},
+			})
 		}
 	}
 	serviceAccount := serviceAccounts[serviceIndex]

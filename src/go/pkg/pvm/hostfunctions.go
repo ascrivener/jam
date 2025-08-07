@@ -46,6 +46,7 @@ const (
 	ForgetID
 	YieldID
 	ProvideID
+	LogID = 100
 )
 
 type ExitReasonType uint64
@@ -86,11 +87,23 @@ type HostFunction[T any] func(HostFunctionIdentifier, *HostFunctionContext[T]) (
 
 const GasUsage types.GasValue = 10
 
-func Gas(ctx *HostFunctionContext[struct{}], args ...any) (ExitReason, error) {
+func Gas(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
 		return NewSimpleExitReason(ExitGo), nil
 	})
+}
+
+func Default(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
+		ctx.State.Registers[7] = types.Register(HostCallWhat)
+		return NewSimpleExitReason(ExitGo), nil
+	})
+}
+
+func Log(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
+	ctx.State.Registers[7] = types.Register(HostCallOK)
+	return NewSimpleExitReason(ExitGo), nil
 }
 
 // VerifyAndReturnStateForAccessor implements the state lookup host function
