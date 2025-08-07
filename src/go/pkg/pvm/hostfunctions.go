@@ -102,7 +102,6 @@ func Default(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 }
 
 func Log(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
-	ctx.State.Registers[7] = types.Register(HostCallOK)
 	return NewSimpleExitReason(ExitGo), nil
 }
 

@@ -13,19 +13,13 @@ RUN chmod +x /app/fuzzserver /app/fuzzclient
 RUN mkdir -p /app/data
 
 # Create test vectors directories
-RUN mkdir -p /app/jam-test-vectors/traces/reports-l0
-RUN mkdir -p /app/jam-test-vectors/traces/reports-l1
-RUN mkdir -p /app/jam-test-vectors/traces/safrole
-RUN mkdir -p /app/jam-test-vectors/traces/fallback
+RUN mkdir -p /app/jam-test-vectors/traces
 
 # Copy test vectors from host (relative to build context)
-COPY jam-test-vectors/traces/reports-l0/ /app/jam-test-vectors/traces/reports-l0/
-COPY jam-test-vectors/traces/reports-l1/ /app/jam-test-vectors/traces/reports-l1/
-COPY jam-test-vectors/traces/safrole/ /app/jam-test-vectors/traces/safrole/
-COPY jam-test-vectors/traces/fallback/ /app/jam-test-vectors/traces/fallback/
+COPY jam-test-vectors/traces/ /app/jam-test-vectors/traces/
 
 # Default test vectors (can be overridden at runtime)
-ENV TEST_VECTORS=reports-l1
+ENV TEST_VECTORS=fallback
 
 # Create startup script that runs both server and client
 RUN echo '#!/bin/sh' > /app/start.sh && \

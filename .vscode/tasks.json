@@ -141,7 +141,7 @@
         {
             "label": "4. Run All Test Vectors",
             "type": "shell",
-            "command": "echo 'Running all test vector sets...' && docker run --rm -e TEST_VECTORS=reports-l0 jam-fuzzer && echo '\\n\\n==== COMPLETED reports-l0 ====\\n\\n' && docker run --rm -e TEST_VECTORS=reports-l1 jam-fuzzer && echo '\\n\\n==== COMPLETED reports-l1 ====\\n\\n' && docker run --rm -e TEST_VECTORS=safrole jam-fuzzer && echo '\\n\\n==== COMPLETED safrole ====\\n\\n' && docker run --rm -e TEST_VECTORS=fallback jam-fuzzer && echo '\\n\\n==== COMPLETED fallback ====\\n\\n' && echo 'All test vector sets completed!'",
+            "command": "echo 'Running all test vector sets...' && docker run --rm -e TEST_VECTORS=fallback jam-fuzzer && echo '\\n\\n==== COMPLETED fallback ====\\n\\n' && docker run --rm -e TEST_VECTORS=preimages jam-fuzzer && echo '\\n\\n==== COMPLETED preimages ====\\n\\n' && docker run --rm -e TEST_VECTORS=preimages_light jam-fuzzer && echo '\\n\\n==== COMPLETED preimages_light ====\\n\\n' && docker run --rm -e TEST_VECTORS=safrole jam-fuzzer && echo '\\n\\n==== COMPLETED safrole ====\\n\\n' && docker run --rm -e TEST_VECTORS=storage jam-fuzzer && echo '\\n\\n==== COMPLETED storage ====\\n\\n' && docker run --rm -e TEST_VECTORS=storage_light jam-fuzzer && echo '\\n\\n==== COMPLETED storage_light ====\\n\\n' && echo 'All test vector sets completed!'",
             "group": "test",
             "presentation": {
                 "reveal": "always",
