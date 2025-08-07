@@ -711,7 +711,14 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 			// Check the expiration of the most recent timeslot against the current time
 			// Using UnreferencePreimageExpungeTimeslots as D from the specification
 			lastTimeslot := historicalStatus[1]
-			if lastTimeslot < timeslot-types.Timeslot(constants.UnreferencePreimageExpungeTimeslots) {
+			expungeTimeslots := types.Timeslot(constants.UnreferencePreimageExpungeTimeslots)
+			var cutoffTime types.Timeslot
+			if timeslot >= expungeTimeslots {
+				cutoffTime = timeslot - expungeTimeslots
+			} else {
+				cutoffTime = 0 // If timeslot is too small, use 0 as cutoff
+			}
+			if lastTimeslot < cutoffTime {
 				// Update accumulating account balance (s′b = ((xu)d)[xs]b + db)
 				// For simplicity, we're assuming the balance to transfer is associated with the destination account
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
@@ -879,7 +886,14 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		}
 
 		// Define cutoff time for "old enough" timeslots (t - D)
-		cutoffTime := timeslot - types.Timeslot(constants.UnreferencePreimageExpungeTimeslots)
+		// Check for underflow before subtraction
+		var cutoffTime types.Timeslot
+		expungeTimeslots := types.Timeslot(constants.UnreferencePreimageExpungeTimeslots)
+		if timeslot >= expungeTimeslots {
+			cutoffTime = timeslot - expungeTimeslots
+		} else {
+			cutoffTime = 0 // If timeslot is too small, use 0 as cutoff
+		}
 
 		// Handle different cases based on historical status length and values
 		if len(historicalStatus) == 0 || (len(historicalStatus) == 2 && historicalStatus[1] < cutoffTime) {

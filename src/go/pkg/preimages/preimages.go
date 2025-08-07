@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"jam/pkg/staterepository"
-
-	"github.com/cockroachdb/pebble"
 )
 
 type Preimage []byte
@@ -15,22 +13,15 @@ type Preimage []byte
 // The hash must be a 32-byte array
 func (p Preimage) Set(repo staterepository.PebbleStateRepository, hash [32]byte) error {
 	// Create a batch for atomic operations
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Store the preimage with "preimage:" prefix
 	key := append([]byte("preimage:"), hash[:]...)
 	if err := batch.Set(key, p, nil); err != nil {
 		return fmt.Errorf("failed to store preimage for hash %x: %w", hash, err)
-	}
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		return batch.Commit(pebble.Sync)
 	}
 
 	return nil

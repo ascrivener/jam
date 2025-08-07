@@ -370,35 +370,31 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
 
-	// Create a local batch for this ΨM execution to enable rollback
+	// Create a nested transaction for this ΨM execution
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("global repository not initialized")
 	}
 
-	localBatch := repo.NewBatch()
-	defer localBatch.Close() // Ensure cleanup
-
-	// TODO: Modify ΨM and related functions to use localBatch for writes
-	// while still reading from the global batch for consistency
+	if err := repo.BeginTransaction(); err != nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to begin nested transaction: %w", err)
+	}
 
 	executionExitReason, gasUsed, err := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
-		// Local batch is automatically discarded (no commit)
+		// Rollback nested transaction (discards all ΨM changes)
+		repo.RollbackTransaction()
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		// Local batch is automatically discarded (no commit)
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
+		// Rollback nested transaction (discards all ΨM changes)
+		repo.RollbackTransaction()
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
 	}
 
-	// Success - apply local batch changes to the global batch
-	globalBatch := repo.GetBatch()
-	if globalBatch != nil {
-		// Apply all changes from local batch to global batch
-		if err := globalBatch.Apply(localBatch, nil); err != nil {
-			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply local batch to global batch: %w", err)
-		}
+	// Success - commit nested transaction (merges changes into parent transaction)
+	if err := repo.CommitTransaction(); err != nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to commit nested transaction: %w", err)
 	}
 
 	blob := *executionExitReason.Blob
@@ -461,7 +457,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return serviceAccount, 0, nil
 	}
-	_, gas, err := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
+	_, remainingGas, err := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
 		Timeslot             types.GenericNum
 		ServiceIndex         types.GenericNum
 		DeferredTransfersLen types.GenericNum
@@ -473,5 +469,5 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 	if err != nil {
 		return serviceAccount, 0, err
 	}
-	return serviceAccount, gas, nil
+	return serviceAccount, remainingGas, nil
 }

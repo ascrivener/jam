@@ -122,11 +122,9 @@ func (s *ServiceAccount) SetServiceStorageItem(key []byte, value []byte) error {
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if this is a new key or an update
@@ -156,12 +154,6 @@ func (s *ServiceAccount) SetServiceStorageItem(key []byte, value []byte) error {
 		panic(fmt.Errorf("failed to set storage item for service %d: %w", s.ServiceIndex, err))
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			panic(fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err))
-		}
-	}
 	return nil
 }
 
@@ -172,11 +164,9 @@ func (s *ServiceAccount) DeleteServiceStorageItem(key []byte) error {
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if the item exists
@@ -202,12 +192,6 @@ func (s *ServiceAccount) DeleteServiceStorageItem(key []byte) error {
 		return fmt.Errorf("failed to delete storage item for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
 	return nil
 }
 
@@ -245,12 +229,10 @@ func (s *ServiceAccount) SetPreimageForHash(hash [32]byte, preimage []byte) erro
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Set the preimage
@@ -263,12 +245,6 @@ func (s *ServiceAccount) SetPreimageForHash(hash [32]byte, preimage []byte) erro
 		return fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
 	return nil
 }
 
@@ -278,12 +254,9 @@ func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Delete the preimage
@@ -296,12 +269,6 @@ func (s *ServiceAccount) DeletePreimageForHash(hash [32]byte) error {
 		return fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
 	return nil
 }
 
@@ -343,12 +310,9 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(blobLength uint32, ha
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if this is a new key or an update
@@ -375,13 +339,6 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(blobLength uint32, ha
 		return fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
-
 	return nil
 }
 
@@ -392,11 +349,9 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(blobLength uint32,
 		return errors.New("global repository not initialized")
 	}
 	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Check if the status exists
@@ -424,13 +379,6 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(blobLength uint32,
 		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", s.ServiceIndex, err)
-		}
-	}
-
 	return nil
 }
 
@@ -439,12 +387,10 @@ func DeleteServiceAccountByServiceIndex(serviceIndex types.ServiceIndex) error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Delete the service account
@@ -455,13 +401,6 @@ func DeleteServiceAccountByServiceIndex(serviceIndex types.ServiceIndex) error {
 
 	if err := batch.Delete(prefixedKey, nil); err != nil {
 		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
-	}
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		if err := batch.Commit(pebble.Sync); err != nil {
-			return fmt.Errorf("failed to commit batch for service %d: %w", serviceIndex, err)
-		}
 	}
 
 	return nil

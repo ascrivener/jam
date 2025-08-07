@@ -405,12 +405,9 @@ func (state *State) Set() error {
 	if repo == nil {
 		return errors.New("global repository not initialized")
 	}
-	// Create a new batch if one isn't already in progress
-	batch := repo.GetBatch()
-	ownBatch := batch == nil
-	if ownBatch {
-		batch = repo.NewBatch()
-		defer batch.Close()
+	batch := repo.GetCurrentBatch()
+	if batch == nil {
+		return fmt.Errorf("Not in batch")
 	}
 
 	// Store static state components
@@ -480,11 +477,6 @@ func (state *State) Set() error {
 		if err := batch.Set(prefixedKey, data, nil); err != nil {
 			return fmt.Errorf("failed to store service account %d: %w", serviceIndex, err)
 		}
-	}
-
-	// If we created our own batch, commit it
-	if ownBatch {
-		return batch.Commit(pebble.Sync)
 	}
 
 	return nil
