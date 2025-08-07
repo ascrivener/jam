@@ -472,12 +472,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 }
 
 func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-		ctx.Argument.ExceptionalAccumulationResultContext = *ctx.Argument.AccumulationResultContext.DeepCopy()
-		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
-
-		return NewSimpleExitReason(ExitGo), nil
-	})
+	panic("NOT IMPLEMENTED")
 }
 
 func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) (ExitReason, error) {

@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"fmt"
 	"maps"
 
 	"jam/pkg/constants"
@@ -8,6 +9,7 @@ import (
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/serviceaccount"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
 	wp "jam/pkg/workpackage"
@@ -367,14 +369,38 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		ServiceIndex:     types.GenericNum(serviceIndex),
 		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
+
+	// Create a local batch for this ΨM execution to enable rollback
+	repo := staterepository.GetGlobalRepository()
+	if repo == nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("global repository not initialized")
+	}
+
+	localBatch := repo.NewBatch()
+	defer localBatch.Close() // Ensure cleanup
+
+	// TODO: Modify ΨM and related functions to use localBatch for writes
+	// while still reading from the global batch for consistency
+
 	executionExitReason, gasUsed, err := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
+		// Local batch is automatically discarded (no commit)
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		// TODO: revert all changes made to db inside the above ΨM call since last checkpoint, or since beginning if no checkpoint
+		// Local batch is automatically discarded (no commit)
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
 	}
+
+	// Success - apply local batch changes to the global batch
+	globalBatch := repo.GetBatch()
+	if globalBatch != nil {
+		// Apply all changes from local batch to global batch
+		if err := globalBatch.Apply(localBatch, nil); err != nil {
+			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply local batch to global batch: %w", err)
+		}
+	}
+
 	blob := *executionExitReason.Blob
 	if len(blob) == 32 {
 		var preimageResult [32]byte

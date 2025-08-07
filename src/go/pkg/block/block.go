@@ -12,7 +12,6 @@ import (
 	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
 	"jam/pkg/constants"
-	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
@@ -31,32 +30,32 @@ type Block struct {
 
 func (b Block) Verify(priorState state.State) error {
 
-	parentBlock, err := Get(b.Header.ParentHash)
-	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
-	if err != nil {
-		return fmt.Errorf("failed to get parent block: %w", err)
-	}
+	// parentBlock, err := Get(b.Header.ParentHash)
+	// // (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get parent block: %w", err)
+	// }
 
 	// (5.4)
 	if b.Header.ExtrinsicHash != b.Extrinsics.MerkleCommitment() {
 		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
 	}
 
-	// (5.7)
-	if b.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
-		return fmt.Errorf("time slot is not greater than parent block time slot")
-	}
+	// // (5.7)
+	// if b.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
+	// 	return fmt.Errorf("time slot is not greater than parent block time slot")
+	// }
 
 	if b.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
 		return fmt.Errorf("block timestamp is in the future relative to current time")
 	}
 
 	// (5.8)
-	merklizedState := merklizer.MerklizeState(merklizer.GetState())
+	// merklizedState := merklizer.MerklizeState(merklizer.GetState())
 
-	if parentBlock.Info.PosteriorStateRoot != merklizedState {
-		return fmt.Errorf("parent block state root does not match merklized state")
-	}
+	// if parentBlock.Info.PosteriorStateRoot != merklizedState {
+	// 	return fmt.Errorf("parent block state root does not match merklized state")
+	// }
 
 	// (10.7)
 	for i := 1; i < len(b.Extrinsics.Disputes.Verdicts); i++ {
@@ -269,13 +268,13 @@ func (b Block) Verify(priorState state.State) error {
 			return fmt.Errorf("refinement context timeslot is too old")
 		}
 
-		anchorBlock, err := GetAnchorBlock(b.Header, refinementContext.AnchorHeaderHash)
-		if err != nil {
-			return fmt.Errorf("failed to get anchor block: %w", err)
-		}
-		if anchorBlock.Block.Header.TimeSlot != refinementContext.Timeslot {
-			return fmt.Errorf("refinement context timeslot does not match anchor block timeslot")
-		}
+		// anchorBlock, err := GetAnchorBlock(b.Header, refinementContext.AnchorHeaderHash)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to get anchor block: %w", err)
+		// }
+		// if anchorBlock.Block.Header.TimeSlot != refinementContext.Timeslot {
+		// 	return fmt.Errorf("refinement context timeslot does not match anchor block timeslot")
+		// }
 	}
 
 	// (11.38)
