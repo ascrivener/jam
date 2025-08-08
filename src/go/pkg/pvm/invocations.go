@@ -14,6 +14,7 @@ import (
 	"jam/pkg/workpackage"
 	wp "jam/pkg/workpackage"
 
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -59,13 +60,13 @@ type HostFunctionContext[T any] struct {
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
 // TODO: needs work. for m2
-func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte, error) {
+func Refine(batch *pebble.Batch, workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte, error) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason, error) {
 		switch n {
 		case HistoricalLookupID:
-			return HistoricalLookup(ctx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
+			return HistoricalLookup(ctx, batch, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
 		case FetchID:
 			panic("not implemented")
 			// TODO: Figure out how to compute the blobs introduced for a work item
@@ -104,7 +105,7 @@ func Refine(workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []by
 	if !ok {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBAD), [][]byte{}, nil
 	}
-	preimage, err := historicallookup.HistoricalLookup(serviceAccount, workPackage.RefinementContext.Timeslot, workItem.CodeHash)
+	preimage, err := historicallookup.HistoricalLookup(nil, serviceAccount, workPackage.RefinementContext.Timeslot, workItem.CodeHash)
 	if err != nil {
 		return types.ExecutionExitReason{}, [][]byte{}, err
 	}
@@ -222,36 +223,40 @@ type AccumulationResultContext struct { // X
 	DeferredTransfers        []DeferredTransfer          // t
 	PreimageResult           *[32]byte                   // y
 	PreimageProvisions       PreimageProvisions          // p
+	Batch                    *pebble.Batch
 }
 
-// DeepCopy creates a deep copy of AccumulationResultContext
-func (x AccumulationResultContext) DeepCopy() *AccumulationResultContext {
-	// Create a new instance with primitives copied
-	copy := &AccumulationResultContext{
-		AccumulatingServiceIndex: x.AccumulatingServiceIndex,
-		StateComponents:          x.StateComponents.DeepCopy(),
-		DerivedServiceIndex:      x.DerivedServiceIndex,
+func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
+	// Create a new batch for the exceptional context
+	exceptionalBatch := staterepository.NewIndexedBatch()
+	exceptionalBatch.Apply(ctx.Batch, nil)
+
+	contextCheckpoint := &AccumulationResultContext{
+		AccumulatingServiceIndex: ctx.AccumulatingServiceIndex,
+		StateComponents:          ctx.StateComponents.DeepCopy(),
+		DerivedServiceIndex:      ctx.DerivedServiceIndex,
+		Batch:                    exceptionalBatch,
 	}
 
 	// Deep copy DeferredTransfers slice
-	if x.DeferredTransfers != nil {
-		copy.DeferredTransfers = make([]DeferredTransfer, len(x.DeferredTransfers))
-		for i, transfer := range x.DeferredTransfers {
-			copy.DeferredTransfers[i] = transfer.DeepCopy()
+	if ctx.DeferredTransfers != nil {
+		contextCheckpoint.DeferredTransfers = make([]DeferredTransfer, len(ctx.DeferredTransfers))
+		for i, transfer := range ctx.DeferredTransfers {
+			contextCheckpoint.DeferredTransfers[i] = transfer.DeepCopy()
 		}
 	}
 
 	// Deep copy PreimageResult if not nil
-	if x.PreimageResult != nil {
+	if ctx.PreimageResult != nil {
 		preimageResult := new([32]byte)
-		*preimageResult = *x.PreimageResult
-		copy.PreimageResult = preimageResult
+		*preimageResult = *ctx.PreimageResult
+		contextCheckpoint.PreimageResult = preimageResult
 	}
 
-	return copy
+	return contextCheckpoint
 }
 
-func AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
+func AccumulationResultContextFromAccumulationStateComponents(globalBatch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
 	hash := blake2b.Sum256(serializer.Serialize(struct {
 		ServiceIndex types.ServiceIndex
 		Entropy      [32]byte
@@ -262,6 +267,8 @@ func AccumulationResultContextFromAccumulationStateComponents(accumulationStateC
 		Timeslot:     timeslot,
 	}))
 	derivedServiceIndex := check(types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)), accumulationStateComponents)
+	batch := staterepository.NewIndexedBatch()
+	batch.Apply(globalBatch, nil)
 	return &AccumulationResultContext{
 		AccumulatingServiceIndex: serviceIndex,
 		StateComponents:          accumulationStateComponents.DeepCopy(),
@@ -269,6 +276,7 @@ func AccumulationResultContextFromAccumulationStateComponents(accumulationStateC
 		DeferredTransfers:        []DeferredTransfer{},
 		PreimageResult:           nil,
 		PreimageProvisions:       PreimageProvisions{},
+		Batch:                    batch,
 	}
 }
 
@@ -290,24 +298,24 @@ func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAcc
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-func Accumulate(accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func Accumulate(globalBatch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		switch n {
 		case ReadID:
 			return Read(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
+			}, ctx.Argument.AccumulationResultContext.Batch, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
 		case WriteID:
 			return Write(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex)
+			}, ctx.Argument.AccumulationResultContext.Batch, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex)
 		case LookupID:
 			return Lookup(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
+			}, ctx.Argument.AccumulationResultContext.Batch, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
 		case GasID:
 			return Gas(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -328,23 +336,23 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		case CheckpointID:
 			return Checkpoint(ctx)
 		case NewID:
-			return New(ctx, timeslot)
+			return New(ctx, ctx.Argument.AccumulationResultContext.Batch, timeslot)
 		case UpgradeID:
 			return Upgrade(ctx)
 		case TransferID:
 			return Transfer(ctx)
 		case EjectID:
-			return Eject(ctx, timeslot)
+			return Eject(ctx, ctx.Argument.AccumulationResultContext.Batch, timeslot)
 		case QueryID:
-			return Query(ctx)
+			return Query(ctx, ctx.Argument.AccumulationResultContext.Batch)
 		case SolicitID:
-			return Solicit(ctx, timeslot)
+			return Solicit(ctx, ctx.Argument.AccumulationResultContext.Batch, timeslot)
 		case ForgetID:
-			return Forget(ctx, timeslot)
+			return Forget(ctx, ctx.Argument.AccumulationResultContext.Batch, timeslot)
 		case YieldID:
-			return Yield(ctx)
+			return Yield(ctx, ctx.Argument.AccumulationResultContext.Batch)
 		case ProvideID:
-			return Provide(ctx, serviceIndex)
+			return Provide(ctx, ctx.Argument.AccumulationResultContext.Batch, serviceIndex)
 		case LogID:
 			return Log(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -357,12 +365,12 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 			})
 		}
 	}
-	normalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
+	normalContext := AccumulationResultContextFromAccumulationStateComponents(globalBatch, accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
 	serviceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
 	if !ok {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
-	_, code, err := serviceAccount.MetadataAndCode()
+	_, code, err := serviceAccount.MetadataAndCode(globalBatch)
 	if err != nil {
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
@@ -370,7 +378,7 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
 	// Create two separate context objects
-	exceptionalContext := AccumulationResultContextFromAccumulationStateComponents(accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
+	exceptionalContext := normalContext.DeepCopy()
 	ctx := AccumulateInvocationContext{
 		AccumulationResultContext:            *normalContext,
 		ExceptionalAccumulationResultContext: *exceptionalContext,
@@ -384,32 +392,25 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 		ServiceIndex:     types.GenericNum(serviceIndex),
 		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
-
-	// Create a nested transaction for this ΨM execution
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("global repository not initialized")
-	}
-
-	if err := repo.BeginTransaction(); err != nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, 0, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to begin nested transaction: %w", err)
-	}
-
+	// make sure both batches are closed
+	defer func() {
+		ctx.AccumulationResultContext.Batch.Close()
+		ctx.ExceptionalAccumulationResultContext.Batch.Close()
+	}()
 	executionExitReason, gasUsed, err := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
-		// Rollback nested transaction (discards all ΨM changes)
-		repo.RollbackTransaction()
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		// Rollback nested transaction (discards all ΨM changes)
-		repo.RollbackTransaction()
+		if err := globalBatch.Apply(ctx.ExceptionalAccumulationResultContext.Batch, nil); err != nil {
+			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
+		}
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
 	}
 
-	// Success - commit nested transaction (merges changes into parent transaction)
-	if err := repo.CommitTransaction(); err != nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to commit nested transaction: %w", err)
+	// Success - apply changes to outer batch (merges changes into parent transaction)
+	if err := globalBatch.Apply(ctx.AccumulationResultContext.Batch, nil); err != nil {
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
 
 	blob := *executionExitReason.Blob
@@ -421,24 +422,24 @@ func Accumulate(accumulationStateComponents *AccumulationStateComponents, timesl
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
 }
 
-func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue, error) {
+func OnTransfer(batch *pebble.Batch, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue, error) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) (ExitReason, error) {
 		switch n {
 		case LookupID:
 			return Lookup(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument, serviceIndex, serviceAccounts)
+			}, batch, ctx.Argument, serviceIndex, serviceAccounts)
 		case ReadID:
 			return Read(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument, serviceIndex, serviceAccounts)
+			}, batch, ctx.Argument, serviceIndex, serviceAccounts)
 		case WriteID:
 			return Write(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument, serviceIndex)
+			}, batch, ctx.Argument, serviceIndex)
 		case GasID:
 			return Gas(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -472,7 +473,7 @@ func OnTransfer(serviceAccounts serviceaccount.ServiceAccounts, timeslot types.T
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
-	_, code, err := serviceAccount.MetadataAndCode()
+	_, code, err := serviceAccount.MetadataAndCode(batch)
 	if err != nil {
 		return serviceAccount, 0, err
 	}

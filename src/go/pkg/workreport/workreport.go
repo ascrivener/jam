@@ -1,13 +1,14 @@
 package workreport
 
 import (
-	"errors"
 	"fmt"
 
 	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type WorkReport struct {
@@ -48,28 +49,22 @@ type WorkReportWithWorkPackageHashes struct {
 }
 
 // Store a work report with both lookup paths - using segment root as primary key
-func (workReport WorkReport) Set(repo staterepository.PebbleStateRepository) error {
+func (workReport WorkReport) Set(batch *pebble.Batch) error {
 	workPackageHash := workReport.WorkPackageSpecification.WorkPackageHash
 	segmentRoot := workReport.WorkPackageSpecification.SegmentRoot
-
-	// Create a batch for atomic operations
-	batch := repo.GetCurrentBatch()
-	if batch == nil {
-		return fmt.Errorf("Not in a batch")
-	}
 
 	// Serialize the work report once
 	serialized := serializer.Serialize(workReport)
 
 	// Store the primary record by segment root
 	primaryKey := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	if err := batch.Set(primaryKey, serialized, nil); err != nil {
+	if err := staterepository.Set(batch, primaryKey, serialized); err != nil {
 		return fmt.Errorf("failed to store work report by segment root: %w", err)
 	}
 
 	// Store a reference from work package hash to segment root
 	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	if err := batch.Set(indexKey, segmentRoot[:], nil); err != nil {
+	if err := staterepository.Set(batch, indexKey, segmentRoot[:]); err != nil {
 		return fmt.Errorf("failed to store work package hash index: %w", err)
 	}
 
@@ -77,31 +72,27 @@ func (workReport WorkReport) Set(repo staterepository.PebbleStateRepository) err
 }
 
 // Get a work report by segment root (direct lookup)
-func GetWorkReportBySegmentRoot(segmentRoot [32]byte) (WorkReport, error) {
+func GetWorkReportBySegmentRoot(batch *pebble.Batch, segmentRoot [32]byte) (WorkReport, error) {
 	prefixedKey := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	return getWorkReportByKey(prefixedKey)
+	return getWorkReportByKey(batch, prefixedKey)
 }
 
 // Get a work report by work package hash (index lookup + main lookup)
-func GetWorkReportByWorkPackageHash(workPackageHash [32]byte) (WorkReport, error) {
-	segmentRoot, err := GetSegmentRootByWorkPackageHash(workPackageHash)
+func GetWorkReportByWorkPackageHash(batch *pebble.Batch, workPackageHash [32]byte) (WorkReport, error) {
+	segmentRoot, err := GetSegmentRootByWorkPackageHash(batch, workPackageHash)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to find segment root for work package hash %x: %w", workPackageHash, err)
 	}
 
 	// Then do the main lookup
-	return GetWorkReportBySegmentRoot(segmentRoot)
+	return GetWorkReportBySegmentRoot(batch, segmentRoot)
 }
 
 // Get segment root directly from work package hash without loading full work report
-func GetSegmentRootByWorkPackageHash(workPackageHash [32]byte) ([32]byte, error) {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return [32]byte{}, errors.New("global repository not initialized")
-	}
+func GetSegmentRootByWorkPackageHash(batch *pebble.Batch, workPackageHash [32]byte) ([32]byte, error) {
 	// Look up the segment root from the index
 	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	value, closer, err := repo.Get(indexKey)
+	value, closer, err := staterepository.Get(batch, indexKey)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to find segment root for work package hash %x: %w", workPackageHash, err)
 	}
@@ -115,12 +106,8 @@ func GetSegmentRootByWorkPackageHash(workPackageHash [32]byte) ([32]byte, error)
 }
 
 // Helper function for the actual deserialization
-func getWorkReportByKey(key []byte) (WorkReport, error) {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return WorkReport{}, errors.New("global repository not initialized")
-	}
-	value, closer, err := repo.Get(key)
+func getWorkReportByKey(batch *pebble.Batch, key []byte) (WorkReport, error) {
+	value, closer, err := staterepository.Get(batch, key)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to get work report: %w", err)
 	}

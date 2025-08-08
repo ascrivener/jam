@@ -318,10 +318,6 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 	log.Printf("Processing %d test vectors...", len(fileNames))
 	filedTests := []string{}
 	for i, fileName := range fileNames {
-		// 12 18 23 35 56 58 60 62 65 69 70 73 74 82 88 94 97 98 preimages light
-		// if fileName != "00000056.bin" {
-		// 	continue
-		// }
 		log.Printf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
 		// if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
 		// 	log.Printf("Failed to initialize file logger: %v", err)

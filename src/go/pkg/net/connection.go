@@ -12,7 +12,6 @@ import (
 	"jam/pkg/block/header"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
-	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
 	"sync"
@@ -376,10 +375,6 @@ type Handshake struct {
 
 // createHandshake creates a handshake message with current finalized block info and known leaves
 func createHandshake() (Handshake, error) {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return Handshake{}, errors.New("global repository not initialized")
-	}
 	state, err := state.GetState()
 	if err != nil {
 		return Handshake{}, fmt.Errorf("failed to get state: %w", err)
@@ -388,7 +383,7 @@ func createHandshake() (Handshake, error) {
 	// For now, use placeholder values
 	latestFinalizedBlock := state.RecentActivity.RecentBlocks[len(state.RecentActivity.RecentBlocks)-1]
 
-	latestFinalizedBlockInfo, err := block.Get(latestFinalizedBlock.HeaderHash)
+	latestFinalizedBlockInfo, err := block.Get(nil, latestFinalizedBlock.HeaderHash)
 	if err != nil {
 		return Handshake{}, fmt.Errorf("failed to get latest finalized block info: %w", err)
 	}

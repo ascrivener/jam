@@ -183,20 +183,16 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 	}
 
 	// Begin a transaction
-	if err := repo.BeginTransaction(); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
+	globalBatch := staterepository.NewIndexedBatch()
 	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			repo.RollbackTransaction()
+			globalBatch.Close()
 		}
 	}()
-
-	if err := setState.StateWithRoot.State.OverwriteCurrentState(); err != nil {
+	if err := setState.StateWithRoot.State.OverwriteCurrentState(globalBatch); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
@@ -209,18 +205,18 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 		},
 	}
 
-	if err := blockWithInfo.Set(); err != nil {
+	if err := blockWithInfo.Set(globalBatch); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to store block: %w", err)
 	}
 
 	// Commit the transaction
-	if err := repo.CommitTransaction(); err != nil {
+	if err := globalBatch.Commit(nil); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	txSuccess = true
 
 	// Compute state root
-	stateRoot := merklizer.MerklizeState(merklizer.GetState())
+	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
@@ -228,9 +224,8 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 
 // handleImportBlock handles an ImportBlock request
 func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, error) {
-
 	err := statetransition.STF(block.Block(importBlock))
-	stateRoot := merklizer.MerklizeState(merklizer.GetState())
+	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 	if err != nil {
 		log.Printf("Failed to process block: %v", err)
 	} else {
@@ -241,7 +236,7 @@ func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, er
 
 // handleGetState handles a GetState request
 func (s *Server) handleGetState(getState GetState) (ResponseMessage, error) {
-	state := merklizer.GetState()
+	state := merklizer.GetState(nil)
 
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
 	return ResponseMessage{State: &state}, nil

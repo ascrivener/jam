@@ -36,7 +36,7 @@ func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (
 		// extrinsic data
 		workItemExtrinsicData := make([]types.Blob, len(workItem.BlobHashesAndLengthsIntroduced))
 		for blobHashAndLengthIntroducedIdx, blobHashAndLengthIntroduced := range workItem.BlobHashesAndLengthsIntroduced {
-			blob, err := preimages.GetPreimage(blobHashAndLengthIntroduced.BlobHash)
+			blob, err := preimages.GetPreimage(nil, blobHashAndLengthIntroduced.BlobHash)
 			if err != nil {
 				return workreport.WorkReport{}, err
 			}
@@ -53,14 +53,14 @@ func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (
 				segmentRoot = hash.Identifier
 			} else {
 				workPackageHash := hash.Identifier
-				segmentRoot, err := workreport.GetSegmentRootByWorkPackageHash(workPackageHash)
+				segmentRoot, err := workreport.GetSegmentRootByWorkPackageHash(nil, workPackageHash)
 				if err != nil {
 					return workreport.WorkReport{}, err
 				}
 				segmentRootLookup[workPackageHash] = segmentRoot
 			}
 			// check if segment root is known and not expired
-			exportingWorkReport, err := workreport.GetWorkReportBySegmentRoot(segmentRoot)
+			exportingWorkReport, err := workreport.GetWorkReportBySegmentRoot(nil, segmentRoot)
 			if err != nil {
 				return workreport.WorkReport{}, err
 			}

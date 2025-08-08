@@ -2,7 +2,6 @@ package block
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"jam/pkg/ticket"
 	"jam/pkg/types"
 
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/ed25519"
 )
@@ -28,9 +28,9 @@ type Block struct {
 	Extrinsics extrinsics.Extrinsics
 }
 
-func (b Block) Verify(priorState state.State) error {
+func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 
-	parentBlock, err := Get(b.Header.ParentHash)
+	parentBlock, err := Get(batch, b.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
 		return fmt.Errorf("failed to get parent block: %w", err)
@@ -51,7 +51,7 @@ func (b Block) Verify(priorState state.State) error {
 	}
 
 	// (5.8)
-	merklizedState := merklizer.MerklizeState(merklizer.GetState())
+	merklizedState := merklizer.MerklizeState(merklizer.GetState(batch))
 
 	if parentBlock.Info.PosteriorStateRoot != merklizedState {
 		return fmt.Errorf("parent block state root does not match merklized state")
@@ -268,7 +268,7 @@ func (b Block) Verify(priorState state.State) error {
 			return fmt.Errorf("refinement context timeslot is too old")
 		}
 
-		anchorBlock, err := GetAnchorBlock(b.Header, refinementContext.AnchorHeaderHash)
+		anchorBlock, err := GetAnchorBlock(batch, b.Header, refinementContext.AnchorHeaderHash)
 		if err != nil {
 			return fmt.Errorf("failed to get anchor block: %w", err)
 		}
@@ -386,7 +386,7 @@ func (b Block) Verify(priorState state.State) error {
 	// (12.38)
 	for _, preimage := range b.Extrinsics.Preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		exists, err := priorState.ServiceAccounts.IsNewPreimage(types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		exists, err := priorState.ServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return fmt.Errorf("failed to check if preimage %x exists: %w", hash, err)
 		}
@@ -604,16 +604,12 @@ type BlockInfo struct {
 	PosteriorStateRoot [32]byte
 }
 
-func Get(headerHash [32]byte) (*BlockWithInfo, error) {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return nil, errors.New("global repository not initialized")
-	}
+func Get(batch *pebble.Batch, headerHash [32]byte) (*BlockWithInfo, error) {
 	// Create a key with a prefix to separate block data from state data
 	key := makeBlockKey(headerHash)
 
 	// Retrieve the serialized block from the repository
-	data, closer, err := repo.Get(key)
+	data, closer, err := staterepository.Get(batch, key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get block %x: %w", headerHash, err)
 	}
@@ -631,11 +627,11 @@ func Get(headerHash [32]byte) (*BlockWithInfo, error) {
 	return &blockWithInfo, nil
 }
 
-func GetAnchorBlock(header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
+func GetAnchorBlock(batch *pebble.Batch, header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
 	currentHeaderHash := header.ParentHash
 	for {
 		// Get the current block
-		blockWithInfo, err := Get(currentHeaderHash)
+		blockWithInfo, err := Get(batch, currentHeaderHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get block in chain with hash %x: %w", currentHeaderHash, err)
 		}
@@ -653,15 +649,7 @@ func GetAnchorBlock(header header.Header, targetAnchorHeaderHash [32]byte) (*Blo
 	}
 }
 
-func (block BlockWithInfo) Set() error {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return errors.New("global repository not initialized")
-	}
-	batch := repo.GetCurrentBatch()
-	if batch == nil {
-		return fmt.Errorf("Not in batch")
-	}
+func (block BlockWithInfo) Set(batch *pebble.Batch) error {
 
 	// Calculate the header hash
 	headerBytes := serializer.Serialize(block.Block.Header)

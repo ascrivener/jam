@@ -5,10 +5,12 @@ package historicallookup
 import (
 	"jam/pkg/serviceaccount"
 	"jam/pkg/types"
+
+	"github.com/cockroachdb/pebble"
 )
 
-func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) ([]byte, error) {
-	p, ok, err := serviceAccount.GetPreimageForHash(hash)
+func HistoricalLookup(batch *pebble.Batch, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, hash [32]byte) ([]byte, error) {
+	p, ok, err := serviceAccount.GetPreimageForHash(batch, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -16,7 +18,7 @@ func HistoricalLookup(serviceAccount *serviceaccount.ServiceAccount, timeslot ty
 		return nil, nil
 	}
 
-	historicalStatus, ok, err := serviceAccount.GetPreimageLookupHistoricalStatus(uint32(types.BlobLength(len(p))), hash)
+	historicalStatus, ok, err := serviceAccount.GetPreimageLookupHistoricalStatus(batch, uint32(types.BlobLength(len(p))), hash)
 	if err != nil {
 		return nil, err
 	}

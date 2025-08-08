@@ -13,6 +13,7 @@ import (
 	"jam/pkg/util"
 	wp "jam/pkg/workpackage"
 
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -108,7 +109,7 @@ func Log(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 // VerifyAndReturnStateForAccessor implements the state lookup host function
 // as specified in the graypaper. It verifies access, computes a key hash,
 // and returns data from state if available.
-func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) (ExitReason, error) {
+func Read(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 
 		// Determine s* based on ω7
@@ -148,7 +149,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
 
 			// Look up in state if available
-			val, ok, err := a.GetServiceStorageItem(keyBytes)
+			val, ok, err := a.GetServiceStorageItem(batch, keyBytes)
 			if err != nil {
 				return ExitReason{}, err
 			}
@@ -177,7 +178,7 @@ func Read(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Ser
 	})
 }
 
-func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex) (ExitReason, error) {
+func Write(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		// Extract [ko, kz, vo, vz] from registers ω7⋅⋅⋅+4
 		ko := ctx.State.Registers[7]  // Key offset
@@ -194,7 +195,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
-		val, ok, err := serviceAccount.GetServiceStorageItem(keyBytes)
+		val, ok, err := serviceAccount.GetServiceStorageItem(batch, keyBytes)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -204,7 +205,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 			l = types.Register(HostCallNone)
 		}
 
-		oldValue, ok, err := serviceAccount.GetServiceStorageItem(keyBytes)
+		oldValue, ok, err := serviceAccount.GetServiceStorageItem(batch, keyBytes)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -212,7 +213,7 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		// Handle according to vz (value length)
 		if vz == 0 {
 			// If vz = 0, remove entry
-			if err := serviceAccount.DeleteServiceStorageItem(keyBytes); err != nil {
+			if err := serviceAccount.DeleteServiceStorageItem(batch, keyBytes); err != nil {
 				return ExitReason{}, err
 			}
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
@@ -220,18 +221,18 @@ func Write(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.Se
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			if err := serviceAccount.SetServiceStorageItem(keyBytes, valueBytes); err != nil {
+			if err := serviceAccount.SetServiceStorageItem(batch, keyBytes, valueBytes); err != nil {
 				return ExitReason{}, err
 			}
 		}
 
 		if serviceAccount.ThresholdBalanceNeeded() > serviceAccount.Balance {
 			if !ok {
-				if err := serviceAccount.DeleteServiceStorageItem(keyBytes); err != nil {
+				if err := serviceAccount.DeleteServiceStorageItem(batch, keyBytes); err != nil {
 					return ExitReason{}, err
 				}
 			} else {
-				if err := serviceAccount.SetServiceStorageItem(keyBytes, oldValue); err != nil {
+				if err := serviceAccount.SetServiceStorageItem(batch, keyBytes, oldValue); err != nil {
 					return ExitReason{}, err
 				}
 			}
@@ -484,10 +485,20 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 }
 
 func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-	panic("NOT IMPLEMENTED")
+	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
+		// Close the previous exceptional context batch if it exists
+		if ctx.Argument.ExceptionalAccumulationResultContext.Batch != nil {
+			ctx.Argument.ExceptionalAccumulationResultContext.Batch.Close()
+		}
+
+		ctx.Argument.ExceptionalAccumulationResultContext = *ctx.Argument.AccumulationResultContext.DeepCopy()
+
+		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
+		return NewSimpleExitReason(ExitGo), nil
+	})
 }
 
-func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) (ExitReason, error) {
+func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Get parameters from registers [o, l, g, m] = ω7⋅⋅⋅+4
 		offset := ctx.State.Registers[7]               // o - memory offset for code hash
@@ -540,7 +551,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.T
 
 		// Get current service accounts and update them
 		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[currentDerivedServiceIndex] = newAccount
-		if err := newAccount.SetPreimageLookupHistoricalStatus(uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
+		if err := newAccount.SetPreimageLookupHistoricalStatus(batch, uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
 			return ExitReason{}, err
 		}
 
@@ -659,7 +670,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 	})
 }
 
-func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) (ExitReason, error) {
+func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract parameters from registers [d, o] = ω7,8
 		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
@@ -708,7 +719,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 
 		length := max(81, destinationAccount.TotalOctetsUsedInStorage) - 81
 
-		historicalStatus, exists, err := destinationAccount.GetPreimageLookupHistoricalStatus(uint32(length), hash)
+		historicalStatus, exists, err := destinationAccount.GetPreimageLookupHistoricalStatus(batch, uint32(length), hash)
 		if err != nil {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return ExitReason{}, err
@@ -736,8 +747,8 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
 				// IMPORTANT: actually delete the service account and preimage lookup historical status from state as well
-				serviceaccount.DeleteServiceAccountByServiceIndex(destServiceIndex)
-				destinationAccount.DeletePreimageLookupHistoricalStatus(uint32(length), hash)
+				serviceaccount.DeleteServiceAccountByServiceIndex(batch, destServiceIndex)
+				destinationAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(length), hash)
 
 				// Remove the entry from destination account
 				// ((xu)d ∖ {d} ∪ {xs ↦ s′})
@@ -754,7 +765,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types
 	})
 }
 
-func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
+func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -770,7 +781,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		historicalStatus, ok, err := ctx.Argument.AccumulatingServiceAccount().GetPreimageLookupHistoricalStatus(uint32(z), keyHash)
+		historicalStatus, ok, err := ctx.Argument.AccumulatingServiceAccount().GetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -806,7 +817,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 	})
 }
 
-func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) (ExitReason, error) {
+func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -826,18 +837,18 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		serviceAccount := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		originalStatus, originalExists, err := serviceAccount.GetPreimageLookupHistoricalStatus(uint32(z), keyHash)
+		originalStatus, originalExists, err := serviceAccount.GetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash)
 		if err != nil {
 			return ExitReason{}, err
 		}
 
 		// Make the changes directly to the service account
 		if !originalExists || z > types.Register(^uint32(0)) {
-			if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(z), keyHash, []types.Timeslot{}); err != nil {
+			if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash, []types.Timeslot{}); err != nil {
 				return ExitReason{}, err
 			}
 		} else if len(originalStatus) == 2 {
-			if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(z), keyHash, append(originalStatus, timeslot)); err != nil {
+			if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash, append(originalStatus, timeslot)); err != nil {
 				return ExitReason{}, err
 			}
 		} else {
@@ -850,11 +861,11 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 		if serviceAccount.Balance < serviceAccount.ThresholdBalanceNeeded() {
 			// Revert the changes
 			if !originalExists {
-				if err := serviceAccount.DeletePreimageLookupHistoricalStatus(uint32(z), keyHash); err != nil {
+				if err := serviceAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(z), keyHash); err != nil {
 					return ExitReason{}, err
 				}
 			} else {
-				if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(z), keyHash, originalStatus); err != nil {
+				if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash, originalStatus); err != nil {
 					return ExitReason{}, err
 				}
 			}
@@ -867,7 +878,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot typ
 	})
 }
 
-func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot types.Timeslot) (ExitReason, error) {
+func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract [o, z] from registers ω7,8
 		o := ctx.State.Registers[7] // Offset
@@ -887,7 +898,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		xs := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
-		historicalStatus, exists, err := xs.GetPreimageLookupHistoricalStatus(uint32(z), keyHash)
+		historicalStatus, exists, err := xs.GetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash)
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -910,22 +921,22 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 		// Handle different cases based on historical status length and values
 		if len(historicalStatus) == 0 || (len(historicalStatus) == 2 && historicalStatus[1] < cutoffTime) {
 			// Remove the key if status is [] or [x, y] with y < t - D
-			if err := xs.DeletePreimageLookupHistoricalStatus(uint32(z), keyHash); err != nil {
+			if err := xs.DeletePreimageLookupHistoricalStatus(batch, uint32(z), keyHash); err != nil {
 				return ExitReason{}, err
 			}
 
 			// Also remove the key from PreimageLookup if it exists
-			if err := xs.DeletePreimageForHash(keyHash); err != nil {
+			if err := xs.DeletePreimageForHash(batch, keyHash); err != nil {
 				return ExitReason{}, err
 			}
 		} else if len(historicalStatus) == 1 {
 			// Replace [x] with [x, t] if status is [x]
-			if err := xs.SetPreimageLookupHistoricalStatus(uint32(z), keyHash, []types.Timeslot{historicalStatus[0], timeslot}); err != nil {
+			if err := xs.SetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash, []types.Timeslot{historicalStatus[0], timeslot}); err != nil {
 				return ExitReason{}, err
 			}
 		} else if len(historicalStatus) == 3 && historicalStatus[1] < cutoffTime {
 			// Replace [x, y, w] with [w, t] if status is [x, y, w] and y < t - D
-			if err := xs.SetPreimageLookupHistoricalStatus(uint32(z), keyHash, []types.Timeslot{historicalStatus[2], timeslot}); err != nil {
+			if err := xs.SetPreimageLookupHistoricalStatus(batch, uint32(z), keyHash, []types.Timeslot{historicalStatus[2], timeslot}); err != nil {
 				return ExitReason{}, err
 			}
 		} else {
@@ -939,7 +950,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], timeslot type
 	})
 }
 
-func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
+func Yield(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract offset o from register ω7
 		o := ctx.State.Registers[7] // Offset
@@ -965,7 +976,7 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 	})
 }
 
-func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex types.ServiceIndex) (ExitReason, error) {
+func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, serviceIndex types.ServiceIndex) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract offset o from register ω8
 		o := ctx.State.Registers[8] // Offset
@@ -991,7 +1002,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], serviceIndex
 			return NewSimpleExitReason(ExitGo), nil
 		}
 
-		historicalStatus, _, err := serviceAccount.GetPreimageLookupHistoricalStatus(uint32(z), blake2b.Sum256(i))
+		historicalStatus, _, err := serviceAccount.GetPreimageLookupHistoricalStatus(batch, uint32(z), blake2b.Sum256(i))
 		if err != nil {
 			return ExitReason{}, err
 		}
@@ -1480,7 +1491,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 	})
 }
 
-func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) (ExitReason, error) {
+func Lookup(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccount *serviceaccount.ServiceAccount, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1503,7 +1514,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 		if a != nil {
 			var keyArray [32]byte
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
-			v, ok, err := a.GetPreimageForHash(keyArray)
+			v, ok, err := a.GetPreimageForHash(batch, keyArray)
 			if err != nil {
 				return NewSimpleExitReason(ExitPanic), err
 			}
@@ -1545,7 +1556,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], serviceAccount *serviceaccount.S
 }
 
 // HistoricalLookup retrieves a historical value for a key from a service account
-func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) (ExitReason, error) {
+func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], batch *pebble.Batch, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason, error) {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1571,7 +1582,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 
 			var err error
-			preImage, err = historicallookup.HistoricalLookup(a, timeslot, keyArray)
+			preImage, err = historicallookup.HistoricalLookup(batch, a, timeslot, keyArray)
 			if err != nil {
 				return ExitReason{}, err
 			}

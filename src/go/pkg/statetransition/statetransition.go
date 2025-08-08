@@ -3,7 +3,6 @@ package statetransition
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -26,6 +25,7 @@ import (
 	"jam/pkg/validatorstatistics"
 	"jam/pkg/workreport"
 
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -62,31 +62,25 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 }
 
 func STF(curBlock block.Block) error {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return errors.New("global repository not initialized")
-	}
-	// Begin a transaction for all repository operations
-	if err := repo.BeginTransaction(); err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Use a success flag to track transaction state
+	// Begin a transaction
+	globalBatch := staterepository.NewIndexedBatch()
+	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
-			repo.RollbackTransaction()
+			// Rollback if not marked successful
+			globalBatch.Close()
 		}
 	}()
 
 	// Run state transition function
-	if err := stfHelper(curBlock); err != nil {
+	if err := stfHelper(globalBatch, curBlock); err != nil {
 		return err
 	}
 
 	// Commit the transaction
-	if err := repo.CommitTransaction(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+	if err := globalBatch.Commit(nil); err != nil {
+		return err
 	}
 	txSuccess = true
 
@@ -96,7 +90,7 @@ func STF(curBlock block.Block) error {
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func stfHelper(curBlock block.Block) error {
+func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	// Load state
 	priorState, err := state.GetState()
@@ -105,7 +99,7 @@ func stfHelper(curBlock block.Block) error {
 	}
 
 	// Verify block
-	if err := curBlock.Verify(priorState); err != nil {
+	if err := curBlock.Verify(batch, priorState); err != nil {
 		return fmt.Errorf("failed to verify block: %w", err)
 	}
 
@@ -159,6 +153,7 @@ func stfHelper(curBlock block.Block) error {
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
+		batch,
 		&priorState,
 		posteriorMostRecentBlockTimeslot,
 		accumulatableWorkReports,
@@ -193,7 +188,7 @@ func stfHelper(curBlock block.Block) error {
 	posteriorRecentActivity := computeRecentActivity(curBlock.Header, curBlock.Extrinsics.Guarantees, intermediateRecentBlocks, priorState.RecentActivity.AccumulationOutputLog, accumulationOutputSequence)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	if err := computeServiceAccounts(curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
+	if err := computeServiceAccounts(batch, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
 		return fmt.Errorf("failed to compute service accounts: %w", err)
 	}
 
@@ -227,18 +222,18 @@ func stfHelper(curBlock block.Block) error {
 	}
 
 	// Save state
-	if err := postState.Set(); err != nil {
+	if err := postState.Set(batch); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState()),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(batch)),
 		},
 	}
 
-	if err := blockWithInfo.Set(); err != nil {
+	if err := blockWithInfo.Set(batch); err != nil {
 		return fmt.Errorf("failed to save block with info: %w", err)
 	}
 
@@ -443,10 +438,10 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
-func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
+func computeServiceAccounts(batch *pebble.Batch, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return err
 		}
@@ -454,10 +449,10 @@ func computeServiceAccounts(preimages extrinsics.Preimages, posteriorMostRecentB
 			continue
 		}
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
-		if err := serviceAccount.SetPreimageForHash(hash, preimage.Data); err != nil {
+		if err := serviceAccount.SetPreimageForHash(batch, hash, preimage.Data); err != nil {
 			return err
 		}
-		if err := serviceAccount.SetPreimageLookupHistoricalStatus(uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
+		if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
 			return err
 		}
 	}
@@ -603,6 +598,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 }
 
 func accumulateAndIntegrate(
+	batch *pebble.Batch,
 	priorState *state.State,
 	posteriorMostRecentBlockTimeslot types.Timeslot,
 	accumulatableWorkReports []workreport.WorkReport,
@@ -610,7 +606,7 @@ func accumulateAndIntegrate(
 	posteriorEntropyAccumulator [4][32]byte,
 ) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(batch, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
@@ -651,7 +647,7 @@ func accumulateAndIntegrate(
 
 	for serviceIndex := range o.ServiceAccounts {
 		selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, serviceIndex)
-		serviceAccount, gasUsed, err := pvm.OnTransfer(o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
+		serviceAccount, gasUsed, err := pvm.OnTransfer(batch, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
 		if err != nil {
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
 		}

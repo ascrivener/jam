@@ -1,9 +1,6 @@
 package staterepository
 
 import (
-	"fmt"
-	"io"
-
 	"jam/pkg/serializer"
 	"jam/pkg/types"
 
@@ -13,8 +10,7 @@ import (
 
 // PebbleStateRepository implements StateRepository using PebbleDB
 type PebbleStateRepository struct {
-	db         *pebble.DB
-	batchStack []*pebble.Batch // Stack of batches for nested transactions
+	db *pebble.DB
 }
 
 // newPebbleStateRepository creates a new PebbleDB-backed repository
@@ -103,92 +99,10 @@ func MakeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32,
 	return StateKeyConstructorFromData(serviceIndex, append(le, hashedPreimage[:]...))
 }
 
-// BeginTransaction starts a new transaction (pushes a new batch onto the stack)
-func (r *PebbleStateRepository) BeginTransaction() error {
-	batch := r.db.NewIndexedBatch()
-
-	// If there's already a batch on the stack, copy its contents to the new batch
-	// This ensures the new batch sees all prior changes
-	if len(r.batchStack) > 0 {
-		currentBatch := r.batchStack[len(r.batchStack)-1]
-		if err := batch.Apply(currentBatch, nil); err != nil {
-			batch.Close()
-			return fmt.Errorf("failed to apply parent batch to nested transaction: %w", err)
-		}
-	}
-
-	r.batchStack = append(r.batchStack, batch)
-	return nil
-}
-
-// CommitTransaction commits the current transaction (merges top batch into parent or database)
-func (r *PebbleStateRepository) CommitTransaction() error {
-	if len(r.batchStack) == 0 {
-		return fmt.Errorf("no transaction in progress")
-	}
-
-	topBatch := r.batchStack[len(r.batchStack)-1]
-	r.batchStack = r.batchStack[:len(r.batchStack)-1]
-
-	if len(r.batchStack) > 0 {
-		// Merge into parent batch
-		parentBatch := r.batchStack[len(r.batchStack)-1]
-		err := parentBatch.Apply(topBatch, nil)
-		topBatch.Close()
-		return err
-	} else {
-		// Commit to database (this is the root transaction)
-		err := topBatch.Commit(pebble.Sync)
-		return err
-	}
-}
-
-// RollbackTransaction aborts the current transaction (discards top batch)
-func (r *PebbleStateRepository) RollbackTransaction() error {
-	if len(r.batchStack) == 0 {
-		return fmt.Errorf("no transaction in progress")
-	}
-
-	topBatch := r.batchStack[len(r.batchStack)-1]
-	r.batchStack = r.batchStack[:len(r.batchStack)-1]
-	topBatch.Close()
-	return nil
-}
-
-// getCurrentBatch returns the current active batch (top of stack)
-func (r *PebbleStateRepository) GetCurrentBatch() *pebble.Batch {
-	if len(r.batchStack) == 0 {
-		return nil
-	}
-	return r.batchStack[len(r.batchStack)-1]
-}
-
-// Get retrieves a value from the database
-func (r *PebbleStateRepository) Get(key []byte) ([]byte, io.Closer, error) {
-	// If there's an active batch, use it exclusively
-	if batch := r.GetCurrentBatch(); batch != nil {
-		// Use the indexed batch for ALL reads when it's active
-		// This will show deletions correctly as NotFound
-		return batch.Get(key)
-	}
-	return r.db.Get(key)
-}
-
-// NewIter creates a new iterator with the given options
-func (r *PebbleStateRepository) NewIter(opts *pebble.IterOptions) (*pebble.Iterator, error) {
-	if batch := r.GetCurrentBatch(); batch != nil {
-		// When a transaction is in progress, create an iterator that merges pending changes with DB state
-		return batch.NewIter(opts)
-	}
-	return r.db.NewIter(opts)
-}
-
 // Close closes the database
 func (r *PebbleStateRepository) Close() error {
-	if len(r.batchStack) > 0 {
-		for _, batch := range r.batchStack {
-			batch.Close()
-		}
+	if r.db != nil {
+		return r.db.Close()
 	}
-	return r.db.Close()
+	return nil
 }

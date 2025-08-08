@@ -2,7 +2,6 @@ package merklizer
 
 import (
 	"bytes"
-	"errors"
 
 	"golang.org/x/crypto/blake2b"
 
@@ -81,11 +80,7 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 	return blake2b.Sum256(bs.Bytes())
 }
 
-func GetState() State {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		panic("global repository not initialized")
-	}
+func GetState(batch *pebble.Batch) State {
 	// Create iterator bounds for keys with "state:" prefix
 	// The upper bound uses semicolon (the next ASCII character after colon)
 	// to ensure we only get keys starting with "state:"
@@ -93,7 +88,7 @@ func GetState() State {
 	upperBound := []byte("state;") // semicolon is the next ASCII character after colon
 
 	// Create a new iterator
-	iter, err := repo.NewIter(&pebble.IterOptions{
+	iter, err := staterepository.NewIter(batch, &pebble.IterOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
@@ -140,19 +135,10 @@ func GetState() State {
 	return state
 }
 
-func (s State) OverwriteCurrentState() error {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return errors.New("global repository not initialized")
-	}
-
-	batch := repo.GetCurrentBatch()
-	if batch == nil {
-		return fmt.Errorf("Not in batch")
-	}
+func (s State) OverwriteCurrentState(batch *pebble.Batch) error {
 	// Delete all existing state entries by iterating through all keys with "state:" prefix
 	prefix := []byte("state:")
-	iter, err := repo.NewIter(&pebble.IterOptions{
+	iter, err := staterepository.NewIter(batch, &pebble.IterOptions{
 		LowerBound: prefix,
 		UpperBound: []byte("state;"), // semicolon is the next character after colon in ASCII
 	})
@@ -164,7 +150,7 @@ func (s State) OverwriteCurrentState() error {
 	// Delete all existing state entries
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := append([]byte{}, iter.Key()...) // Make a copy of the key
-		if err := batch.Delete(key, nil); err != nil {
+		if err := staterepository.Delete(batch, key); err != nil {
 			return fmt.Errorf("failed to delete existing state key: %w", err)
 		}
 	}
@@ -177,7 +163,7 @@ func (s State) OverwriteCurrentState() error {
 	// Insert all state KVs from this state
 	for _, kv := range s {
 		key := append([]byte("state:"), kv.OriginalKey[:]...)
-		if err := batch.Set(key, kv.Value, nil); err != nil {
+		if err := staterepository.Set(batch, key, kv.Value); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
 		}
 	}

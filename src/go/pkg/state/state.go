@@ -2,7 +2,6 @@ package state
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 
 	"jam/pkg/constants"
@@ -71,13 +70,8 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 }
 
 func GetState() (State, error) {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return State{}, errors.New("global repository not initialized")
-	}
-
 	// Create a data source that reads from repository
-	dataSource := &repositoryDataSource{repo: repo}
+	dataSource := &repositoryDataSource{}
 	return getStateFromDataSource(dataSource)
 }
 
@@ -113,12 +107,11 @@ type serviceAccountIterator interface {
 
 // repositoryDataSource reads from the repository
 type repositoryDataSource struct {
-	repo *staterepository.PebbleStateRepository
 }
 
 func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
 	prefixedKey := append([]byte("state:"), key[:]...)
-	value, closer, err := ds.repo.Get(prefixedKey)
+	value, closer, err := staterepository.Get(nil, prefixedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get component: %w", err)
 	}
@@ -133,7 +126,7 @@ func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
 
 func (ds *repositoryDataSource) iterateServiceAccounts() (serviceAccountIterator, error) {
 	serviceAccountPrefix := append([]byte("state:"), 255)
-	iter, err := ds.repo.NewIter(&pebble.IterOptions{
+	iter, err := staterepository.NewIter(nil, &pebble.IterOptions{
 		LowerBound: serviceAccountPrefix,
 		UpperBound: append(append([]byte{}, serviceAccountPrefix...), 0xFF),
 	})
@@ -400,16 +393,7 @@ func (state *State) processServiceAccount(serviceIndex uint64, value []byte) err
 	return nil
 }
 
-func (state *State) Set() error {
-	repo := staterepository.GetGlobalRepository()
-	if repo == nil {
-		return errors.New("global repository not initialized")
-	}
-	batch := repo.GetCurrentBatch()
-	if batch == nil {
-		return fmt.Errorf("Not in batch")
-	}
-
+func (state *State) Set(batch *pebble.Batch) error {
 	// Store static state components
 	components := []struct {
 		key    [31]byte

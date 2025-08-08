@@ -101,7 +101,7 @@ func main() {
 		})
 	}
 
-	err = merklizerState.OverwriteCurrentState()
+	err = merklizerState.OverwriteCurrentState(nil)
 	if err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
@@ -125,7 +125,7 @@ func main() {
 		},
 	}
 
-	if err := blockWithInfo.Set(); err != nil {
+	if err := blockWithInfo.Set(nil); err != nil {
 		log.Fatalf("Failed to store genesis block: %v", err)
 	}
 
