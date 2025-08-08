@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"fmt"
 	"jam/pkg/bitsequence"
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
@@ -193,26 +194,18 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
 	for {
 		exitReason := pvm.Ψ()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
-			pvm.State.RAM.ClearRollbackLog()
 			return exitReason, nil
 		}
 
 		hostCall := exitReason.ComplexExitReason.Parameter
-		stateBeforeHostCall := *pvm.State
 		postHostCallExitReason, err := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
 		if err != nil {
 			return ExitReason{}, err
 		}
 
 		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-			pvm.State.RAM.Rollback() // rollback changes
-			// Reset pvm.State to the snapshot from before the host call.
-			// Taking the address of stateBeforeHostCall will cause it to escape to the heap.
-			pvm.State = &stateBeforeHostCall
-			return postHostCallExitReason, nil
+			return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
 		}
-
-		pvm.State.RAM.ClearRollbackLog()
 
 		if *postHostCallExitReason.SimpleExitReason == ExitGo {
 			continue

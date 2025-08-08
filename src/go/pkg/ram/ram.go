@@ -213,9 +213,9 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAcc
 	}
 
 	// Store the original value only once (for rollback)
-	if _, exists := r.rollbackLog[ramIndex]; !exists {
-		r.rollbackLog[ramIndex] = r.getByte(ramIndex)
-	}
+	// if _, exists := r.rollbackLog[ramIndex]; !exists {
+	// 	r.rollbackLog[ramIndex] = r.getByte(ramIndex)
+	// }
 
 	// Set the new value
 	r.setByte(ramIndex, newByte)

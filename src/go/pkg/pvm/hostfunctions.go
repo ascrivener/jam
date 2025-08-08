@@ -1233,7 +1233,7 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 			return NewSimpleExitReason(ExitGo), nil
 		}
-		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.Wrap, false), int(constants.SegmentSize))
+		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.NoWrap, false), int(constants.SegmentSize))
 		ctx.State.Registers[7] = types.Register(exportSegmentOffset + len(ctx.Argument.ExportSequence))
 		ctx.Argument.ExportSequence = append(ctx.Argument.ExportSequence, x)
 		return NewSimpleExitReason(ExitGo), nil
@@ -1297,7 +1297,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		}
 
 		// Copy the memory
-		ctx.State.RAM.MutateRange(uint64(o), sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.Wrap, false)
+		ctx.State.RAM.MutateRange(uint64(o), sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.NoWrap, false)
 
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
@@ -1386,7 +1386,7 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 			return NewSimpleExitReason(ExitGo), nil
 		}
 
-		targetPVM.RAM.MutateRange(uint64(o), ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.Wrap, false), ram.NoWrap, false)
+		targetPVM.RAM.MutateRange(uint64(o), ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.NoWrap, false)
 
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
