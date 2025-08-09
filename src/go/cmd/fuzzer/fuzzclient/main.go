@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"jam/pkg/block"
+	"jam/pkg/block/header"
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
@@ -38,6 +39,11 @@ type FuzzerClient struct {
 type StateWithRoot struct {
 	StateRoot [32]byte
 	State     merklizer.State
+}
+
+type GenesisVector struct {
+	Header        header.Header
+	StateWithRoot StateWithRoot
 }
 
 // TestVector represents a complete state transition test vector
@@ -66,7 +72,7 @@ func (fc *FuzzerClient) Connect() error {
 	if fc.inProcess {
 		log.Println("Running in in-process mode - no socket connection needed")
 		// Initialize state repository for in-process mode
-		return staterepository.InitializeGlobalRepository("./data/state")
+		return staterepository.InitializeGlobalRepository("")
 	}
 
 	conn, err := net.Dial("unix", fc.socketPath)
@@ -274,14 +280,14 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 		return
 	}
 
-	setState := fuzzinterface.SetState{}
-	if err := serializer.Deserialize(genesisVectorData, &setState); err != nil {
+	genesisVector := GenesisVector{}
+	if err := serializer.Deserialize(genesisVectorData, &genesisVector); err != nil {
 		log.Printf("Failed to deserialize genesis vector: %v", err)
 		return
 	}
 
 	log.Printf("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &setState})
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &fuzzinterface.SetState{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
 	if err != nil {
 		log.Printf("Failed to send SetState message: %v", err)
 		return
@@ -292,7 +298,7 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 		return
 	}
 
-	if *resp.StateRoot != setState.StateWithRoot.StateRoot {
+	if *resp.StateRoot != genesisVector.StateWithRoot.StateRoot {
 		log.Printf("SetState failed: state root mismatch")
 		return
 	}

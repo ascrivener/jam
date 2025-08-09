@@ -27,11 +27,8 @@ type PeerInfo struct {
 type ImportBlock block.Block
 
 type SetState struct {
-	Header        header.Header
-	StateWithRoot struct {
-		StateRoot [32]byte
-		State     merklizer.State
-	}
+	Header header.Header
+	State  merklizer.State
 }
 
 type GetState [32]byte // HeaderHash

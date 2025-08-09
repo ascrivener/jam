@@ -34,7 +34,7 @@ func NewServer() *Server {
 			JamVersion: Version{
 				Major: 0,
 				Minor: 6,
-				Patch: 6,
+				Patch: 7,
 			},
 		},
 	}
@@ -192,7 +192,7 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 			globalBatch.Close()
 		}
 	}()
-	if err := setState.StateWithRoot.State.OverwriteCurrentState(globalBatch); err != nil {
+	if err := setState.State.OverwriteCurrentState(globalBatch); err != nil {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
@@ -201,7 +201,7 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 			Header: setState.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: setState.StateWithRoot.StateRoot,
+			PosteriorStateRoot: merklizer.MerklizeState(setState.State),
 		},
 	}
 

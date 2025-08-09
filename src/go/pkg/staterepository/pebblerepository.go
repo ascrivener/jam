@@ -5,6 +5,7 @@ import (
 	"jam/pkg/types"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -15,7 +16,19 @@ type PebbleStateRepository struct {
 
 // newPebbleStateRepository creates a new PebbleDB-backed repository
 func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
-	db, err := pebble.Open(dbPath, &pebble.Options{})
+	var opts *pebble.Options
+
+	if dbPath == "" {
+		// Use in-memory filesystem for empty path
+		opts = &pebble.Options{
+			FS: vfs.NewMem(),
+		}
+		dbPath = "/tmp" // Use any path with memory FS
+	} else {
+		opts = &pebble.Options{}
+	}
+
+	db, err := pebble.Open(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}

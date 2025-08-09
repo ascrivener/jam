@@ -208,7 +208,7 @@ main() {
     echo -e "${BLUE}Starting builds for all platforms...${NC}"
     
     # Build for current platform (ARM64 macOS)
-    # build_platform "darwin" "arm64" "aarch64-apple-darwin" || exit 1
+    build_platform "darwin" "arm64" "aarch64-apple-darwin" || exit 1
     
     # Build for AMD64 Linux
     build_platform "linux" "amd64" "x86_64-unknown-linux-gnu" || exit 1

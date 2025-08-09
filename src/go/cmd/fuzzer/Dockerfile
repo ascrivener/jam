@@ -9,9 +9,6 @@ COPY src/go/cmd/fuzzer/fuzzclient/fuzzclient-tiny-amd64-linux /app/fuzzclient
 # Make sure executables are runnable
 RUN chmod +x /app/fuzzserver /app/fuzzclient
 
-# Create data directory
-RUN mkdir -p /app/data
-
 # Create test vectors directories
 RUN mkdir -p /app/jam-test-vectors/traces
 

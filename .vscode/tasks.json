@@ -180,7 +180,7 @@
                 "1. Build Binaries",
                 "2. Build Docker Image",
                 "4. Run All Test Vectors",
-                "5. Clean Docker Binaries"
+                // "5. Clean Docker Binaries"
             ],
             "group": {
                 "kind": "test",

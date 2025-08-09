@@ -14,19 +14,13 @@ import (
 func main() {
 	// Parse command line arguments
 	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
-	dataDir := flag.String("datadir", "./data", "Path to the data directory")
 	flag.Parse()
 
 	log.Printf("JAM Fuzzer Interface Server")
 	log.Printf("Socket path: %s", *socketPath)
-	log.Printf("Data directory: %s", *dataDir)
 
-	// Ensure the data directory exists
-	if err := os.MkdirAll(*dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
-	}
-
-	err := staterepository.InitializeGlobalRepository(*dataDir + "/state")
+	// Use in-memory database instead of filesystem
+	err := staterepository.InitializeGlobalRepository("")
 	if err != nil {
 		log.Fatalf("Failed to initialize global state repository: %v", err)
 	}
