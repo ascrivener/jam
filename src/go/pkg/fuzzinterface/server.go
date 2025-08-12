@@ -204,6 +204,7 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 	if err != nil {
 		log.Fatalf("Failed to generate reverse diff: %v", err)
 	}
+	defer reverseDiff.Close()
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{

@@ -150,12 +150,14 @@ func STF(curBlock block.Block) error {
 	if err != nil {
 		return fmt.Errorf("failed to generate forward diff: %w", err)
 	}
+	defer forwardDiff.Close()
 
 	// Generate reverse diff: operations to go from current block state back to parentBlock state
 	reverseDiff, err := block.GenerateDiff(globalBatch, parentBlockBatch)
 	if err != nil {
 		return fmt.Errorf("failed to generate reverse diff: %w", err)
 	}
+	defer reverseDiff.Close()
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,

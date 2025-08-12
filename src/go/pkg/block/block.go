@@ -828,7 +828,7 @@ func GenerateDiff(fromBatch *pebble.Batch, toBatch *pebble.Batch) (*pebble.Batch
 	if diffBatch == nil {
 		return nil, fmt.Errorf("failed to create diff batch")
 	}
-	defer diffBatch.Close()
+	// Note: Caller is responsible for closing the returned batch
 
 	// Track all keys that we need to process
 	allKeys := make(map[string]bool)
