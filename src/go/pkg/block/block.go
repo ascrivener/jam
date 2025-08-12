@@ -815,110 +815,104 @@ func makeBlockKey(headerHash [32]byte) []byte {
 	return append([]byte("block:"), headerHash[:]...)
 }
 
-func GenerateReverseDiff(currentBatch *pebble.Batch) ([]byte, error) {
-	if currentBatch == nil {
-		return nil, fmt.Errorf("batch cannot be nil")
+func GenerateDiff(fromBatch *pebble.Batch, toBatch *pebble.Batch) (*pebble.Batch, error) {
+	if fromBatch == nil {
+		return nil, fmt.Errorf("from batch cannot be nil")
+	}
+	if toBatch == nil {
+		return nil, fmt.Errorf("to batch cannot be nil")
 	}
 
-	// Create a reverse batch to store the inverse operations
-	reverseBatch := staterepository.NewBatch()
-	if reverseBatch == nil {
-		return nil, fmt.Errorf("failed to create reverse batch")
+	// Create a diff batch to store the operations to transform fromBatch to toBatch
+	diffBatch := staterepository.NewBatch()
+	if diffBatch == nil {
+		return nil, fmt.Errorf("failed to create diff batch")
 	}
-	defer reverseBatch.Close()
+	defer diffBatch.Close()
 
-	// Read through all operations in the forward batch
-	reader := currentBatch.Reader()
+	// Track all keys that we need to process
+	allKeys := make(map[string]bool)
+
+	// First pass: collect all keys from fromBatch operations
+	reader := fromBatch.Reader()
 	for {
-		kind, key, _, ok, err := reader.Next()
+		_, key, _, ok, err := reader.Next()
 		if err != nil {
-			return nil, fmt.Errorf("failed to read batch operation: %w", err)
+			return nil, fmt.Errorf("failed to read fromBatch operation: %w", err)
 		}
 		if !ok {
 			break
 		}
+		allKeys[string(key)] = true
+	}
 
-		// Make a copy of the key since it's only valid during iteration
-		keyCopy := make([]byte, len(key))
-		copy(keyCopy, key)
+	// Second pass: collect all keys from toBatch operations
+	reader = toBatch.Reader()
+	for {
+		_, key, _, ok, err := reader.Next()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read toBatch operation: %w", err)
+		}
+		if !ok {
+			break
+		}
+		allKeys[string(key)] = true
+	}
 
-		switch kind {
-		case pebble.InternalKeyKindSet:
-			// For Set operations, we need to check if the key existed before in the DB
-			// Use nil batch to get the original value from the database
-			originalValue, closer, err := staterepository.Get(nil, keyCopy)
-			if err == pebble.ErrNotFound {
-				// Key didn't exist before, so reverse operation is Delete
-				if err := reverseBatch.Delete(keyCopy, nil); err != nil {
-					return nil, fmt.Errorf("failed to add reverse delete for key %x: %w", keyCopy, err)
-				}
-			} else if err != nil {
-				return nil, fmt.Errorf("failed to check existing value for key %x: %w", keyCopy, err)
-			} else {
-				// Key existed before, so reverse operation is Set with original value
-				originalValueCopy := make([]byte, len(originalValue))
-				copy(originalValueCopy, originalValue)
-				closer.Close()
+	// Process each key by comparing final states
+	for keyStr := range allKeys {
+		key := []byte(keyStr)
 
-				if err := reverseBatch.Set(keyCopy, originalValueCopy, nil); err != nil {
-					return nil, fmt.Errorf("failed to add reverse set for key %x: %w", keyCopy, err)
-				}
-			}
+		// Get final value in fromBatch
+		fromValue, fromCloser, fromErr := fromBatch.Get(key)
+		fromExists := fromErr != pebble.ErrNotFound
 
-		case pebble.InternalKeyKindDelete:
-			// For Delete operations, we need to restore the original value from the DB
-			originalValue, closer, err := staterepository.Get(nil, keyCopy)
-			if err == pebble.ErrNotFound {
-				// Key doesn't exist in DB, which is strange for a delete operation
-				// This might happen if the key was set and then deleted in the same batch
-				// In this case, the reverse is still a no-op (key should not exist)
-				continue
-			} else if err != nil {
-				return nil, fmt.Errorf("failed to get original value for deleted key %x: %w", keyCopy, err)
-			} else {
-				// Restore the original value
-				originalValueCopy := make([]byte, len(originalValue))
-				copy(originalValueCopy, originalValue)
-				closer.Close()
+		// Get final value in toBatch
+		toValue, toCloser, toErr := toBatch.Get(key)
+		toExists := toErr != pebble.ErrNotFound
 
-				if err := reverseBatch.Set(keyCopy, originalValueCopy, nil); err != nil {
-					return nil, fmt.Errorf("failed to add reverse set for deleted key %x: %w", keyCopy, err)
+		// Compare and generate appropriate diff operation
+		if fromExists && toExists {
+			// Both exist - compare values
+			if !bytes.Equal(fromValue, toValue) {
+				// Values differ - set to target value
+				toValueCopy := make([]byte, len(toValue))
+				copy(toValueCopy, toValue)
+				if err := diffBatch.Set(key, toValueCopy, nil); err != nil {
+					return nil, fmt.Errorf("failed to add diff set for key %x: %w", key, err)
 				}
 			}
-
-		case pebble.InternalKeyKindMerge:
-			// For Merge operations, this is complex as we'd need to know how to "unmerge"
-			// For now, we'll treat it similar to Set and try to restore the original value
-			originalValue, closer, err := staterepository.Get(nil, keyCopy)
-			if err == pebble.ErrNotFound {
-				// Key didn't exist before merge, so reverse is Delete
-				if err := reverseBatch.Delete(keyCopy, nil); err != nil {
-					return nil, fmt.Errorf("failed to add reverse delete for merged key %x: %w", keyCopy, err)
-				}
-			} else if err != nil {
-				return nil, fmt.Errorf("failed to check existing value for merged key %x: %w", keyCopy, err)
-			} else {
-				// Restore the pre-merge value
-				originalValueCopy := make([]byte, len(originalValue))
-				copy(originalValueCopy, originalValue)
-				closer.Close()
-
-				if err := reverseBatch.Set(keyCopy, originalValueCopy, nil); err != nil {
-					return nil, fmt.Errorf("failed to add reverse set for merged key %x: %w", keyCopy, err)
-				}
+			// If values are equal, no operation needed
+		} else if fromExists && !toExists {
+			// Key exists in from but not in to - delete it
+			if err := diffBatch.Delete(key, nil); err != nil {
+				return nil, fmt.Errorf("failed to add diff delete for key %x: %w", key, err)
 			}
+		} else if !fromExists && toExists {
+			// Key doesn't exist in from but exists in to - set it
+			toValueCopy := make([]byte, len(toValue))
+			copy(toValueCopy, toValue)
+			if err := diffBatch.Set(key, toValueCopy, nil); err != nil {
+				return nil, fmt.Errorf("failed to add diff set for key %x: %w", key, err)
+			}
+		}
+		// If neither exists, no operation needed
 
-		default:
-			return []byte{}, fmt.Errorf("unsupported modification type")
+		// Clean up closers
+		if fromExists && fromCloser != nil {
+			fromCloser.Close()
+		}
+		if toExists && toCloser != nil {
+			toCloser.Close()
 		}
 	}
 
-	// Return the reverse batch representation
-	return reverseBatch.Repr(), nil
+	// Return the diff batch
+	return diffBatch, nil
 }
 
-func (b *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock *BlockWithInfo) error {
-	if b == nil || targetBlock == nil {
+func (block *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock *BlockWithInfo) error {
+	if block == nil || targetBlock == nil {
 		return fmt.Errorf("blocks cannot be nil")
 	}
 
@@ -926,7 +920,8 @@ func (b *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock *Bl
 	targetHash := blake2b.Sum256(serializer.Serialize(targetBlock.Block.Header))
 
 	// Walk backwards from current block to target block, applying reverse diffs
-	currentBlock := b
+	currentBlock := block
+
 	for {
 		// Check if we've reached the target block
 		currentHash := blake2b.Sum256(serializer.Serialize(currentBlock.Block.Header))

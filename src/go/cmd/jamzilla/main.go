@@ -127,7 +127,11 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
-	reverseDiff, err := block.GenerateReverseDiff(globalBatch)
+	// Create an empty baseline batch since we're setting state from scratch
+	emptyBaseline := staterepository.NewIndexedBatch()
+	defer emptyBaseline.Close()
+
+	reverseDiff, err := block.GenerateDiff(globalBatch, emptyBaseline)
 	if err != nil {
 		log.Fatalf("Failed to generate reverse diff: %v", err)
 	}
@@ -140,7 +144,7 @@ func main() {
 			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
 			Height:             0,
 			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff,
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

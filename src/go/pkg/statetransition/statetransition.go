@@ -128,13 +128,31 @@ func STF(curBlock block.Block) error {
 		return err
 	}
 
-	// Run state transition function
+	// Capture the state after rewind+replay (this is the parentBlock state baseline)
+	parentBlockBatch := staterepository.NewIndexedBatch()
+	if parentBlockBatch == nil {
+		return fmt.Errorf("failed to create parent block batch")
+	}
+	defer parentBlockBatch.Close()
+
+	// Copy the current globalBatch state (rewind + replay) to parentBlockBatch
+	if err := parentBlockBatch.Apply(globalBatch, nil); err != nil {
+		return fmt.Errorf("failed to copy global batch to parent block batch: %w", err)
+	}
+
+	// Run state transition function on globalBatch (so it sees the parentBlock state)
 	if err := stfHelper(globalBatch, curBlock); err != nil {
 		return err
 	}
 
-	// Generate reverse diff for the block before applying the forward diff
-	reverseDiff, err := block.GenerateReverseDiff(globalBatch)
+	// Generate forward diff: operations to go from parentBlock state to current block state
+	forwardDiff, err := block.GenerateDiff(parentBlockBatch, globalBatch)
+	if err != nil {
+		return fmt.Errorf("failed to generate forward diff: %w", err)
+	}
+
+	// Generate reverse diff: operations to go from current block state back to parentBlock state
+	reverseDiff, err := block.GenerateDiff(globalBatch, parentBlockBatch)
 	if err != nil {
 		return fmt.Errorf("failed to generate reverse diff: %w", err)
 	}
@@ -144,16 +162,14 @@ func STF(curBlock block.Block) error {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(globalBatch)),
 			Height:             parentBlock.Info.Height + 1,
-			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff,
+			ForwardStateDiff:   forwardDiff.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 
 	if err := blockWithInfo.Set(globalBatch); err != nil {
 		return fmt.Errorf("failed to save block with info: %w", err)
 	}
-
-	// also update tip
 
 	// Commit the transaction
 	if err := globalBatch.Commit(nil); err != nil {
