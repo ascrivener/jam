@@ -200,7 +200,7 @@
             "args": [
                 "--in-process",
                 "--vectors",
-                "${workspaceFolder}/jam-test-vectors/traces/preimages_light"
+                "${workspaceFolder}/jam-test-vectors/traces/fallback"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
@@ -208,6 +208,20 @@
             "env": {
                 "GODEBUG": "gctrace=1"
             }
+        },
+        {
+            "name": "JAM Fuzzserver",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzserver",
+            "args": [
+                "--socket",
+                "/tmp/jam_target.sock"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "showLog": true
         }
     ],
     "inputs": [

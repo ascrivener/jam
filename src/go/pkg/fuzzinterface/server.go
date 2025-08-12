@@ -196,12 +196,20 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
+	reverseDiff, err := block.GenerateReverseDiff(globalBatch)
+	if err != nil {
+		log.Fatalf("Failed to generate reverse diff: %v", err)
+	}
+
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
 			Header: setState.Header,
 		},
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(setState.State),
+			Height:             0,
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff,
 		},
 	}
 

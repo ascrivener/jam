@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"time"
 
 	"jam/pkg/bandersnatch"
 	"jam/pkg/block"
@@ -73,10 +74,86 @@ func STF(curBlock block.Block) error {
 		}
 	}()
 
+	parentBlock, err := block.Get(globalBatch, curBlock.Header.ParentHash)
+	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
+	if err != nil {
+		return fmt.Errorf("failed to get parent block: %w", err)
+	}
+
+	// (5.4)
+	if curBlock.Header.ExtrinsicHash != curBlock.Extrinsics.MerkleCommitment() {
+		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
+	}
+
+	// (5.7)
+	if curBlock.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
+		return fmt.Errorf("time slot is not greater than parent block time slot")
+	}
+
+	if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
+		return fmt.Errorf("block timestamp is in the future relative to current time")
+	}
+
+	// (5.8)
+	merklizedState := merklizer.MerklizeState(merklizer.GetState(globalBatch))
+
+	if parentBlock.Info.PosteriorStateRoot != merklizedState {
+		return fmt.Errorf("parent block state root does not match merklized state")
+	}
+
+	// Always find LCA and apply necessary state transitions
+	currentTip, err := block.GetTip(globalBatch)
+	if err != nil {
+		return fmt.Errorf("failed to get current tip: %w", err)
+	}
+	// Find LCA using the efficient height-based algorithm
+	lca, err := block.FindLCA(globalBatch, currentTip, parentBlock)
+	if err != nil {
+		return fmt.Errorf("failed to find LCA: %w", err)
+	}
+
+	// Rewind from current tip to LCA
+	if err := currentTip.RewindToBlock(globalBatch, lca); err != nil {
+		return err
+	}
+
+	// Get the specific path from LCA to parent block
+	pathFromLCAToParent, err := parentBlock.GetPathFromAncestor(globalBatch, lca)
+	if err != nil {
+		return fmt.Errorf("failed to get path from LCA to parent: %w", err)
+	}
+
+	// Replay the specific path
+	if err := block.ReplayPath(globalBatch, pathFromLCAToParent); err != nil {
+		return err
+	}
+
 	// Run state transition function
 	if err := stfHelper(globalBatch, curBlock); err != nil {
 		return err
 	}
+
+	// Generate reverse diff for the block before applying the forward diff
+	reverseDiff, err := block.GenerateReverseDiff(globalBatch)
+	if err != nil {
+		return fmt.Errorf("failed to generate reverse diff: %w", err)
+	}
+
+	blockWithInfo := &block.BlockWithInfo{
+		Block: curBlock,
+		Info: block.BlockInfo{
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(globalBatch)),
+			Height:             parentBlock.Info.Height + 1,
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff,
+		},
+	}
+
+	if err := blockWithInfo.Set(globalBatch); err != nil {
+		return fmt.Errorf("failed to save block with info: %w", err)
+	}
+
+	// also update tip
 
 	// Commit the transaction
 	if err := globalBatch.Commit(nil); err != nil {
@@ -224,17 +301,6 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 	// Save state
 	if err := postState.Set(batch); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
-	}
-
-	blockWithInfo := block.BlockWithInfo{
-		Block: curBlock,
-		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(batch)),
-		},
-	}
-
-	if err := blockWithInfo.Set(batch); err != nil {
-		return fmt.Errorf("failed to save block with info: %w", err)
 	}
 
 	return nil

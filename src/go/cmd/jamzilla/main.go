@@ -101,7 +101,18 @@ func main() {
 		})
 	}
 
-	err = merklizerState.OverwriteCurrentState(nil)
+	// Begin a transaction
+	globalBatch := staterepository.NewIndexedBatch()
+	// Use a separate txErr variable to track transaction errors
+	var txSuccess bool
+	defer func() {
+		if !txSuccess {
+			// Rollback if not marked successful
+			globalBatch.Close()
+		}
+	}()
+
+	err = merklizerState.OverwriteCurrentState(globalBatch)
 	if err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
@@ -116,18 +127,32 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
+	reverseDiff, err := block.GenerateReverseDiff(globalBatch)
+	if err != nil {
+		log.Fatalf("Failed to generate reverse diff: %v", err)
+	}
+
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
 			Header: header,
 		},
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
+			Height:             0,
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff,
 		},
 	}
 
-	if err := blockWithInfo.Set(nil); err != nil {
+	if err := blockWithInfo.Set(globalBatch); err != nil {
 		log.Fatalf("Failed to store genesis block: %v", err)
 	}
+
+	// Commit the transaction
+	if err := globalBatch.Commit(nil); err != nil {
+		log.Fatalf("Failed to commit transaction: %v", err)
+	}
+	txSuccess = true
 
 	var privateKey ed25519.PrivateKey
 

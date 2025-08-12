@@ -479,10 +479,9 @@ func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
 // deserializeSlice is a helper to deserialize arrays and slices
 func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 	// For arrays, we know the length; for slices, read length prefix
-	isArray := v.Kind() == reflect.Array
 	length := v.Len()
 
-	if !isArray {
+	if v.Kind() == reflect.Slice {
 		// Read slice length using DecodeGeneralNatural for consistent decoding
 		lengthBytes := buf.Bytes()
 		decodedLength, n, ok := DecodeGeneralNatural(lengthBytes)
