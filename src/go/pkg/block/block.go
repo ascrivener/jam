@@ -432,10 +432,10 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 			return fmt.Errorf("epoch marker tickets randomness does not match post state tickets randomness")
 		}
 		for idx, validatorKey := range b.Header.EpochMarker.ValidatorKeys {
-			if validatorKey.BandersnatchPublicKey != postState.ValidatorKeysetsActive[idx].ToBandersnatchPublicKey() {
+			if validatorKey.BandersnatchPublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToBandersnatchPublicKey() {
 				return fmt.Errorf("epoch marker validator key does not match post state validator key")
 			}
-			if validatorKey.Ed25519PublicKey != postState.ValidatorKeysetsActive[idx].ToEd25519PublicKey() {
+			if validatorKey.Ed25519PublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToEd25519PublicKey() {
 				return fmt.Errorf("epoch marker validator key does not match post state validator key")
 			}
 		}
