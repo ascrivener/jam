@@ -196,11 +196,7 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
-	// Create an empty baseline batch since we're setting state from scratch
-	emptyBaseline := staterepository.NewIndexedBatch()
-	defer emptyBaseline.Close()
-
-	reverseDiff, err := block.GenerateDiff(globalBatch, emptyBaseline)
+	reverseDiff, err := block.GenerateReverseBatch(globalBatch)
 	if err != nil {
 		log.Fatalf("Failed to generate reverse diff: %v", err)
 	}

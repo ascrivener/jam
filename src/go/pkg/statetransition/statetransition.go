@@ -63,18 +63,8 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 }
 
 func STF(curBlock block.Block) error {
-	// Begin a transaction
-	globalBatch := staterepository.NewIndexedBatch()
-	// Use a separate txErr variable to track transaction errors
-	var txSuccess bool
-	defer func() {
-		if !txSuccess {
-			// Rollback if not marked successful
-			globalBatch.Close()
-		}
-	}()
 
-	parentBlock, err := block.Get(globalBatch, curBlock.Header.ParentHash)
+	parentBlock, err := block.Get(nil, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
 		return fmt.Errorf("failed to get parent block: %w", err)
@@ -95,65 +85,72 @@ func STF(curBlock block.Block) error {
 	}
 
 	// (5.8)
-	merklizedState := merklizer.MerklizeState(merklizer.GetState(globalBatch))
+	merklizedState := merklizer.MerklizeState(merklizer.GetState(nil))
 
 	if parentBlock.Info.PosteriorStateRoot != merklizedState {
 		return fmt.Errorf("parent block state root does not match merklized state")
 	}
 
 	// Always find LCA and apply necessary state transitions
-	currentTip, err := block.GetTip(globalBatch)
+	currentTip, err := block.GetTip(nil)
 	if err != nil {
 		return fmt.Errorf("failed to get current tip: %w", err)
 	}
 	// Find LCA using the efficient height-based algorithm
-	lca, err := block.FindLCA(globalBatch, currentTip, parentBlock)
+	lca, err := block.FindLCA(nil, currentTip, parentBlock)
 	if err != nil {
 		return fmt.Errorf("failed to find LCA: %w", err)
 	}
 
+	// 1. Begin a transaction for reorganization
+	reorgBatch := staterepository.NewIndexedBatch()
+	// Use a separate txErr variable to track transaction errors
+	var reorgBatchSuccess bool
+	defer func() {
+		if !reorgBatchSuccess {
+			// Rollback if not marked successful
+			reorgBatch.Close()
+		}
+	}()
+
 	// Rewind from current tip to LCA
-	if err := currentTip.RewindToBlock(globalBatch, lca); err != nil {
+	if err := currentTip.RewindToBlock(reorgBatch, lca); err != nil {
 		return err
 	}
 
 	// Get the specific path from LCA to parent block
-	pathFromLCAToParent, err := parentBlock.GetPathFromAncestor(globalBatch, lca)
+	pathFromLCAToParent, err := parentBlock.GetPathFromAncestor(reorgBatch, lca)
 	if err != nil {
 		return fmt.Errorf("failed to get path from LCA to parent: %w", err)
 	}
 
 	// Replay the specific path
-	if err := block.ReplayPath(globalBatch, pathFromLCAToParent); err != nil {
+	if err := block.ReplayPath(reorgBatch, pathFromLCAToParent); err != nil {
 		return err
 	}
-
-	// Capture the state after rewind+replay (this is the parentBlock state baseline)
-	parentBlockBatch := staterepository.NewIndexedBatch()
-	if parentBlockBatch == nil {
-		return fmt.Errorf("failed to create parent block batch")
+	// Commit the transaction
+	if err := reorgBatch.Commit(nil); err != nil {
+		return err
 	}
-	defer parentBlockBatch.Close()
+	reorgBatchSuccess = true
 
-	// Copy the current globalBatch state (rewind + replay) to parentBlockBatch
-	if err := parentBlockBatch.Apply(globalBatch, nil); err != nil {
-		return fmt.Errorf("failed to copy global batch to parent block batch: %w", err)
-	}
+	// 2. Begin a transaction for the STF
+	stfBatch := staterepository.NewIndexedBatch()
+	var stfBatchSuccess bool
+	defer func() {
+		if !stfBatchSuccess {
+			// Rollback if not marked successful
+			stfBatch.Close()
+		}
+	}()
 
 	// Run state transition function on globalBatch (so it sees the parentBlock state)
-	if err := stfHelper(globalBatch, curBlock); err != nil {
+	if err := stfHelper(stfBatch, curBlock); err != nil {
 		return err
 	}
 
-	// Generate forward diff: operations to go from parentBlock state to current block state
-	forwardDiff, err := block.GenerateDiff(parentBlockBatch, globalBatch)
-	if err != nil {
-		return fmt.Errorf("failed to generate forward diff: %w", err)
-	}
-	defer forwardDiff.Close()
-
 	// Generate reverse diff: operations to go from current block state back to parentBlock state
-	reverseDiff, err := block.GenerateDiff(globalBatch, parentBlockBatch)
+	reverseDiff, err := block.GenerateReverseBatch(stfBatch)
 	if err != nil {
 		return fmt.Errorf("failed to generate reverse diff: %w", err)
 	}
@@ -162,22 +159,22 @@ func STF(curBlock block.Block) error {
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(globalBatch)),
+			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(stfBatch)),
 			Height:             parentBlock.Info.Height + 1,
-			ForwardStateDiff:   forwardDiff.Repr(),
+			ForwardStateDiff:   stfBatch.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 
-	if err := blockWithInfo.Set(globalBatch); err != nil {
+	if err := blockWithInfo.Set(stfBatch); err != nil {
 		return fmt.Errorf("failed to save block with info: %w", err)
 	}
 
 	// Commit the transaction
-	if err := globalBatch.Commit(nil); err != nil {
+	if err := stfBatch.Commit(nil); err != nil {
 		return err
 	}
-	txSuccess = true
+	stfBatchSuccess = true
 
 	return nil
 }
