@@ -4,3 +4,6 @@
 [submodule "jam-test-vectors"]
 	path = jam-test-vectors
 	url = git@github.com:davxy/jam-test-vectors.git
+[submodule "jam-conformance"]
+	path = jam-conformance
+	url = https://github.com/davxy/jam-conformance.git

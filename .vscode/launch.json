@@ -200,7 +200,7 @@
             "args": [
                 "--in-process",
                 "--vectors",
-                "${workspaceFolder}/jam-test-vectors/traces/fallback"
+                "${workspaceFolder}/jam-conformance/fuzz-reports/jamzilla/jam-node-0.1.0_gp-0.6.7/1754984893"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",

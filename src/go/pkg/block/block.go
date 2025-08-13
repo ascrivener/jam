@@ -286,7 +286,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	// (11.39)
 	recentBlockWorkPackageHashes := make(map[[32]byte]struct{})
 	for _, recentBlock := range priorState.RecentActivity.RecentBlocks {
-		for _, wph := range recentBlock.WorkPackageHashesToSegmentRoots {
+		for wph := range recentBlock.WorkPackageHashesToSegmentRoots {
 			recentBlockWorkPackageHashes[wph] = struct{}{}
 		}
 	}
