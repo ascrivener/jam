@@ -105,13 +105,7 @@ func STF(curBlock block.Block) error {
 	// 1. Begin a transaction for reorganization
 	reorgBatch := staterepository.NewIndexedBatch()
 	// Use a separate txErr variable to track transaction errors
-	var reorgBatchSuccess bool
-	defer func() {
-		if !reorgBatchSuccess {
-			// Rollback if not marked successful
-			reorgBatch.Close()
-		}
-	}()
+	defer reorgBatch.Close()
 
 	// Rewind from current tip to LCA
 	if err := currentTip.RewindToBlock(reorgBatch, lca); err != nil {
@@ -128,29 +122,28 @@ func STF(curBlock block.Block) error {
 	if err := block.ReplayPath(reorgBatch, pathFromLCAToParent); err != nil {
 		return err
 	}
-	// Commit the transaction
-	if err := reorgBatch.Commit(nil); err != nil {
-		return err
-	}
-	reorgBatchSuccess = true
 
 	// 2. Begin a transaction for the STF
 	stfBatch := staterepository.NewIndexedBatch()
-	var stfBatchSuccess bool
-	defer func() {
-		if !stfBatchSuccess {
-			// Rollback if not marked successful
-			stfBatch.Close()
-		}
-	}()
+	defer stfBatch.Close()
+
+	if err := stfBatch.Apply(reorgBatch, nil); err != nil {
+		return fmt.Errorf("failed to apply reorgBatch: %w", err)
+	}
 
 	// Run state transition function on globalBatch (so it sees the parentBlock state)
 	if err := stfHelper(stfBatch, curBlock); err != nil {
 		return err
 	}
 
-	// Generate reverse diff: operations to go from current block state back to parentBlock state
-	reverseDiff, err := block.GenerateReverseBatch(stfBatch)
+	stfOperations, err := block.ComputeBatchDelta(reorgBatch, stfBatch)
+	if err != nil {
+		return fmt.Errorf("failed to compute batch delta: %w", err)
+	}
+	defer stfOperations.Close()
+
+	//  Generate reverse diff: operations to go from current block state back to parentBlock state
+	reverseDiff, err := block.GenerateReverseBatch(reorgBatch, stfOperations)
 	if err != nil {
 		return fmt.Errorf("failed to generate reverse diff: %w", err)
 	}
@@ -161,7 +154,7 @@ func STF(curBlock block.Block) error {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(stfBatch)),
 			Height:             parentBlock.Info.Height + 1,
-			ForwardStateDiff:   stfBatch.Repr(),
+			ForwardStateDiff:   stfOperations.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
@@ -174,7 +167,6 @@ func STF(curBlock block.Block) error {
 	if err := stfBatch.Commit(nil); err != nil {
 		return err
 	}
-	stfBatchSuccess = true
 
 	return nil
 }

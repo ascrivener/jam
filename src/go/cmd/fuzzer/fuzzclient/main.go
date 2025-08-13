@@ -265,9 +265,9 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 // RunTests executes a series of tests against the server
 func (fc *FuzzerClient) RunTests(vectorsDir string) {
 	// Run tests
-	// fc.testStateTransitions(vectorsDir)
+	fc.testStateTransitions(vectorsDir)
 
-	fc.testIndividualVector(vectorsDir)
+	// fc.testIndividualVector(vectorsDir)
 }
 
 // testStateTransitions tests state transitions against test vectors

@@ -127,7 +127,7 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
-	reverseDiff, err := block.GenerateReverseBatch(globalBatch)
+	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
 	if err != nil {
 		log.Fatalf("Failed to generate reverse diff: %v", err)
 	}

@@ -196,7 +196,7 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
 	}
 
-	reverseDiff, err := block.GenerateReverseBatch(globalBatch)
+	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
 	if err != nil {
 		log.Fatalf("Failed to generate reverse diff: %v", err)
 	}

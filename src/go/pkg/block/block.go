@@ -817,7 +817,84 @@ func makeBlockKey(headerHash [32]byte) []byte {
 	return append([]byte("block:"), headerHash[:]...)
 }
 
-func GenerateReverseBatch(batch *pebble.Batch) (*pebble.Batch, error) {
+func ComputeBatchDelta(view *pebble.Batch, viewWithBatch *pebble.Batch) (*pebble.Batch, error) {
+	deltaBatch := staterepository.NewIndexedBatch()
+
+	// Build a map of view operations for quick lookup
+	viewOps := make(map[string]struct {
+		kind  pebble.InternalKeyKind
+		value []byte
+	})
+
+	// Read view batch operations using pebble.ReadBatch
+	viewRepr := view.Repr()
+	if len(viewRepr) > 0 {
+		viewReader, _ := pebble.ReadBatch(viewRepr)
+		for {
+			kind, key, value, ok, err := viewReader.Next()
+			if err != nil {
+				return nil, fmt.Errorf("failed to read view batch operation: %w", err)
+			}
+			if !ok {
+				break
+			}
+
+			keyStr := string(key)
+			valueCopy := make([]byte, len(value))
+			copy(valueCopy, value)
+
+			viewOps[keyStr] = struct {
+				kind  pebble.InternalKeyKind
+				value []byte
+			}{
+				kind:  kind,
+				value: valueCopy,
+			}
+		}
+	}
+
+	// Read combined batch operations and extract delta
+	combinedRepr := viewWithBatch.Repr()
+	if len(combinedRepr) > 0 {
+		combinedReader, _ := pebble.ReadBatch(combinedRepr)
+		for {
+			kind, key, value, ok, err := combinedReader.Next()
+			if err != nil {
+				return nil, fmt.Errorf("failed to read combined batch operation: %w", err)
+			}
+			if !ok {
+				break
+			}
+
+			keyStr := string(key)
+			if viewOp, exists := viewOps[keyStr]; exists {
+				// Key exists in view - check if it's different
+				if viewOp.kind != kind || !bytes.Equal(viewOp.value, value) {
+					// Different operation - this is from the delta
+					switch kind {
+					case pebble.InternalKeyKindSet:
+						deltaBatch.Set(key, value, nil)
+					case pebble.InternalKeyKindDelete:
+						deltaBatch.Delete(key, nil)
+					}
+				}
+				// Same operation - skip (it's from view)
+			} else {
+				// Key doesn't exist in view - this is definitely from the delta
+				switch kind {
+				case pebble.InternalKeyKindSet:
+					deltaBatch.Set(key, value, nil)
+				case pebble.InternalKeyKindDelete:
+					deltaBatch.Delete(key, nil)
+				}
+			}
+		}
+	}
+
+	return deltaBatch, nil
+}
+
+func GenerateReverseBatch(view, batch *pebble.Batch) (*pebble.Batch, error) {
 	if batch == nil {
 		return nil, fmt.Errorf("batch cannot be nil")
 	}
@@ -866,10 +943,10 @@ func GenerateReverseBatch(batch *pebble.Batch) (*pebble.Batch, error) {
 		switch kind {
 		case pebble.InternalKeyKindSet:
 			// For a Set operation (key, newValue), we need to:
-			// 1. Get the original value from the database
+			// 1. Get the original value from the view (current state before this batch)
 			// 2. Create a reverse Set operation (key, originalValue) or Delete if key didn't exist
 
-			originalValue, closer, err := staterepository.Get(nil, key) // Use nil batch to get from DB directly
+			originalValue, closer, err := staterepository.Get(view, key) // Use view to get current state
 			if err == pebble.ErrNotFound {
 				// Key didn't exist before, so reverse operation is Delete
 				if err := reverseBatch.Delete(key, nil); err != nil {
@@ -894,10 +971,10 @@ func GenerateReverseBatch(batch *pebble.Batch) (*pebble.Batch, error) {
 
 		case pebble.InternalKeyKindDelete:
 			// For a Delete operation, we need to:
-			// 1. Get the original value from the database
+			// 1. Get the original value from the view (current state before this batch)
 			// 2. Create a reverse Set operation (key, originalValue)
 
-			originalValue, closer, err := staterepository.Get(nil, key) // Use nil batch to get from DB directly
+			originalValue, closer, err := staterepository.Get(view, key) // Use view to get current state
 			if err == pebble.ErrNotFound {
 				// Key didn't exist, so deleting it has no effect - no reverse operation needed
 				continue
