@@ -72,35 +72,3 @@ jobs:
         git push
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Create release with timestamp
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ots-${{ github.run_number }}-${{ github.run_id }}
-        release_name: Daily OTS Timestamp $(date +%Y-%m-%d)
-        body: |
-          Daily OpenTimestamps proof for commit history
-          
-          **Commit Count**: $(wc -l < commits.txt)
-          **SHA256 Hash**: $(cat commits.sha256)
-          **Timestamp**: $(date -u)
-          
-          This release contains:
-          - `commits.txt` - Complete commit history
-          - `commits.sha256` - SHA256 hash of commit list  
-          - `commits.sha256.ots` - OpenTimestamps proof anchored to Bitcoin blockchain
-          
-          Verify with: `ots verify commits.sha256.ots`
-        draft: false
-        prerelease: false
-    
-    - name: Upload timestamp artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ots-timestamp-${{ github.run_number }}
-        path: |
-          commits.txt
-          commits.sha256
-          commits.sha256.ots
