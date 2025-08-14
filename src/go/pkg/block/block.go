@@ -433,10 +433,10 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		}
 		for idx, validatorKey := range b.Header.EpochMarker.ValidatorKeys {
 			if validatorKey.BandersnatchPublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToBandersnatchPublicKey() {
-				return fmt.Errorf("epoch marker validator key does not match post state validator key")
+				return fmt.Errorf("epoch marker validator key does not match post state safrole pending validator key")
 			}
 			if validatorKey.Ed25519PublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToEd25519PublicKey() {
-				return fmt.Errorf("epoch marker validator key does not match post state validator key")
+				return fmt.Errorf("epoch marker validator key does not match post state safrole pending validator key")
 			}
 		}
 	} else {
