@@ -63,6 +63,9 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 
 	// Add privileged service indices
 	serviceIndicesMapWithPrivileged := make(map[types.ServiceIndex]struct{})
+	for idx := range originalServiceIndicesMap {
+		serviceIndicesMapWithPrivileged[idx] = struct{}{}
+	}
 	managerServiceIndex := accumulationStateComponents.PrivilegedServices.ManagerServiceIndex
 	designateServiceIndex := accumulationStateComponents.PrivilegedServices.DesignateServiceIndex
 	assignServiceIndices := accumulationStateComponents.PrivilegedServices.AssignServiceIndices

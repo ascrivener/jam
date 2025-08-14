@@ -239,6 +239,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			return fmt.Errorf("refinement context timeslot is too old")
 		}
 
+		// (11.35)
 		anchorBlock, err := GetAnchorBlock(batch, b.Header, refinementContext.AnchorHeaderHash)
 		if err != nil {
 			return fmt.Errorf("failed to get anchor block: %w", err)
