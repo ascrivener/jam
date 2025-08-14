@@ -54,20 +54,21 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # Create timestamp directory if it doesn't exist
-        mkdir -p .timestamps/$(date +%Y-%m-%d)
+        # Create timestamp directory with precise time
+        TIMESTAMP_DIR=".timestamps/$(date -u +%Y-%m-%d_%H-%M-%S_UTC)"
+        mkdir -p "$TIMESTAMP_DIR"
         
-        # Copy files to timestamp directory with date
-        cp commits.txt .timestamps/$(date +%Y-%m-%d)/
-        cp commits.sha256 .timestamps/$(date +%Y-%m-%d)/
-        cp commits.sha256.ots .timestamps/$(date +%Y-%m-%d)/
+        # Copy files to timestamp directory with precise time
+        cp commits.txt "$TIMESTAMP_DIR/"
+        cp commits.sha256 "$TIMESTAMP_DIR/"
+        cp commits.sha256.ots "$TIMESTAMP_DIR/"
         
         # Also keep latest in root for easy access
         cp commits.sha256.ots ./latest-commits.sha256.ots
         
-        # Add and commit
+        # Add and commit with precise timestamp
         git add .timestamps/ latest-commits.sha256.ots
-        git commit -m "Daily OTS timestamp: $(date +%Y-%m-%d)" || echo "No changes to commit"
+        git commit -m "Daily OTS timestamp: $(date -u +%Y-%m-%d_%H:%M:%S_UTC)" || echo "No changes to commit"
         git push
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
