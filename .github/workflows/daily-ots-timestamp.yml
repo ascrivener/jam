@@ -77,7 +77,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ots-${{ github.run_number }}-$(date +%Y%m%d)
+        tag_name: ots-${{ github.run_number }}-${{ github.run_id }}
         release_name: Daily OTS Timestamp $(date +%Y-%m-%d)
         body: |
           Daily OpenTimestamps proof for commit history
