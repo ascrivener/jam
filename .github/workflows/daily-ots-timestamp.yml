@@ -1,0 +1,100 @@
+name: Daily OTS Timestamp
+
+on:
+  schedule:
+    # Run daily at 12:00 UTC
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  timestamp-commits:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install OpenTimestamps
+      run: |
+        pip install opentimestamps-client
+    
+    - name: Generate commit hash list
+      run: |
+        # Get all commit hashes in chronological order (oldest first)
+        git log --reverse --pretty=format:"%H" > commits.txt
+        echo "Generated commit list with $(wc -l < commits.txt) commits"
+    
+    - name: Generate SHA256 hash
+      run: |
+        # Create SHA256 hash of commit list
+        sha256sum commits.txt | cut -d' ' -f1 > commits.sha256
+        echo "SHA256 hash: $(cat commits.sha256)"
+    
+    - name: Create OpenTimestamps proof
+      run: |
+        # Create OTS timestamp
+        ots stamp commits.sha256
+        echo "Created OTS timestamp: commits.sha256.ots"
+    
+    - name: Commit and push timestamp files
+      run: |
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Create timestamp directory if it doesn't exist
+        mkdir -p .timestamps/$(date +%Y-%m-%d)
+        
+        # Copy files to timestamp directory with date
+        cp commits.txt .timestamps/$(date +%Y-%m-%d)/
+        cp commits.sha256 .timestamps/$(date +%Y-%m-%d)/
+        cp commits.sha256.ots .timestamps/$(date +%Y-%m-%d)/
+        
+        # Also keep latest in root for easy access
+        cp commits.sha256.ots ./latest-commits.sha256.ots
+        
+        # Add and commit
+        git add .timestamps/ latest-commits.sha256.ots
+        git commit -m "Daily OTS timestamp: $(date +%Y-%m-%d)" || echo "No changes to commit"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Create release with timestamp
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ots-${{ github.run_number }}-$(date +%Y%m%d)
+        release_name: Daily OTS Timestamp $(date +%Y-%m-%d)
+        body: |
+          Daily OpenTimestamps proof for commit history
+          
+          **Commit Count**: $(wc -l < commits.txt)
+          **SHA256 Hash**: $(cat commits.sha256)
+          **Timestamp**: $(date -u)
+          
+          This release contains:
+          - `commits.txt` - Complete commit history
+          - `commits.sha256` - SHA256 hash of commit list  
+          - `commits.sha256.ots` - OpenTimestamps proof anchored to Bitcoin blockchain
+          
+          Verify with: `ots verify commits.sha256.ots`
+        draft: false
+        prerelease: false
+    
+    - name: Upload timestamp artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ots-timestamp-${{ github.run_number }}
+        path: |
+          commits.txt
+          commits.sha256
+          commits.sha256.ots
