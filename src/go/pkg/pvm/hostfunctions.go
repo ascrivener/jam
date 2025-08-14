@@ -512,7 +512,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 			return NewSimpleExitReason(ExitPanic), nil
 		}
 
-		if gratisStorageOffset > types.Register(^uint64(0)) && ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
+		if gratisStorageOffset != types.Register(0) && ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo), nil
 		}
@@ -524,6 +524,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
+			ServiceIndex:                   ctx.Argument.AccumulationResultContext.DerivedServiceIndex,
 			CodeHash:                       codeHash,
 			MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 			MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
@@ -532,6 +533,9 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 			MostRecentAccumulationTimeslot: 0,
 			ParentServiceIndex:             ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex,
 		}
+		if err := newAccount.SetPreimageLookupHistoricalStatus(batch, uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
+			return ExitReason{}, err
+		}
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
 
 		accumulatingServiceAccount := ctx.Argument.AccumulatingServiceAccount()
@@ -539,24 +543,20 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 		// The source account needs enough balance to cover both:
 		// 1. Its own threshold balance needs
 		// 2. The transfer amount to the new account
-		b := accumulatingServiceAccount.Balance - newAccount.ThresholdBalanceNeeded()
-		if b < accumulatingServiceAccount.ThresholdBalanceNeeded() {
+		if accumulatingServiceAccount.Balance-newAccount.Balance < accumulatingServiceAccount.ThresholdBalanceNeeded() {
+			if err := newAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(labelLength), codeHash); err != nil {
+				return ExitReason{}, err
+			}
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return NewSimpleExitReason(ExitGo), nil
 		}
-		accumulatingServiceAccount.Balance = b
-
-		currentDerivedServiceIndex := ctx.Argument.AccumulationResultContext.DerivedServiceIndex
-		newDerivedServiceIndex := types.ServiceIndex((1 << 8) + ((uint64(currentDerivedServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
+		accumulatingServiceAccount.Balance -= newAccount.Balance
 
 		// Get current service accounts and update them
-		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[currentDerivedServiceIndex] = newAccount
-		if err := newAccount.SetPreimageLookupHistoricalStatus(batch, uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
-			return ExitReason{}, err
-		}
+		ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts[newAccount.ServiceIndex] = newAccount
 
-		ctx.State.Registers[7] = types.Register(currentDerivedServiceIndex)
-		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = check(newDerivedServiceIndex, &ctx.Argument.AccumulationResultContext.StateComponents)
+		ctx.State.Registers[7] = types.Register(newAccount.ServiceIndex)
+		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = types.ServiceIndex((1 << 8) + ((uint64(newAccount.ServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
 
 		return NewSimpleExitReason(ExitGo), nil
 	})

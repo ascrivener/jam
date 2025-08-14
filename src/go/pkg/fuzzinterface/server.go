@@ -25,7 +25,7 @@ type Server struct {
 func NewServer() *Server {
 	return &Server{
 		peerInfo: PeerInfo{
-			Name: []byte("jam-node"),
+			Name: []byte("jamzilla"),
 			AppVersion: Version{
 				Major: 0,
 				Minor: 1,
