@@ -34,5 +34,5 @@ type EpochMarker struct {
 
 type Ticket struct {
 	VerifiablyRandomIdentifier [32]byte
-	EntryIndex                 uint8
+	EntryIndex                 types.GenericNum
 }

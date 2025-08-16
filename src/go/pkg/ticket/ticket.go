@@ -1,8 +1,10 @@
 package ticket
 
+import "jam/pkg/types"
+
 type Ticket struct {
-	VerifiablyRandomIdentifier [32]byte // y
-	EntryIndex                 uint8    // r
+	VerifiablyRandomIdentifier [32]byte         // y
+	EntryIndex                 types.GenericNum // r
 }
 
 // ReorderTicketsOutsideIn takes a slice of tickets and reorders them using the outside-in algorithm.

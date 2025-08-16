@@ -468,7 +468,7 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	}
 	// (6.29)
 	for _, ticket := range b.Extrinsics.Tickets {
-		if uint16(ticket.EntryIndex) >= constants.NumTicketEntries {
+		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
 			return fmt.Errorf("ticket entry index should be less than %d", constants.NumTicketEntries)
 		}
 		verified, err := bandersnatch.VerifyRingSignature(postState.SafroleBasicState.EpochTicketSubmissionsRoot, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(ticket.EntryIndex)), []byte{}, ticket.ValidityProof)
@@ -608,7 +608,7 @@ func GetAnchorBlock(batch *pebble.Batch, header header.Header, targetAnchorHeade
 		// Get the current block
 		blockWithInfo, err := Get(batch, currentHeaderHash)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get block in chain with hash %x: %w", currentHeaderHash, err)
+			return nil, fmt.Errorf("ancestor chain ended without finding anchor block %x", targetAnchorHeaderHash)
 		}
 
 		// Check if the block is too old (more than 24 hours)

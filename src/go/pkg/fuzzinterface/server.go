@@ -11,6 +11,7 @@ import (
 
 	"jam/pkg/block"
 	"jam/pkg/merklizer"
+	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
 	"jam/pkg/statetransition"
 )
@@ -77,22 +78,34 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	// Wait for first message (PeerInfo)
-	msg, err := s.receiveMessage(conn)
+	msgData, err := s.receiveMessageData(conn)
 	if err != nil {
 		log.Printf("Error receiving initial PeerInfo: %v", err)
 		return
 	}
 
-	// Verify it's a PeerInfo message
-	if msg.PeerInfo == nil {
+	// Get the message type
+	msgType := RequestMessageType(msgData[0])
+
+	if msgType != RequestMessageTypePeerInfo {
 		log.Printf("First message is not PeerInfo, closing connection")
 		return
 	}
 
+	// Skip the type byte
+	msgData = msgData[1:]
+
+	var peerInfo PeerInfo
+	err = serializer.Deserialize(msgData, &peerInfo)
+	if err != nil {
+		log.Printf("Error deserializing PeerInfo: %v", err)
+		return
+	}
+
 	log.Printf("Handshake received from fuzzer: %s (App v%d.%d.%d, JAM v%d.%d.%d)",
-		string(msg.PeerInfo.Name),
-		msg.PeerInfo.AppVersion.Major, msg.PeerInfo.AppVersion.Minor, msg.PeerInfo.AppVersion.Patch,
-		msg.PeerInfo.JamVersion.Major, msg.PeerInfo.JamVersion.Minor, msg.PeerInfo.JamVersion.Patch)
+		string(peerInfo.Name),
+		peerInfo.AppVersion.Major, peerInfo.AppVersion.Minor, peerInfo.AppVersion.Patch,
+		peerInfo.JamVersion.Major, peerInfo.JamVersion.Minor, peerInfo.JamVersion.Patch)
 
 	// Send our PeerInfo
 	resp := ResponseMessage{PeerInfo: &s.peerInfo}
@@ -103,20 +116,19 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	// Main communication loop
 	for {
-		msg, err := s.receiveMessage(conn)
+		msgData, err := s.receiveMessageData(conn)
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Fuzzer disconnected")
 				return
 			}
-			log.Printf("Error receiving message: %v", err)
+			log.Printf("Error receiving message data: %v", err)
 			return
 		}
 
-		resp, err := s.HandleMessage(msg)
+		resp, err := s.HandleMessageData(msgData)
 		if err != nil {
 			log.Printf("Error handling message: %v", err)
-			return
 		}
 
 		if err := s.sendMessage(conn, resp); err != nil {
@@ -127,21 +139,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 // receiveMessage reads a message from the connection
-func (s *Server) receiveMessage(conn net.Conn) (RequestMessage, error) {
+func (s *Server) receiveMessageData(conn net.Conn) ([]byte, error) {
 	// Read message length (4 bytes, little-endian)
 	lengthBytes := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lengthBytes); err != nil {
-		return RequestMessage{}, err
+		return nil, err
 	}
 	messageLength := binary.LittleEndian.Uint32(lengthBytes)
 
 	// Read message data
 	messageData := make([]byte, messageLength)
 	if _, err := io.ReadFull(conn, messageData); err != nil {
-		return RequestMessage{}, err
+		return nil, err
 	}
 
-	return DecodeMessage(messageData)
+	return messageData, nil
 }
 
 // sendMessage sends a message to the connection
@@ -156,19 +168,24 @@ func (s *Server) sendMessage(conn net.Conn, msg ResponseMessage) error {
 }
 
 // HandleMessage processes an incoming message and returns the appropriate response
-func (s *Server) HandleMessage(msg RequestMessage) (ResponseMessage, error) {
-	switch {
-	case msg.PeerInfo != nil:
+func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
+	// Get the message type
+	msgType := RequestMessageType(msgData[0])
+	// Skip the type byte
+	msgData = msgData[1:]
+
+	switch msgType {
+	case RequestMessageTypePeerInfo:
 		return ResponseMessage{PeerInfo: &s.peerInfo}, nil
 
-	case msg.SetState != nil:
-		return s.handleSetState(*msg.SetState)
+	case RequestMessageTypeSetState:
+		return s.handleSetState(msgData)
 
-	case msg.ImportBlock != nil:
-		return s.handleImportBlock(*msg.ImportBlock)
+	case RequestMessageTypeImportBlock:
+		return s.handleImportBlock(msgData)
 
-	case msg.GetState != nil:
-		return s.handleGetState(*msg.GetState)
+	case RequestMessageTypeGetState:
+		return s.handleGetState(msgData)
 
 	default:
 		return ResponseMessage{}, fmt.Errorf("unsupported message type")
@@ -176,7 +193,12 @@ func (s *Server) HandleMessage(msg RequestMessage) (ResponseMessage, error) {
 }
 
 // handleSetState handles a SetState request
-func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
+func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
+	var setState SetState
+	err := serializer.Deserialize(setStateData, &setState)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
 		return ResponseMessage{}, fmt.Errorf("global repository not initialized")
@@ -232,21 +254,26 @@ func (s *Server) handleSetState(setState SetState) (ResponseMessage, error) {
 }
 
 // handleImportBlock handles an ImportBlock request
-func (s *Server) handleImportBlock(importBlock ImportBlock) (ResponseMessage, error) {
-	err := statetransition.STF(block.Block(importBlock))
+func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, error) {
 	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
+	var importBlock ImportBlock
+	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
-		log.Printf("Failed to process block: %v", err)
-	} else {
-		log.Printf("Block processed successfully for timeslot %d, state root: %x", importBlock.Header.TimeSlot, stateRoot)
+		return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
 	}
-	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
+	err = statetransition.STF(block.Block(importBlock))
+	stateRoot = merklizer.MerklizeState(merklizer.GetState(nil))
+	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
 }
 
 // handleGetState handles a GetState request
-func (s *Server) handleGetState(getState GetState) (ResponseMessage, error) {
+func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
 	state := merklizer.GetState(nil)
-
+	var getState GetState
+	err := serializer.Deserialize(getStateData, &getState)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
 	return ResponseMessage{State: &state}, nil
 }

@@ -219,17 +219,6 @@ func decodeResponseMessage(data []byte) (fuzzinterface.ResponseMessage, error) {
 	return msg, nil
 }
 
-// sendMessage sends a request message to the server
-func (fc *FuzzerClient) sendMessage(msg fuzzinterface.RequestMessage) error {
-	data, err := encodeRequestMessage(msg)
-	if err != nil {
-		return err
-	}
-
-	_, err = fc.conn.Write(data)
-	return err
-}
-
 // receiveResponse receives and decodes a response from the server
 func (fc *FuzzerClient) receiveResponse() (fuzzinterface.ResponseMessage, error) {
 	// Read message length (4 bytes, little-endian)
@@ -250,13 +239,19 @@ func (fc *FuzzerClient) receiveResponse() (fuzzinterface.ResponseMessage, error)
 
 // sendAndReceive sends a message and receives response (works for both modes)
 func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzinterface.ResponseMessage, error) {
-	if fc.inProcess {
-		// Process message directly using server
-		return fc.server.HandleMessage(msg)
+	data, err := encodeRequestMessage(msg)
+	if err != nil {
+		return fuzzinterface.ResponseMessage{}, err
 	}
 
-	// Use existing socket-based communication
-	if err := fc.sendMessage(msg); err != nil {
+	if fc.inProcess {
+		// Process message directly using server
+		// skip length bytes
+		return fc.server.HandleMessageData(data[4:])
+	}
+
+	_, err = fc.conn.Write(data)
+	if err != nil {
 		return fuzzinterface.ResponseMessage{}, err
 	}
 	return fc.receiveResponse()
@@ -427,7 +422,6 @@ func (fc *FuzzerClient) testIndividualVector(vectorsDir string) {
 	warpVector := TestVector{}
 	if err := serializer.Deserialize(warpVectorData, &warpVector); err != nil {
 		log.Printf("Failed to deserialize genesis vector: %v", err)
-		return
 	}
 
 	log.Printf("Setting initial genesis state...")
@@ -456,8 +450,7 @@ func (fc *FuzzerClient) testIndividualVector(vectorsDir string) {
 
 	testVector := TestVector{}
 	if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
-		log.Printf("Failed to deserialize test vector: %v", err)
-		return
+		log.Printf("Failed to deserialize test vector")
 	}
 
 	importBlock := fuzzinterface.ImportBlock(testVector.Block)
@@ -465,6 +458,9 @@ func (fc *FuzzerClient) testIndividualVector(vectorsDir string) {
 	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
 	if err != nil {
 		log.Printf("Failed to send ImportBlock message: %v", err)
+		if *resp.StateRoot != testVector.PostState.StateRoot {
+			log.Printf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
+		}
 		return
 	}
 
