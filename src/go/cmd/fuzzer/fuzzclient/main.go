@@ -265,9 +265,9 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 // RunTests executes a series of tests against the server
 func (fc *FuzzerClient) RunTests(vectorsDir string) {
 	// Run tests
-	fc.testStateTransitions(vectorsDir)
+	// fc.testStateTransitions(vectorsDir)
 
-	// fc.testIndividualVector(vectorsDir)
+	fc.testIndividualVector(vectorsDir)
 }
 
 // testStateTransitions tests state transitions against test vectors
@@ -417,7 +417,7 @@ func (fc *FuzzerClient) testStateTransitions(vectorsDir string) {
 // testStateTransitions tests state transitions against test vectors
 func (fc *FuzzerClient) testIndividualVector(vectorsDir string) {
 	// Get all test vectors from the reports-l0 directory
-	warpVectorPath := filepath.Join(vectorsDir, "00000007.bin")
+	warpVectorPath := filepath.Join(vectorsDir, "00000028.bin")
 	warpVectorData, err := os.ReadFile(warpVectorPath)
 	if err != nil {
 		log.Printf("Failed to load genesis vector file: %v", err)
@@ -447,7 +447,7 @@ func (fc *FuzzerClient) testIndividualVector(vectorsDir string) {
 		return
 	}
 
-	testVectorPath := filepath.Join(vectorsDir, "00000008.bin")
+	testVectorPath := filepath.Join(vectorsDir, "00000029.bin")
 	testVectorData, err := os.ReadFile(testVectorPath)
 	if err != nil {
 		log.Printf("Failed to load genesis vector file: %v", err)

@@ -200,7 +200,7 @@
             "args": [
                 "--in-process",
                 "--vectors",
-                "${workspaceFolder}/jam-conformance/fuzz-reports/jamzilla/1755190301"
+                "${workspaceFolder}/jam-conformance/fuzz-reports/jamzilla/0.6.7/1755251719"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",

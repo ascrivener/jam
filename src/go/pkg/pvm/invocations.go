@@ -258,13 +258,13 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 
 func AccumulationResultContextFromAccumulationStateComponents(globalBatch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
 	hash := blake2b.Sum256(serializer.Serialize(struct {
-		ServiceIndex types.ServiceIndex
+		ServiceIndex types.GenericNum
 		Entropy      [32]byte
-		Timeslot     types.Timeslot
+		Timeslot     types.GenericNum
 	}{
-		ServiceIndex: serviceIndex,
+		ServiceIndex: types.GenericNum(serviceIndex),
 		Entropy:      posteriorEntropyAccumulator[0],
-		Timeslot:     timeslot,
+		Timeslot:     types.GenericNum(timeslot),
 	}))
 	derivedServiceIndex := check(types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)), accumulationStateComponents)
 	batch := staterepository.NewIndexedBatch()

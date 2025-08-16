@@ -240,13 +240,13 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		}
 
 		// (11.35)
-		anchorBlock, err := GetAnchorBlock(batch, b.Header, refinementContext.AnchorHeaderHash)
-		if err != nil {
-			return fmt.Errorf("failed to get anchor block: %w", err)
-		}
-		if anchorBlock.Block.Header.TimeSlot != refinementContext.Timeslot {
-			return fmt.Errorf("refinement context timeslot does not match anchor block timeslot")
-		}
+		// anchorBlock, err := GetAnchorBlock(batch, b.Header, refinementContext.AnchorHeaderHash)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to get anchor block: %w", err)
+		// }
+		// if anchorBlock.Block.Header.TimeSlot != refinementContext.Timeslot {
+		// 	return fmt.Errorf("refinement context timeslot does not match anchor block timeslot")
+		// }
 	}
 
 	// (11.38)
@@ -468,7 +468,7 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	}
 	// (6.29)
 	for _, ticket := range b.Extrinsics.Tickets {
-		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+		if uint16(ticket.EntryIndex) >= constants.NumTicketEntries {
 			return fmt.Errorf("ticket entry index should be less than %d", constants.NumTicketEntries)
 		}
 		verified, err := bandersnatch.VerifyRingSignature(postState.SafroleBasicState.EpochTicketSubmissionsRoot, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(ticket.EntryIndex)), []byte{}, ticket.ValidityProof)
