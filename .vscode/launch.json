@@ -192,21 +192,21 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Debug Fuzzclient (In-Process)",
+            "name": "Debug Fuzzclient Test",
             "type": "go",
             "request": "launch",
-            "mode": "auto",
-            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient/main.go",
+            "mode": "test",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
             "args": [
-                "--in-process",
-                "--vectors",
-                "${workspaceFolder}/jam-conformance/fuzz-reports/jamzilla/0.6.7/1755251719"
+                "-test.v",
+                "-test.run=TestConformanceVectors"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "showLog": true,
             "env": {
-                "GODEBUG": "gctrace=1"
+                "GODEBUG": "gctrace=1",
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.6.7"
             }
         },
         {

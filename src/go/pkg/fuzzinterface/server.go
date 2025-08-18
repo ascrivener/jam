@@ -255,14 +255,14 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 
 // handleImportBlock handles an ImportBlock request
 func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, error) {
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 	var importBlock ImportBlock
 	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
+		stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 		return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
 	}
 	err = statetransition.STF(block.Block(importBlock))
-	stateRoot = merklizer.MerklizeState(merklizer.GetState(nil))
+	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
 }
 
