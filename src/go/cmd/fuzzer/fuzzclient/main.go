@@ -515,16 +515,16 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 	testVector := TestVector{}
 	if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
-		t.Logf("Failed to deserialize test vector")
+		t.Fatalf("Failed to deserialize test vector")
 	}
 
 	importBlock := fuzzinterface.ImportBlock(testVector.Block)
 	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
 	if err != nil {
 		t.Logf("Failed to send ImportBlock message: %v", err)
-		// if resp.StateRoot != nil && *resp.StateRoot != testVector.PostState.StateRoot {
-		// 	t.Logf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
-		// }
+		if resp.StateRoot != nil && *resp.StateRoot != testVector.PostState.StateRoot {
+			t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
+		}
 		return
 	}
 

@@ -313,9 +313,14 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 
 	var accumulationErrors []error
 
-	// Only process service indices that don't already have results
+	// Only process service indices that
+	// 1. don't already have results
+	// 2. exist in accumulation state components
 	for serviceIndex := range uniqueServiceIndices {
 		if _, exists := resultsByServiceIndex[serviceIndex]; !exists {
+			if _, exists := accumulationStateComponents.ServiceAccounts[serviceIndex]; !exists {
+				continue
+			}
 			wg.Add(1)
 			go func(sIndex types.ServiceIndex) {
 				defer wg.Done()
@@ -345,10 +350,13 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	wg.Wait()
 
 	// Extract results for designate service
-	designateServiceIndex := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
+	designateServiceIndex := managerPrivilegedServices.DesignateServiceIndex
+	if _, exists := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex]; exists {
+		designateServiceIndex = resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
+	}
 
 	// Extract results for assign service
-	var assignServiceIndices [constants.NumCores]types.ServiceIndex
+	assignServiceIndices := managerPrivilegedServices.AssignServiceIndices
 	for coreIdx, serviceIndex := range managerPrivilegedServices.AssignServiceIndices {
 		assignServiceIndices[coreIdx] = resultsByServiceIndex[serviceIndex].PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIdx)]
 	}
