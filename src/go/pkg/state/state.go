@@ -298,6 +298,7 @@ func getStateFromDataSource(ds dataSource) (State, error) {
 		{staterepository.MakeComponentKey(13), &state.ValidatorStatistics, "ValidatorStatistics"},
 		{staterepository.MakeComponentKey(14), &state.AccumulationQueue, "AccumulationQueue"},
 		{staterepository.MakeComponentKey(15), &state.AccumulationHistory, "AccumulationHistory"},
+		{staterepository.MakeComponentKey(16), &state.AccumulationOutputLog, "AccumulationOutputLog"},
 	}
 
 	// Deserialize each basic component
@@ -414,6 +415,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 		{staterepository.MakeComponentKey(13), state.ValidatorStatistics},
 		{staterepository.MakeComponentKey(14), state.AccumulationQueue},
 		{staterepository.MakeComponentKey(15), state.AccumulationHistory},
+		{staterepository.MakeComponentKey(16), state.AccumulationOutputLog},
 	}
 
 	// Serialize and store each basic component

@@ -157,7 +157,7 @@ build_platform() {
     build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "tiny" || return 1
     
     # Build fuzzserver with full constants
-    build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "full" || return 1
+    # build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "full" || return 1
     
     echo -e "${GREEN}Platform ${goos}/${goarch} built successfully${NC}"
 }
@@ -216,8 +216,8 @@ main() {
     # Build the fuzzclient for Linux AMD64 with both tiny and full variants
     echo -e "${BLUE}Building Linux AMD64 fuzzclient variants...${NC}"
     fuzzclient_dir="${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzclient"
-    build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
-    build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
+    # build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
+    # build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
     echo -e "${GREEN}Successfully built fuzzclient variants for Linux AMD64${NC}"
     
     echo -e "${GREEN}All builds completed successfully!${NC}"
