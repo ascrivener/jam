@@ -424,9 +424,6 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "1755530300") {
-		// 	continue
-		// }
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -480,6 +477,11 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		t.Logf("Test files are not sequential: %s and %s", warpFileName, testFileName)
 		return
 	}
+
+	// if err := pvm.InitFileLogger("pvm." + testFileName + ".log"); err != nil {
+	// 	log.Printf("Failed to initialize file logger: %v", err)
+	// 	return
+	// }
 
 	// Use first bin file for warp vector
 	warpVectorPath := testBinFiles[0]

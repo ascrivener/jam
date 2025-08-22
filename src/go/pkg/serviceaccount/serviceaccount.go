@@ -57,7 +57,11 @@ type ServiceAccount struct {
 
 // t
 func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
-	return types.Balance(max(0, constants.ServiceMinimumBalance+constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage)+constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage)-uint64(s.GratisStorageOffset)))
+	balanceNeededWithoutOffset := constants.ServiceMinimumBalance + constants.ServiceMinimumBalancePerItem*uint64(s.TotalItemsUsedInStorage) + constants.ServiceMinimumBalancePerOctet*uint64(s.TotalOctetsUsedInStorage)
+	if balanceNeededWithoutOffset <= uint64(s.GratisStorageOffset) {
+		return 0
+	}
+	return types.Balance(balanceNeededWithoutOffset - uint64(s.GratisStorageOffset))
 }
 
 // bold m, bold c

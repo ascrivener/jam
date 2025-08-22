@@ -219,6 +219,18 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAcc
 
 	// Set the new value
 	r.setByte(ramIndex, newByte)
+
+	// beginning := 207080
+	// end := beginning + 1
+
+	// // Debug output: show RAM values at [beginning...end] only if mutation is in that range
+	// if index >= uint64(beginning) && index < uint64(end) {
+	// 	fmt.Printf("Mutate at %d: RAM[%d:%d] = ", index, beginning, end)
+	// 	for i := uint64(beginning); i < uint64(end); i++ {
+	// 		fmt.Printf("%02x", r.getByte(RamIndex(i)))
+	// 	}
+	// 	fmt.Println()
+	// }
 }
 
 // MutateRange changes multiple bytes, optionally tracking access violations and updating rollback state

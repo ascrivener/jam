@@ -135,7 +135,7 @@ func handleOneRegTwoImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 	// Use the opcode from the context to choose the correct store operation.
 	switch ctx.Instruction {
 	case 70: // store_imm_ind_u8
-		pvm.State.RAM.Mutate(uint64(addr), uint8(vy), ram.Wrap, true)
+		pvm.State.RAM.Mutate(uint64(addr), byte(vy), ram.Wrap, true)
 	case 71: // store_imm_ind_u16
 		serialized := serializer.EncodeLittleEndian(2, uint64(uint16(vy)))
 		pvm.State.RAM.MutateRange(uint64(addr), serialized, ram.Wrap, true)
@@ -305,10 +305,23 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)),
 			serializer.EncodeLittleEndian(4, uint64(uint32(pvm.State.Registers[ra]))), ram.Wrap, true)
 	case 123: // store_ind_u64
-		pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)),
-			serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra])), ram.Wrap, true)
+		addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+		serialized := serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[ra]))
+		pvm.State.RAM.MutateRange(addr, serialized, ram.Wrap, true)
+
+		if fileLogger != nil {
+			fileLogger.Printf("store_ind_u64: RAM[%d:%d] = 0x%x (from reg[%d]=%d, base reg[%d]=%d + offset=%d)",
+				addr, addr+8, pvm.State.Registers[ra], ra, pvm.State.Registers[ra], rb, pvm.State.Registers[rb], vx)
+		}
 	case 124: // load_ind_u8
-		pvm.State.Registers[ra] = types.Register(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+types.Register(vx)), ram.Wrap, true))
+		addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+		value := pvm.State.RAM.Inspect(addr, ram.Wrap, true)
+		pvm.State.Registers[ra] = types.Register(value)
+
+		if fileLogger != nil {
+			fileLogger.Printf("load_ind_u8: reg[%d] = RAM[%d] = 0x%x (from reg[%d]=%d + offset=%d)",
+				ra, addr, value, rb, pvm.State.Registers[rb], vx)
+		}
 	case 125: // load_ind_i8
 		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+types.Register(vx)), ram.Wrap, true)))))
@@ -327,8 +340,15 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 			serializer.UnsignedToSigned(4, serializer.DecodeLittleEndian(
 				pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true)))))
 	case 130: // load_ind_u64
-		pvm.State.Registers[ra] = types.Register(serializer.DecodeLittleEndian(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 8, ram.Wrap, true)))
+		addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+		data := pvm.State.RAM.InspectRange(addr, 8, ram.Wrap, true)
+		value := types.Register(serializer.DecodeLittleEndian(data))
+		pvm.State.Registers[ra] = value
+
+		if fileLogger != nil {
+			fileLogger.Printf("load_ind_u64: reg[%d] = RAM[%d:%d] = 0x%x (from reg[%d]=%d + offset=%d)",
+				ra, addr, addr+8, value, rb, pvm.State.Registers[rb], vx)
+		}
 	case 131: // add_imm_32
 		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]+vx)))
 	case 132: // and_imm
@@ -398,7 +418,16 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 	case 150: // mul_imm_64
 		pvm.State.Registers[ra] = pvm.State.Registers[rb] * vx
 	case 151: // shlo_l_imm_64
-		pvm.State.Registers[ra] = signExtendImmediate(8, uint64(pvm.State.Registers[rb]<<(vx%64)))
+		oldValue := pvm.State.Registers[rb]
+		shiftAmount := vx % 64
+		shifted := uint64(pvm.State.Registers[rb] << shiftAmount)
+		result := signExtendImmediate(8, shifted)
+		pvm.State.Registers[ra] = result
+
+		if fileLogger != nil {
+			fileLogger.Printf("shlo_l_imm_64: reg[%d] = 0x%x (reg[%d]=0x%x << %d) [shifted=0x%x, sign_extended=0x%x]",
+				ra, result, rb, oldValue, shiftAmount, shifted, result)
+		}
 	case 152: // shlo_r_imm_64
 		pvm.State.Registers[ra] = signExtendImmediate(8, uint64(pvm.State.Registers[rb]>>(vx%64)))
 	case 153: // shar_r_imm_64
@@ -549,7 +578,7 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Regist
 	case 200: // add_64
 		pvm.State.Registers[rd] = pvm.State.Registers[ra] + pvm.State.Registers[rb]
 	case 201: // sub_64
-		pvm.State.Registers[rd] = pvm.State.Registers[ra] - pvm.State.Registers[rb] // TODO: change in GP
+		pvm.State.Registers[rd] = pvm.State.Registers[ra] - pvm.State.Registers[rb]
 	case 202: // mul_64
 		pvm.State.Registers[rd] = pvm.State.Registers[ra] * pvm.State.Registers[rb]
 	case 203: // div_u_64
@@ -592,17 +621,26 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Regist
 		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra]))>>(pvm.State.Registers[rb]%64)))
 	case 210: // and
-		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).And(
-				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
+			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).And(
+				serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[rb])))))
 	case 211: // xor
-		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Xor(
-				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
+			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).Xor(
+				serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[rb])))))
 	case 212: // or
-		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Or(
-				serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])))))
+		oldRd := pvm.State.Registers[rd]
+		operandA := pvm.State.Registers[ra] // Capture before operation
+		operandB := pvm.State.Registers[rb] // Capture before operation
+
+		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintBE(
+			serializer.UintToBitSequenceBE(8, uint64(operandA)).Or(
+				serializer.UintToBitSequenceBE(8, uint64(operandB)))))
+
+		if fileLogger != nil {
+			fileLogger.Printf("or: reg[%d] = 0x%x (reg[%d]=0x%x | reg[%d]=0x%x) [was 0x%x]",
+				rd, pvm.State.Registers[rd], ra, operandA, rb, operandB, oldRd)
+		}
 	case 213: // mul_upper_s_s
 		pvm.State.Registers[rd] = types.Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra])),

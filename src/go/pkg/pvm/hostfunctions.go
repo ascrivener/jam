@@ -195,19 +195,14 @@ func Write(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccou
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
-		val, ok, err := serviceAccount.GetServiceStorageItem(batch, keyBytes)
+		oldValue, ok, err := serviceAccount.GetServiceStorageItem(batch, keyBytes)
 		if err != nil {
 			return ExitReason{}, err
 		}
 		if ok {
-			l = types.Register(len(val))
+			l = types.Register(len(oldValue))
 		} else {
 			l = types.Register(HostCallNone)
-		}
-
-		oldValue, ok, err := serviceAccount.GetServiceStorageItem(batch, keyBytes)
-		if err != nil {
-			return ExitReason{}, err
 		}
 
 		// Handle according to vz (value length)
