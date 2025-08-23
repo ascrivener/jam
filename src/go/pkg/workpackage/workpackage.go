@@ -6,11 +6,11 @@ import (
 )
 
 type WorkPackage struct {
-	AuthorizationToken            []byte             // j
 	AuthorizationCodeServiceIndex types.ServiceIndex // h
 	AuthorizationCodeHash         [32]byte           // u
-	ParameterizationBlob          []byte             // p
-	RefinementContext             RefinementContext  // x
+	RefinementContext             RefinementContext  // c
+	AuthorizationToken            []byte             // j
+	AuthorizationConfig           []byte             // f
 	WorkItems                     []WorkItem         // w
 }
 
@@ -43,11 +43,11 @@ type ImportedSegmentInfo struct {
 
 type WorkItem struct {
 	ServiceIdentifier              types.ServiceIndex            // s
-	CodeHash                       [32]byte                      // h
-	Payload                        []byte                        // y
+	CodeHash                       [32]byte                      // c
 	RefinementGasLimit             types.GasValue                // g
 	AccumulationGasLimit           types.GasValue                // a
 	NumDataSegmentsExported        uint16                        // e
+	Payload                        []byte                        // y
 	ImportedSegmentsInfo           []ImportedSegmentInfo         // i
 	BlobHashesAndLengthsIntroduced []BlobHashAndLengthIntroduced // x
 }

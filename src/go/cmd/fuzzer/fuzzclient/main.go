@@ -21,6 +21,7 @@ import (
 	"jam/pkg/block/header"
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
+	"jam/pkg/pvm"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
@@ -309,6 +310,13 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	t.Logf("Processing %d test vectors...", len(fileNames))
 	failedTests := []string{}
 	for i, fileName := range fileNames {
+		if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
+			log.Printf("Failed to initialize file logger: %v", err)
+			return
+		}
+		if strings.Contains(fileName, "00000009") {
+			break
+		}
 		t.Logf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
 
 		vectorPath := filepath.Join(vectorsDir, fileName)

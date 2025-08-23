@@ -13,9 +13,9 @@ type UnsignedHeader struct {
 	TimeSlot                     types.Timeslot                            // t
 	EpochMarker                  *EpochMarker                              // e
 	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket) // w
-	OffendersMarker              []types.Ed25519PublicKey                  // o
 	BandersnatchBlockAuthorIndex types.ValidatorIndex                      // i
 	VRFSignature                 types.BandersnatchVRFSignature            // v
+	OffendersMarker              []types.Ed25519PublicKey                  // o
 }
 
 type Header struct {

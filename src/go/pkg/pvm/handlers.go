@@ -60,7 +60,7 @@ func handleTwoImmValues(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 func handleJump(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
 	lx := min(4, ctx.SkipLength)
 	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(getInstructionRange(pvm.Instructions, pvm.InstructionCounter+1, lx))))
-	return branch(vx, true, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
+	return branch(pvm, ctx, vx, true)
 }
 
 func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
@@ -76,7 +76,10 @@ func handleOneRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[ra] + vx)
-		return djump(targetAddr, pvm.nextInstructionCounter(ctx.SkipLength), pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
+		if fileLogger != nil {
+			fileLogger.Printf("jump_ind: targetAddr=%d, ra=%d, vx=%d", targetAddr, pvm.State.Registers[ra], vx)
+		}
+		return djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
 	case 51: // load_imm
 		pvm.State.Registers[ra] = vx
 	case 52: // load_u8
@@ -197,7 +200,7 @@ func handleOneRegOneImmOneOff(pvm *PVM, ctx *InstructionContext) (ExitReason, ty
 
 	// Execute the branch. The branch() function returns the exit reason
 	// and the next instruction counter based on the branch condition.
-	return branch(vy, cond, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
+	return branch(pvm, ctx, vy, cond)
 }
 
 func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
@@ -490,7 +493,7 @@ func handleTwoRegOneOffset(pvm *PVM, ctx *InstructionContext) (ExitReason, types
 	}
 
 	// Execute the branch based on the computed condition.
-	return branch(vx, cond, pvm.nextInstructionCounter(ctx.SkipLength), pvm.BasicBlockBeginningOpcodes)
+	return branch(pvm, ctx, vx, cond)
 }
 
 func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
@@ -517,7 +520,7 @@ func handleLoadImmJumpInd(pvm *PVM, ctx *InstructionContext) (ExitReason, types.
 	pvm.State.Registers[ra] = vx
 	return djump(
 		uint32(pvm.State.Registers[rb]+vy),
-		pvm.nextInstructionCounter(ctx.SkipLength),
+		pvm.InstructionCounter,
 		pvm.DynamicJumpTable,
 		pvm.BasicBlockBeginningOpcodes,
 	)

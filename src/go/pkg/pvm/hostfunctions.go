@@ -1126,7 +1126,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 				Blob     []byte
 			}{
 				CodeHash: workPackage.AuthorizationCodeHash,
-				Blob:     workPackage.ParameterizationBlob,
+				Blob:     workPackage.AuthorizationConfig,
 			})
 			preimage = serialized
 		case 9:

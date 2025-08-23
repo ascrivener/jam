@@ -202,13 +202,13 @@ func SelectDeferredTransfers(deferredTransfers []DeferredTransfer, serviceIndex 
 }
 
 type OperandTuple struct { // O
-	WorkPackageHash       [32]byte                  // h
+	WorkPackageHash       [32]byte                  // p
 	SegmentRoot           [32]byte                  // e
 	AuthorizerHash        [32]byte                  // a
 	WorkResultPayloadHash [32]byte                  // y
 	GasLimit              types.GenericGasValue     // g
-	ExecutionExitReason   types.ExecutionExitReason // d
-	WorkReportOutput      []byte                    // o
+	ExecutionExitReason   types.ExecutionExitReason // l
+	WorkReportOutput      []byte                    // t
 }
 
 type PreimageProvisions map[struct {

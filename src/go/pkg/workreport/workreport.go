@@ -13,17 +13,17 @@ import (
 
 type WorkReport struct {
 	WorkPackageSpecification   AvailabilitySpecification     // s
-	RefinementContext          workpackage.RefinementContext // x
+	RefinementContext          workpackage.RefinementContext // c
 	CoreIndex                  types.GenericNum              // c
 	AuthorizerHash             [32]byte                      // a
-	Output                     []byte                        // o
-	SegmentRootLookup          map[[32]byte][32]byte         // l
-	WorkDigests                []WorkDigest                  // r
 	IsAuthorizedGasConsumption types.GenericGasValue         // g
+	Output                     []byte                        // t
+	SegmentRootLookup          map[[32]byte][32]byte         // l
+	WorkDigests                []WorkDigest                  // d
 }
 
 type AvailabilitySpecification struct {
-	WorkPackageHash  [32]byte         // h
+	WorkPackageHash  [32]byte         // p
 	WorkBundleLength types.BlobLength // l
 	ErasureRoot      [32]byte         // u
 	SegmentRoot      [32]byte         // e
@@ -35,7 +35,7 @@ type WorkDigest struct {
 	ServiceCodeHash              [32]byte                  // c
 	PayloadHash                  [32]byte                  // y
 	AccumulateGasLimit           types.GasValue            // g
-	WorkResult                   types.ExecutionExitReason // d
+	WorkResult                   types.ExecutionExitReason // l
 	ActualRefinementGasUsed      types.GenericGasValue     // u
 	NumSegmentsImportedFrom      types.GenericNum          // i
 	NumExtrinsicsUsed            types.GenericNum          // x

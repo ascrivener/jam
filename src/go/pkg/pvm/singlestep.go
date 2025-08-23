@@ -145,28 +145,52 @@ func signExtendImmediate(n int, x uint64) types.Register {
 	return types.Register(x + sign*offset)
 }
 
-func branch(b types.Register, C bool, defaultNextInstructionCounter types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
+func branch(pvm *PVM, ctx *InstructionContext, b types.Register, C bool) (ExitReason, types.Register) {
 	if !C {
-		return NewSimpleExitReason(ExitGo), defaultNextInstructionCounter
+		return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
 	}
-	if _, exists := basicBlockBeginningOpcodes[int(b)]; !exists {
-		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
+	if _, exists := pvm.BasicBlockBeginningOpcodes[int(b)]; !exists {
+		return NewSimpleExitReason(ExitPanic), pvm.InstructionCounter
 	}
 	return NewSimpleExitReason(ExitGo), b
 }
 
 func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
+	if fileLogger != nil {
+		fileLogger.Printf("djump: a=%d, defaultNextPC=%d, dynamicJumpTableLen=%d", a, defaultNextInstructionCounter, len(dynamicJumpTable))
+	}
+
 	if a == (1<<32)-(1<<16) { // ??
+		if fileLogger != nil {
+			fileLogger.Printf("djump: HALT condition (a == %d)", (1<<32)-(1<<16))
+		}
 		return NewSimpleExitReason(ExitHalt), defaultNextInstructionCounter
 	}
 
 	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
+		if fileLogger != nil {
+			fileLogger.Printf("djump: PANIC condition (a=%d, maxAddr=%d, alignment=%d)",
+				a, uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor), constants.DynamicAddressAlignmentFactor)
+		}
 		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
 	}
+
 	nextInstructionCounter := dynamicJumpTable[a/uint32(constants.DynamicAddressAlignmentFactor)-1]
+	if fileLogger != nil {
+		fileLogger.Printf("djump: calculated nextPC=%d from dynamicJumpTable[%d]",
+			nextInstructionCounter, a/uint32(constants.DynamicAddressAlignmentFactor)-1)
+	}
+
 	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
 	if !exists {
+		if fileLogger != nil {
+			fileLogger.Printf("djump: PANIC - nextPC=%d not in basicBlockBeginningOpcodes", nextInstructionCounter)
+		}
 		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
+	}
+
+	if fileLogger != nil {
+		fileLogger.Printf("djump: SUCCESS - jumping to nextPC=%d", nextInstructionCounter)
 	}
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter
 }
