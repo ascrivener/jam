@@ -3,6 +3,8 @@
 package constants
 
 // Config constants
+const AllAccumulationTotalGasAllocation uint64 = 20000000 // G_T
+
 const ErasureCodedPiecesInSegment uint32 = 1026 // W_P
 
 const ErasureCodedPiecesSize uint32 = 4 // W_E
@@ -17,6 +19,8 @@ const NumTimeslotsPerEpoch uint32 = 12 // E
 
 const NumValidators uint16 = 6 // V
 
+const RefineGasAllocation uint64 = 1000000000 // G_R
+
 const SlotPeriodInSeconds uint16 = 6 // P
 
 const TicketSubmissionEndingSlotPhaseNumber uint32 = 10 // Y
@@ -26,8 +30,6 @@ const UnreferencePreimageExpungeTimeslots uint32 = 32 // D
 const ValidatorCoreAssignmentsRotationPeriodInTimeslots uint16 = 4 // R
 
 // Additional constants
-const AllAccumulationTotalGasAllocation uint64 = 3500000000 // G_T
-
 const AuthorizerQueueLength uint16 = 80 // Q
 
 const DynamicAddressAlignmentFactor int = 2 // Z_A
@@ -57,8 +59,6 @@ const MaxTotalSizeWorkReportBlobs uint32 = 48 << 10 // W_R
 const MaxWorkItemsInPackage uint16 = 16 // I
 
 const RecentHistorySizeBlocks uint16 = 8 // H
-
-const RefineGasAllocation uint64 = 5000000000 // G_R
 
 const ServiceCodeMaxSize uint32 = 4000000 // W_C
 
