@@ -262,6 +262,9 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 // testStateTransitions tests state transitions against test vectors
 func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	t.Log("Testing state transitions using test vectors...")
+// testStateTransitions tests state transitions against test vectors
+func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
+	t.Log("Testing state transitions using test vectors...")
 
 	// Get all test vectors from the reports-l0 directory
 	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
@@ -281,6 +284,9 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 		t.Fatalf("Failed to send SetState message: %v", err)
 	}
 
+	if resp.StateRoot == nil {
+		t.Fatal("SetState failed: no state root returned")
+	}
 	if resp.StateRoot == nil {
 		t.Fatal("SetState failed: no state root returned")
 	}
@@ -309,10 +315,6 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	t.Logf("Processing %d test vectors...", len(fileNames))
 	failedTests := []string{}
 	for i, fileName := range fileNames {
-		// if err := pvm.InitFileLogger("pvm." + fileName + ".log"); err != nil {
-		// 	log.Printf("Failed to initialize file logger: %v", err)
-		// 	return
-		// }
 		t.Logf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
 
 		vectorPath := filepath.Join(vectorsDir, fileName)
