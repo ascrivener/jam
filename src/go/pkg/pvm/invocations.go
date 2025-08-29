@@ -38,7 +38,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 	if len(authorizationCode) > int(constants.IsAuthorizedCodeMaxSizeOctets) {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorBIG), types.GasValue(0), nil
 	}
-	return ΨM(authorizationCode, 0, types.GasValue(constants.IsAuthorizedGasAllocation), serializer.Serialize(core), hf, &struct{}{})
+	return RunWithArgs(authorizationCode, 0, types.GasValue(constants.IsAuthorizedGasAllocation), serializer.Serialize(core), hf, &struct{}{})
 }
 
 type IntegratedPVM struct {
@@ -127,7 +127,7 @@ func Refine(batch *pebble.Batch, workItemIndex int, workPackage wp.WorkPackage, 
 		IntegratedPVMs: map[uint64]IntegratedPVM{},
 		ExportSequence: [][]byte{},
 	}
-	r, _, err := ΨM(preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
+	r, _, err := RunWithArgs(preimage, 0, workItem.RefinementGasLimit, a, hf, integratedPVMsAndExportSequence)
 	if err != nil {
 		return r, [][]byte{}, err
 	}
@@ -397,7 +397,7 @@ func Accumulate(globalBatch *pebble.Batch, accumulationStateComponents *Accumula
 		ctx.AccumulationResultContext.Batch.Close()
 		ctx.ExceptionalAccumulationResultContext.Batch.Close()
 	}()
-	executionExitReason, gasUsed, err := ΨM(*code, 5, gas, serializedArguments, hf, &ctx)
+	executionExitReason, gasUsed, err := RunWithArgs(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
 	}
@@ -480,7 +480,7 @@ func OnTransfer(batch *pebble.Batch, serviceAccounts serviceaccount.ServiceAccou
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		return serviceAccount, 0, nil
 	}
-	_, remainingGas, err := ΨM(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
+	_, remainingGas, err := RunWithArgs(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
 		Timeslot             types.GenericNum
 		ServiceIndex         types.GenericNum
 		DeferredTransfersLen types.GenericNum

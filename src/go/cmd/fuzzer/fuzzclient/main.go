@@ -262,9 +262,6 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 // testStateTransitions tests state transitions against test vectors
 func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	t.Log("Testing state transitions using test vectors...")
-// testStateTransitions tests state transitions against test vectors
-func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
-	t.Log("Testing state transitions using test vectors...")
 
 	// Get all test vectors from the reports-l0 directory
 	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")

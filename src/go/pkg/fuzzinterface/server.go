@@ -34,8 +34,8 @@ func NewServer() *Server {
 			},
 			JamVersion: Version{
 				Major: 0,
-				Minor: 6,
-				Patch: 7,
+				Minor: 7,
+				Patch: 0,
 			},
 		},
 	}

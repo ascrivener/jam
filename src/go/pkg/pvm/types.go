@@ -6,16 +6,16 @@ type SimpleExitReasonType int
 
 const (
 	ExitGo       SimpleExitReasonType = iota
-	ExitHalt                          // ∎: regular halt
-	ExitPanic                         // ☇: panic
-	ExitOutOfGas                      // ∞: out-of-gas
+	ExitHalt                          // regular halt
+	ExitPanic                         // panic
+	ExitOutOfGas                      // out-of-gas
 )
 
 type ComplexExitReasonType int
 
 const (
-	ExitHostCall  ComplexExitReasonType = iota // ̵h: host-call (with associated identifier)
-	ExitPageFault                              // F: page-fault (with associated ram address)
+	ExitHostCall  ComplexExitReasonType = iota // host-call (with associated identifier)
+	ExitPageFault                              // page-fault (with associated ram address)
 )
 
 type ComplexExitReason struct {

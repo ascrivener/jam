@@ -171,7 +171,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func (pvm *PVM) Ψ() ExitReason {
+func (pvm *PVM) Run() ExitReason {
 	for {
 		exitReason := pvm.SingleStep()
 		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
@@ -190,9 +190,9 @@ func (pvm *PVM) Ψ() ExitReason {
 	}
 }
 
-func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
+func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
 	for {
-		exitReason := pvm.Ψ()
+		exitReason := pvm.Run()
 		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
 			return exitReason, nil
 		}
@@ -215,12 +215,12 @@ func ΨH[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
 	}
 }
 
-func ΨM[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
+func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if pvm == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
-	postHostCallExitReason, err := ΨH(pvm, f, x)
+	postHostCallExitReason, err := RunHost(pvm, f, x)
 	if err != nil {
 		return types.ExecutionExitReason{}, 0, err
 	}

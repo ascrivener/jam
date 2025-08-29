@@ -38,18 +38,16 @@ func Append(r MMBelt, l [32]byte, hash func([]byte) [32]byte) MMBelt {
 
 // appendHelper (function P in the formula) is the recursive helper for Append
 func appendHelper(r MMBelt, l [32]byte, n int, hash func([]byte) [32]byte) MMBelt {
-	// Case 1: n ≥ |r| - we've gone past the end, append l
 	if n >= len(r) {
 		return append(r, &l)
 	}
 
-	// Case 2: n < |r| and r[n] is empty - place l at position n
 	if r[n] == nil {
 		replaceAtIndex(r, n, &l)
 		return r
 	}
 
-	// Case 3: otherwise recurse with:
+	// Otherwise recurse with:
 	// - Hash of r[n] concat l
 	// - n+1
 

@@ -276,8 +276,7 @@ func (n *Node) Start(ctx context.Context) error {
 
 		otherKey := publicKey[:]
 
-		// Check if we are the preferred initiator using the formula:
-		// P(a, b) = a when (a₃₁ > 127) ⊕ (b₃₁ > 127) ⊕ (a < b), otherwise b
+		// Check if we are the preferred initiator using the formula
 		myKeyLast := myKey[31] > 127
 		otherKeyLast := otherKey[31] > 127
 		myKeyLessThan := bytes.Compare(myKey, otherKey) < 0

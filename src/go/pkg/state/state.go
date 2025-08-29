@@ -18,23 +18,23 @@ import (
 )
 
 type State struct {
-	AuthorizersPool            [constants.NumCores][][32]byte                                               // α
-	RecentActivity             RecentActivity                                                               // β
-	SafroleBasicState          SafroleBasicState                                                            // γ
-	ServiceAccounts            serviceaccount.ServiceAccounts                                               // δ
-	EntropyAccumulator         [4][32]byte                                                                  // η
-	ValidatorKeysetsStaging    types.ValidatorKeysets                                                       // ι
-	ValidatorKeysetsActive     types.ValidatorKeysets                                                       // κ
-	ValidatorKeysetsPriorEpoch types.ValidatorKeysets                                                       // λ
-	PendingReports             [constants.NumCores]*PendingReport                                           // ρ
-	MostRecentBlockTimeslot    types.Timeslot                                                               // τ
-	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte                // φ
-	PrivilegedServices         types.PrivilegedServices                                                     // χ
-	Disputes                   types.Disputes                                                               // ψ
-	ValidatorStatistics        validatorstatistics.ValidatorStatistics                                      // π
-	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes // ϑ
-	AccumulationHistory        AccumulationHistory                                                          //
-	AccumulationOutputLog      []pvm.BEEFYCommitment                                                        // ξ
+	AuthorizersPool            [constants.NumCores][][32]byte
+	RecentActivity             RecentActivity
+	SafroleBasicState          SafroleBasicState
+	ServiceAccounts            serviceaccount.ServiceAccounts
+	EntropyAccumulator         [4][32]byte
+	ValidatorKeysetsStaging    types.ValidatorKeysets
+	ValidatorKeysetsActive     types.ValidatorKeysets
+	ValidatorKeysetsPriorEpoch types.ValidatorKeysets
+	PendingReports             [constants.NumCores]*PendingReport
+	MostRecentBlockTimeslot    types.Timeslot
+	AuthorizerQueue            [constants.NumCores][constants.AuthorizerQueueLength][32]byte
+	PrivilegedServices         types.PrivilegedServices
+	Disputes                   types.Disputes
+	ValidatorStatistics        validatorstatistics.ValidatorStatistics
+	AccumulationQueue          [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes
+	AccumulationHistory        AccumulationHistory
+	AccumulationOutputLog      []pvm.BEEFYCommitment
 }
 
 type PendingReport struct {

@@ -394,7 +394,7 @@ func computeAccumulationOutputLog(priorAccumulationOutputLog merklizer.MMBelt, a
 func computeRecentActivity(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []state.RecentBlock, priorAccumulationOutputLog merklizer.MMBelt, accumulationOutputSequence []pvm.BEEFYCommitment) state.RecentActivity {
 	posteriorAccumulationOutputLog := computeAccumulationOutputLog(priorAccumulationOutputLog, accumulationOutputSequence)
 
-	// Create work package hashes map: p = {((gw)s)h ↦ ((gw)s)e | g ∈ EG}
+	// Create work package hashes map
 	workPackageHashesToSegmentRoots := make(map[[32]byte][32]byte)
 	for _, guarantee := range guarantees {
 		// Calculate the work package hash ((gw)s)h
@@ -412,7 +412,6 @@ func computeRecentActivity(header header.Header, guarantees extrinsics.Guarantee
 	// Append the new block to the recent blocks list
 	updatedRecentBlocks := append(intermediateRecentBlocks, newRecentBlock)
 	// Keep only the most recent H blocks
-	// β′ ≡ β† n where H is RecentHistorySizeBlocks
 	if len(updatedRecentBlocks) > int(constants.RecentHistorySizeBlocks) {
 		// Trim the list to keep only the most recent H blocks
 		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-int(constants.RecentHistorySizeBlocks):]

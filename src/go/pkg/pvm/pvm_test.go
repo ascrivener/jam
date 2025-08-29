@@ -212,10 +212,10 @@ func TestPVMWithDirectoryTestVectors(t *testing.T) {
 			// 	}()
 
 			// 	// Run the PVM
-			// 	exitReason = pvm.Ψ()
+			// 	exitReason = pvm.Run()
 			// }()
 
-			exitReason := pvm.Ψ()
+			exitReason := pvm.Run()
 
 			// Check exit status
 			switch testVector.ExpectedStatus {
