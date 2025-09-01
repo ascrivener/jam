@@ -199,14 +199,14 @@
             "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
             "args": [
                 "-test.v",
-                "-test.run=TestStateTransitions"
+                "-test.run=TestConformanceVectors"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage_light"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.0/traces"
             }
         },
         {

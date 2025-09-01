@@ -614,10 +614,10 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		// Get source account
 		sourceAccount := ctx.Argument.AccumulatingServiceAccount()
 
-		// Calculate new balance (b = (xs)b − a)
+		// Calculate new balance
 		newBalance := sourceAccount.Balance - amount
 
-		// 4. Check if source has enough balance after transfer (b < (xs)t)
+		// Check if source has enough balance after transfer
 		if newBalance < sourceAccount.ThresholdBalanceNeeded() {
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return NewSimpleExitReason(ExitGo), nil
@@ -680,8 +680,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 			return NewSimpleExitReason(ExitGo), nil
 		}
 
-		// 3. Check interface type and if hash/lock pair exists in list
-		if destinationAccount.TotalItemsUsedInStorage != 2 { // Assuming InterfaceID 2 corresponds to lockable interface
+		if destinationAccount.TotalItemsUsedInStorage != 2 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return NewSimpleExitReason(ExitGo), nil
 		}
@@ -711,13 +710,14 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 				cutoffTime = 0 // If timeslot is too small, use 0 as cutoff
 			}
 			if lastTimeslot < cutoffTime {
-				// Update accumulating account balance (s′b = ((xu)d)[xs]b + db)
+				// Update accumulating account balance
 				// For simplicity, we're assuming the balance to transfer is associated with the destination account
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
-				// IMPORTANT: actually delete the service account and preimage lookup historical status from state as well
+				// IMPORTANT: actually delete the service account and preimage from state as well
 				serviceaccount.DeleteServiceAccountByServiceIndex(batch, destServiceIndex)
 				destinationAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(length), hash)
+				destinationAccount.DeletePreimageForHash(batch, hash)
 
 				// Remove the entry from destination account
 				delete(serviceAccounts, destServiceIndex)
@@ -735,7 +735,6 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 
 func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-		// Extract [o, z] from registers reg7,8
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // Length/Value
 
@@ -781,7 +780,6 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 
 func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-		// Extract [o, z] from registers reg7,8
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // BlobLength
 
@@ -840,7 +838,6 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 
 func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Batch, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-		// Extract [o, z] from registers reg7,8
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // BlobLength
 
@@ -852,7 +849,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble
 		var keyHash [32]byte
 		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
 
-		// Get the accumulating service account (xs)
+		// Get the accumulating service account
 		xs := ctx.Argument.AccumulatingServiceAccount()
 
 		// Check if the key exists in the historical status map
@@ -866,7 +863,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble
 			return NewSimpleExitReason(ExitGo), nil
 		}
 
-		// Define cutoff time for "old enough" timeslots (t - D)
+		// Define cutoff time for "old enough" timeslots
 		// Check for underflow before subtraction
 		var cutoffTime types.Timeslot
 		expungeTimeslots := types.Timeslot(constants.UnreferencePreimageExpungeTimeslots)
