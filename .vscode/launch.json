@@ -199,14 +199,15 @@
             "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
             "args": [
                 "-test.v",
-                "-test.run=TestStateTransitions"
+                "-test.run=TestStateTransitions",
+                "-test.cpuprofile=cpu.prof"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/fallback"
             }
         },
         {

@@ -26,22 +26,20 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 		return [32]byte{}
 	}
 	if len(bitSeqKeyMap) == 1 {
-		bs := bitsequence.New()
+		bs := bitsequence.New(64)
 		for _, stateKV := range bitSeqKeyMap {
 			if len(stateKV.Value) <= 32 {
 				serializedEmbeddedValueSize := serializer.Serialize(uint8(len(stateKV.Value)))
 				bs.AppendBits([]bool{true, false})
-				bs.Concat(bitsequence.FromBytes(serializedEmbeddedValueSize).SubsequenceFrom(2))
-				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]))
-				bs.Concat(bitsequence.FromBytes(stateKV.Value))
-				for bs.Len() < 64*8 {
-					bs.AppendBit(false)
-				}
+				bs.AppendBytes(serializedEmbeddedValueSize, 2)
+				bs.AppendBytes(stateKV.OriginalKey[:])
+				bs.AppendBytes(stateKV.Value)
+				bs.PadToBytes(64)
 			} else {
 				valueHash := blake2b.Sum256(stateKV.Value)
 				bs.AppendBits([]bool{true, true, false, false, false, false, false, false})
-				bs.Concat(bitsequence.FromBytes(stateKV.OriginalKey[:]))
-				bs.Concat(bitsequence.FromBytes(valueHash[:]))
+				bs.AppendBytes(stateKV.OriginalKey[:])
+				bs.AppendBytes(valueHash[:])
 			}
 			break
 		}
@@ -72,10 +70,10 @@ func merklizeStateRecurser(bitSeqKeyMap map[bitsequence.BitSeqKey]StateKV) [32]b
 
 	leftSubtrieHash := merklizeStateRecurser(leftMap)
 	rightSubtrieHash := merklizeStateRecurser(rightMap)
-	bs := bitsequence.New()
+	bs := bitsequence.New(64)
 	bs.AppendBit(false)
-	bs.Concat(bitsequence.FromBytes(leftSubtrieHash[:]).SubsequenceFrom(1))
-	bs.Concat(bitsequence.FromBytes(rightSubtrieHash[:]))
+	bs.AppendBytes(leftSubtrieHash[:], 1)
+	bs.AppendBytes(rightSubtrieHash[:])
 
 	return blake2b.Sum256(bs.Bytes())
 }

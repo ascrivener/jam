@@ -17,10 +17,10 @@ type BitSequence struct {
 	bitLen int    // number of bits stored in the sequence
 }
 
-// New returns an empty BitSequence.
-func New() *BitSequence {
+// New returns an empty BitSequence with the specified initial capacity (in bytes).
+func New(capacityBytes int) *BitSequence {
 	return &BitSequence{
-		buf:    []byte{},
+		buf:    make([]byte, 0, capacityBytes),
 		bitLen: 0,
 	}
 }
@@ -40,7 +40,7 @@ func NewZeros(n int) *BitSequence {
 // FromBytes creates a new BitSequence initialized with the bits from the given []byte.
 // The entire byte slice is appended (8 bits per byte) in order.
 func FromBytes(b []byte) *BitSequence {
-	bs := New()
+	bs := New(len(b))
 	bs.AppendBytes(b)
 	return bs
 }
@@ -66,7 +66,7 @@ func FromBytesLSBWithLength(b []byte, bitLen int) (*BitSequence, error) {
 		}
 	}
 
-	bs := New()
+	bs := New(requiredBytes)
 
 	// Process all bits at once rather than splitting full bytes and remaining
 	for i := 0; i < bitLen; i++ {
@@ -81,14 +81,17 @@ func FromBytesLSBWithLength(b []byte, bitLen int) (*BitSequence, error) {
 
 // AppendBit appends a single bit (true for 1, false for 0) to the sequence.
 func (bs *BitSequence) AppendBit(bit bool) {
-	// If we're at a byte boundary, add a new byte.
-	if bs.bitLen%8 == 0 {
-		bs.buf = append(bs.buf, 0)
+	byteIndex := bs.bitLen >> 3 // Faster than division by 8
+
+	// Extend slice if needed
+	if byteIndex >= len(bs.buf) {
+		bs.buf = bs.buf[:byteIndex+1]
+		bs.buf[byteIndex] = 0
 	}
-	// Determine the bit position in the last byte.
-	pos := 7 - (bs.bitLen % 8)
+
+	// Set bit if true (skip if false since byte is already zero)
 	if bit {
-		bs.buf[len(bs.buf)-1] |= 1 << uint(pos)
+		bs.buf[byteIndex] |= 1 << uint(7-(bs.bitLen&7)) // Use bitwise AND instead of modulo
 	}
 	bs.bitLen++
 }
@@ -101,20 +104,23 @@ func (bs *BitSequence) AppendBits(bits []bool) {
 }
 
 // AppendBytes appends a byte slice to the bit sequence, adding all 8 bits per byte.
-func (bs *BitSequence) AppendBytes(b []byte) {
-	for _, by := range b {
-		// Append bits from most-significant (bit 7) to least-significant (bit 0)
-		for i := 7; i >= 0; i-- {
-			bs.AppendBit(((by >> uint(i)) & 1) == 1)
-		}
+// If skipBits is provided, skips that many bits from the beginning.
+func (bs *BitSequence) AppendBytes(b []byte, skipBits ...int) {
+	if len(b) == 0 {
+		return
 	}
-}
 
-// Concat concatenates another BitSequence to the end of this one.
-func (bs *BitSequence) Concat(other *BitSequence) {
-	// Append each bit from the other sequence.
-	for i := 0; i < other.Len(); i++ {
-		bs.AppendBit(other.BitAt(i))
+	skip := 0
+	if len(skipBits) > 0 {
+		skip = skipBits[0]
+	}
+
+	totalBits := len(b) * 8
+	for i := skip; i < totalBits; i++ {
+		byteIndex := i >> 3
+		bitPos := 7 - (i & 7)
+		bit := (b[byteIndex] & (1 << bitPos)) != 0
+		bs.AppendBit(bit)
 	}
 }
 
@@ -124,7 +130,7 @@ func (bs *BitSequence) Subsequence(from, to int) *BitSequence {
 	if from < 0 || to > bs.bitLen || from > to {
 		panic("invalid subsequence indices")
 	}
-	newBS := New()
+	newBS := New(to - from)
 	for i := from; i < to; i++ {
 		newBS.AppendBit(bs.BitAt(i))
 	}
@@ -133,10 +139,6 @@ func (bs *BitSequence) Subsequence(from, to int) *BitSequence {
 
 func (bs *BitSequence) SubsequenceFrom(from int) *BitSequence {
 	return bs.Subsequence(from, bs.bitLen)
-}
-
-func (bs *BitSequence) SubsequenceTo(to int) *BitSequence {
-	return bs.Subsequence(0, to)
 }
 
 // BitAt returns the bit at position i (0-indexed).
@@ -391,6 +393,27 @@ func (bs *BitSequence) Invert() *BitSequence {
 		buf:    newBuf,
 		bitLen: bs.bitLen,
 	}
+}
+
+// PadToBytes pads the sequence with zeros to reach the specified byte length
+func (bs *BitSequence) PadToBytes(targetBytes int) {
+	targetBits := targetBytes * 8
+	if bs.bitLen >= targetBits {
+		return
+	}
+
+	// Extend slice to target size (will panic if targetBytes > cap(bs.buf))
+	bs.buf = bs.buf[:targetBytes]
+
+	// Zero out any new bytes (they should already be zero from slice extension)
+	for i := len(bs.buf) - 1; i >= 0; i-- {
+		if bs.buf[i] != 0 {
+			break
+		}
+		bs.buf[i] = 0
+	}
+
+	bs.bitLen = targetBits
 }
 
 // CoreBitMask represents a fixed-length array of bits.
