@@ -2,6 +2,7 @@ package serializer
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math/bits"
 	"reflect"
@@ -13,6 +14,24 @@ import (
 	"jam/pkg/ticket"
 	"jam/pkg/types"
 	"jam/pkg/workpackage"
+)
+
+// Cached type variables to avoid repeated reflect.TypeOf() calls
+var (
+	blobType                 = reflect.TypeOf(types.Blob(nil))
+	executionExitReasonType  = reflect.TypeOf(types.ExecutionExitReason{})
+	workItemType             = reflect.TypeOf(workpackage.WorkItem{})
+	sealingKeySequenceType   = reflect.TypeOf(sealingkeysequence.SealingKeySequence{})
+	bitSequenceType          = reflect.TypeOf(bitsequence.BitSequence{})
+	coreBitMaskType          = reflect.TypeOf(bitsequence.CoreBitMask{})
+	genericNumType           = reflect.TypeOf(types.GenericNum(0))
+	genericGasValueType      = reflect.TypeOf(types.GenericGasValue(0))
+	emptyStructType          = reflect.TypeOf(struct{}{})
+	ticketArrayType          = reflect.TypeOf([constants.NumTimeslotsPerEpoch]ticket.Ticket{})
+	bandersnatchKeyArrayType = reflect.TypeOf([constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey{})
+
+	// Cached values to avoid repeated reflect.ValueOf() calls
+	emptyStructValue = reflect.ValueOf(struct{}{})
 )
 
 // Serialize accepts an arbitrary value and returns its []byte representation.
@@ -43,15 +62,13 @@ func Deserialize(data []byte, target any) error {
 	return nil
 }
 
-// serializeValue is the recursive helper that writes the serialized form of v into buf.
+// serializeValue writes value v to buf
 func serializeValue(v reflect.Value, buf *bytes.Buffer) {
-	// Check for types.Blob first - special case to handle it as raw bytes
-	if v.Type().String() == "types.Blob" {
-		// For types.Blob (which is []byte), write the raw bytes directly
-		if !v.IsNil() {
-			blob := v.Interface().(types.Blob)
-			buf.Write(blob)
-		}
+	typ := v.Type()
+
+	if typ == blobType {
+		blob := v.Interface().(types.Blob)
+		buf.Write(blob)
 		return
 	}
 
@@ -60,28 +77,24 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		if v.IsNil() {
 			buf.WriteByte(0)
 			return
-		} else {
-			buf.WriteByte(1)
-			serializeValue(v.Elem(), buf)
 		}
+		buf.WriteByte(1)
+		serializeValue(v.Elem(), buf)
 		return
 	case reflect.Struct:
-		// Special handling based on the concrete type of the struct.
-		switch v.Type() {
-		case reflect.TypeOf(types.ExecutionExitReason{}):
+		switch typ {
+		case executionExitReasonType:
 			er := v.Interface().(types.ExecutionExitReason)
 			if !er.IsError() {
-				// Tag 0 indicates valid data; then, recursively encode the Data field.
 				buf.WriteByte(0)
 				serializeValue(reflect.ValueOf(*er.Blob), buf)
 			} else {
-				// Write the error value as a single octet.
 				buf.WriteByte(byte(*er.ExecutionError))
 			}
 			return
-		case reflect.TypeOf(workpackage.WorkItem{}):
+		case workItemType:
 			panic("Cannot directly serialize WorkItem")
-		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
+		case sealingKeySequenceType:
 			sks := v.Interface().(sealingkeysequence.SealingKeySequence)
 			if sks.IsSealKeyTickets() {
 				buf.WriteByte(0)
@@ -91,18 +104,16 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 				serializeValue(reflect.ValueOf(*sks.BandersnatchKeys), buf)
 			}
 			return
-		case reflect.TypeOf(bitsequence.BitSequence{}):
+		case bitSequenceType:
 			bs := v.Interface().(bitsequence.BitSequence)
 			buf.Write(EncodeLength(reflect.ValueOf(bs.ToBytesLSB())))
 			buf.Write(bs.ToBytesLSB())
 			return
-		case reflect.TypeOf(bitsequence.CoreBitMask{}):
-			// For CoreBitMask, we don't encode the length since it's fixed at NumCores
+		case coreBitMaskType:
 			cm := v.Interface().(bitsequence.CoreBitMask)
 			buf.Write(cm.ToBytesLSB())
 			return
 		default:
-			// For other structs, iterate over all fields.
 			for i := 0; i < v.NumField(); i++ {
 				serializeValue(v.Field(i), buf)
 			}
@@ -117,9 +128,8 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		serializeSlice(v, buf)
 		return
 
-	// Handle integer types by writing their little-endian representation.
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		l := int(v.Type().Size()) // number of octets to encode
+		l := int(typ.Size())
 		signedVal := v.Int()
 		var x uint64
 		if signedVal < 0 {
@@ -131,11 +141,11 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if v.Type() == reflect.TypeOf(types.GenericNum(0)) || v.Type() == reflect.TypeOf(types.GenericGasValue(0)) {
+		if typ == genericNumType || typ == genericGasValueType {
 			buf.Write(EncodeGeneralNatural(v.Uint()))
 			return
 		}
-		l := int(v.Type().Size())
+		l := int(typ.Size())
 		x := v.Uint()
 		buf.Write(EncodeLittleEndian(l, x))
 		return
@@ -147,8 +157,12 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 
 // deserializeValue is the recursive helper that reads from buf into value v
 func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
+	// Cache type and kind to avoid repeated calls
+	vType := v.Type()
+	vKind := v.Kind()
+
 	// Special case for types.Blob
-	if v.Type().String() == "types.Blob" {
+	if vType == blobType {
 		// For types.Blob just read all remaining bytes
 		// This matches our serialization approach where we write raw bytes
 		blob := make([]byte, buf.Len())
@@ -159,7 +173,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		return nil
 	}
 
-	switch v.Kind() {
+	switch vKind {
 	case reflect.Ptr:
 		// Check if pointer is nil
 		b, err := buf.ReadByte()
@@ -174,16 +188,15 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 		// Allocate if nil
 		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
+			v.Set(reflect.New(vType.Elem()))
 		}
 
 		// Deserialize the pointed-to value
 		return deserializeValue(v.Elem(), buf)
 
 	case reflect.Struct:
-		// Special handling based on the concrete type of the struct
-		switch v.Type() {
-		case reflect.TypeOf(types.ExecutionExitReason{}):
+		switch vType {
+		case executionExitReasonType:
 			tag, err := buf.ReadByte()
 			if err != nil {
 				return fmt.Errorf("failed to read ExecutionExitReason tag: %w", err)
@@ -209,9 +222,9 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			}
 			v.Set(reflect.ValueOf(er))
 			return nil
-		case reflect.TypeOf(workpackage.WorkItem{}):
+		case workItemType:
 			panic("Cannot directly deserialize WorkItem")
-		case reflect.TypeOf(sealingkeysequence.SealingKeySequence{}):
+		case sealingKeySequenceType:
 			tag, err := buf.ReadByte()
 			if err != nil {
 				return fmt.Errorf("failed to read SealingKeySequence tag: %w", err)
@@ -221,7 +234,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			if tag == 0 {
 				// Deserialize SealKeyTickets (array of tickets)
 				// First create a temporary value to hold the array
-				arrayValue := reflect.New(reflect.TypeOf([constants.NumTimeslotsPerEpoch]ticket.Ticket{})).Elem()
+				arrayValue := reflect.New(ticketArrayType).Elem()
 				if err := deserializeValue(arrayValue, buf); err != nil {
 					return err
 				}
@@ -231,7 +244,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			} else {
 				// Deserialize BandersnatchKeys (array of public keys)
 				// First create a temporary value to hold the array
-				arrayValue := reflect.New(reflect.TypeOf([constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey{})).Elem()
+				arrayValue := reflect.New(bandersnatchKeyArrayType).Elem()
 				if err := deserializeValue(arrayValue, buf); err != nil {
 					return err
 				}
@@ -242,7 +255,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			v.Set(reflect.ValueOf(sks))
 			return nil
 
-		case reflect.TypeOf(bitsequence.BitSequence{}):
+		case bitSequenceType:
 			// First read length of the bit sequence
 			seqLength, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {
@@ -265,7 +278,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			v.Set(reflect.ValueOf(*bs))
 			return nil
 
-		case reflect.TypeOf(bitsequence.CoreBitMask{}):
+		case coreBitMaskType:
 			// For CoreBitMask, we don't encode the length since it's fixed at NumCores
 			dataBytes := make([]byte, (constants.NumCores+7)/8)
 			if _, err := buf.Read(dataBytes); err != nil {
@@ -280,10 +293,11 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			return nil
 
 		default:
-			// For other structs, iterate over all fields
-			for i := 0; i < v.NumField(); i++ {
+			// For other structs, iterate over all fields.
+			numField := v.NumField()
+			for i := 0; i < numField; i++ {
 				if err := deserializeValue(v.Field(i), buf); err != nil {
-					return fmt.Errorf("failed to deserialize field %s: %w", v.Type().Field(i).Name, err)
+					return fmt.Errorf("failed to deserialize field %s: %w", vType.Field(i).Name, err)
 				}
 			}
 			return nil
@@ -297,22 +311,23 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 	// Handle integer types by reading their little-endian representation
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		l := int(v.Type().Size()) // number of octets to decode
+		l := int(vType.Size()) // Use cached type, number of octets to decode
 		if buf.Len() < l {
 			return fmt.Errorf("not enough data to read %d-byte integer", l)
 		}
 
-		bytes := make([]byte, l)
-		if _, err := buf.Read(bytes); err != nil {
+		// Use a fixed-size buffer to avoid allocation for small integers
+		var bytes [8]byte
+		if _, err := buf.Read(bytes[:l]); err != nil {
 			return fmt.Errorf("failed to read integer bytes: %w", err)
 		}
 
-		x := UnsignedToSigned(l, DecodeLittleEndian(bytes))
+		x := UnsignedToSigned(l, DecodeLittleEndian(bytes[:l]))
 		v.SetInt(x)
 		return nil
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if v.Type() == reflect.TypeOf(types.GenericNum(0)) || v.Type() == reflect.TypeOf(types.GenericGasValue(0)) {
+		if vType == genericNumType || vType == genericGasValueType {
 			// For regular maps, read length prefix
 			length, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {
@@ -323,22 +338,23 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			v.SetUint(length)
 			return nil
 		}
-		l := int(v.Type().Size())
+		l := int(vType.Size()) // Use cached type
 		if buf.Len() < l {
 			return fmt.Errorf("not enough data to read %d-byte unsigned integer", l)
 		}
 
-		bytes := make([]byte, l)
-		if _, err := buf.Read(bytes); err != nil {
+		// Use a fixed-size buffer to avoid allocation for small integers
+		var bytes [8]byte
+		if _, err := buf.Read(bytes[:l]); err != nil {
 			return fmt.Errorf("failed to read unsigned integer bytes: %w", err)
 		}
 
-		x := DecodeLittleEndian(bytes)
+		x := DecodeLittleEndian(bytes[:l])
 		v.SetUint(x)
 		return nil
 
 	default:
-		return fmt.Errorf("unsupported kind for deserialization: %s", v.Kind())
+		return fmt.Errorf("unsupported kind for deserialization: %s", vKind)
 	}
 }
 
@@ -346,11 +362,22 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 // For maps with value type struct{} (used as sets), it serializes the sorted keys.
 // Otherwise, it writes the length encoding, then each key-value pair in key order.
 func serializeMap(v reflect.Value, buf *bytes.Buffer) {
-	// Extract and sort the map keys.
 	keys := v.MapKeys()
+
+	var keyKind reflect.Kind
+	var isKeyByteArray bool
+
+	if len(keys) > 0 {
+		keyType := keys[0].Type()
+		keyKind = keyType.Kind()
+		if keyKind == reflect.Array {
+			isKeyByteArray = keyType.Elem().Kind() == reflect.Uint8
+		}
+	}
+
 	sort.Slice(keys, func(i, j int) bool {
 		a, b := keys[i], keys[j]
-		switch a.Kind() {
+		switch keyKind {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			return a.Int() < b.Int()
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
@@ -360,11 +387,7 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 		case reflect.String:
 			return a.String() < b.String()
 		case reflect.Array:
-			// Check if b is also an array and if both are byte arrays ([N]byte)
-			if b.Kind() == reflect.Array &&
-				a.Type().Elem().Kind() == reflect.Uint8 &&
-				b.Type().Elem().Kind() == reflect.Uint8 {
-
+			if isKeyByteArray {
 				lenA := a.Len()
 				lenB := b.Len()
 				minLen := lenA
@@ -373,7 +396,7 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 				}
 
 				for k := 0; k < minLen; k++ {
-					byteA := byte(a.Index(k).Uint()) // .Uint() is safe for uint8 elements
+					byteA := byte(a.Index(k).Uint())
 					byteB := byte(b.Index(k).Uint())
 					if byteA < byteB {
 						return true
@@ -382,26 +405,24 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 						return false
 					}
 				}
-				// If all common elements are equal, the shorter array comes first.
 				return lenA < lenB
 			}
-			// If not byte arrays or types mismatch for this specialized comparison, fall through.
 			fallthrough
 		default:
-			// Fallback: compare string representations.
 			return fmt.Sprintf("%v", a.Interface()) < fmt.Sprintf("%v", b.Interface())
 		}
 	})
 
 	buf.Write(EncodeLength(v))
 
-	// If the map is used as a set (value type is struct{}), simply serialize the keys.
-	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
+	valueType := v.Type().Elem()
+	isSet := valueType == emptyStructType
+
+	if isSet {
 		for _, key := range keys {
 			serializeValue(key, buf)
 		}
 	} else {
-		// Then serialize each key followed by its associated value.
 		for _, key := range keys {
 			serializeValue(key, buf)
 			serializeValue(v.MapIndex(key), buf)
@@ -411,49 +432,41 @@ func serializeMap(v reflect.Value, buf *bytes.Buffer) {
 
 // deserializeMap is a helper to deserialize maps
 func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
-	// For regular maps, read length prefix
 	length, n, ok := DecodeGeneralNatural(buf.Bytes())
 	if !ok {
 		return fmt.Errorf("failed to decode map length")
 	}
-	// Consume the bytes used for length
 	buf.Next(n)
 
-	// Create a new map if the map is nil
 	if v.IsNil() {
 		v.Set(reflect.MakeMap(v.Type()))
 	}
 
-	// Special handling for maps with value type struct{} (used as sets)
-	if v.Type().Elem() == reflect.TypeOf(struct{}{}) {
-		// For sets, deserialize keys only
-		keyType := v.Type().Key()
+	typ := v.Type()
+	valueType := typ.Elem()
+	keyType := typ.Key()
+	isSet := valueType == emptyStructType
+
+	if isSet {
 		for i := uint64(0); i < length; i++ {
 			key := reflect.New(keyType).Elem()
 			if err := deserializeValue(key, buf); err != nil {
 				return fmt.Errorf("failed to deserialize set key: %w", err)
 			}
-			// Set key with empty struct{}{} value
-			v.SetMapIndex(key, reflect.ValueOf(struct{}{}))
+			v.SetMapIndex(key, emptyStructValue)
 		}
 	} else {
-		// For normal maps, deserialize key-value pairs
-		keyType := v.Type().Key()
-		valueType := v.Type().Elem()
 		for i := uint64(0); i < length; i++ {
-			// Deserialize key
 			key := reflect.New(keyType).Elem()
 			if err := deserializeValue(key, buf); err != nil {
 				return fmt.Errorf("failed to deserialize map key: %w", err)
 			}
 
-			// Deserialize value
 			value := reflect.New(valueType).Elem()
 			if err := deserializeValue(value, buf); err != nil {
 				return fmt.Errorf("failed to deserialize map value: %w", err)
 			}
 
-			// Set key-value pair in map
 			v.SetMapIndex(key, value)
 		}
 	}
@@ -465,23 +478,39 @@ func deserializeMap(v reflect.Value, buf *bytes.Buffer) error {
 // For slices (but not arrays), it encodes the length first.
 // Special case for []byte/[]uint8 to handle them as raw binary data (no length prefix).
 func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
+	// Cache values to avoid repeated calls
+	vKind := v.Kind()
+	vLen := v.Len()
+	vType := v.Type()
+
 	// Regular handling for non-byte slices/arrays
-	if v.Kind() == reflect.Slice {
+	if vKind == reflect.Slice {
 		buf.Write(EncodeLength(v))
 	}
 
-	// For other slices/arrays, serialize each element.
-	for i := range v.Len() {
+	// Fast path for byte slices - write bulk data instead of element-by-element
+	if vType.Elem().Kind() == reflect.Uint8 && vKind == reflect.Slice {
+		data := v.Bytes()
+		buf.Write(data)
+		return
+	}
+
+	// General case for other slices/arrays
+	for i := 0; i < vLen; i++ {
 		serializeValue(v.Index(i), buf)
 	}
 }
 
 // deserializeSlice is a helper to deserialize arrays and slices
 func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
+	// Cache values to avoid repeated calls
+	vKind := v.Kind()
+	vType := v.Type()
+
 	// For arrays, we know the length; for slices, read length prefix
 	length := v.Len()
 
-	if v.Kind() == reflect.Slice {
+	if vKind == reflect.Slice {
 		// Read slice length using DecodeGeneralNatural for consistent decoding
 		lengthBytes := buf.Bytes()
 		decodedLength, n, ok := DecodeGeneralNatural(lengthBytes)
@@ -493,10 +522,20 @@ func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 		length = int(decodedLength)
 
 		// Allocate slice
-		v.Set(reflect.MakeSlice(v.Type(), length, length))
+		v.Set(reflect.MakeSlice(vType, length, length))
 	}
 
-	// General case
+	// Fast path for byte slices - read bulk data instead of element-by-element
+	if vType.Elem().Kind() == reflect.Uint8 && vKind == reflect.Slice {
+		data := make([]byte, length)
+		if _, err := buf.Read(data); err != nil {
+			return fmt.Errorf("failed to read byte slice data: %w", err)
+		}
+		v.SetBytes(data)
+		return nil
+	}
+
+	// General case for other slice types
 	for i := 0; i < length; i++ {
 		if err := deserializeValue(v.Index(i), buf); err != nil {
 			return fmt.Errorf("failed to deserialize element %d: %w", i, err)
@@ -603,20 +642,52 @@ func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 }
 
 func EncodeLittleEndian(octets int, x uint64) []byte {
-	result := make([]byte, octets)
-	for i := range octets {
-		result[i] = byte(x % 256)
-		x /= 256
+	// Use Go's built-in binary encoding for common sizes
+	switch octets {
+	case 1:
+		return []byte{byte(x)}
+	case 2:
+		result := make([]byte, 2)
+		binary.LittleEndian.PutUint16(result, uint16(x))
+		return result
+	case 4:
+		result := make([]byte, 4)
+		binary.LittleEndian.PutUint32(result, uint32(x))
+		return result
+	case 8:
+		result := make([]byte, 8)
+		binary.LittleEndian.PutUint64(result, x)
+		return result
+	default:
+		// Fallback for unusual sizes
+		result := make([]byte, octets)
+		for i := range octets {
+			result[i] = byte(x)
+			x >>= 8
+		}
+		return result
 	}
-	return result
 }
 
 func DecodeLittleEndian(b []byte) uint64 {
-	var x uint64
-	for i, v := range b {
-		x |= uint64(v) << (8 * i)
+	// Use Go's built-in binary decoding for common sizes
+	switch len(b) {
+	case 1:
+		return uint64(b[0])
+	case 2:
+		return uint64(binary.LittleEndian.Uint16(b))
+	case 4:
+		return uint64(binary.LittleEndian.Uint32(b))
+	case 8:
+		return binary.LittleEndian.Uint64(b)
+	default:
+		// Fallback for unusual sizes
+		var x uint64
+		for i, v := range b {
+			x |= uint64(v) << (8 * i)
+		}
+		return x
 	}
-	return x
 }
 
 // UnsignedToSigned converts an unsigned integer x (assumed to be in [0, 2^(8*n)))

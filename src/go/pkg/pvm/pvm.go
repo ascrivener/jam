@@ -12,6 +12,7 @@ type PVM struct {
 	Instructions               []byte
 	Opcodes                    bitsequence.BitSequence
 	BasicBlockBeginningOpcodes map[int]struct{} // Precomputed basic block beginning opcodes.
+	SkipLengths                []int            // Precomputed skip lengths for all instruction positions.
 	DynamicJumpTable           []types.Register
 	InstructionCounter         types.Register
 	State                      *State
@@ -22,10 +23,17 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	if !ok {
 		return nil
 	}
+
+	// Precompute skip lengths for all instruction positions
+	skipLengths := make([]int, len(instructions))
+	for i := range instructions {
+		skipLengths[i] = skip(types.Register(i), opcodes)
+	}
+
 	basicBlockBeginningOpcodes := map[int]struct{}{0: {}} // Start with index 0 as it's always a basic block beginning
 	for n, instruction := range instructions {
 		if opcodes.BitAt(n) && terminationOpcodes[instruction] {
-			basicBlockBeginningOpcodes[n+1+skip(types.Register(n), opcodes)] = struct{}{}
+			basicBlockBeginningOpcodes[n+1+skipLengths[n]] = struct{}{}
 		}
 	}
 	for basicBlockBeginningOpcode := range basicBlockBeginningOpcodes {
@@ -37,6 +45,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		Instructions:               instructions,
 		Opcodes:                    opcodes,
 		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes,
+		SkipLengths:                skipLengths,
 		DynamicJumpTable:           dynamicJumpTable,
 		InstructionCounter:         instructionCounter,
 		State: &State{

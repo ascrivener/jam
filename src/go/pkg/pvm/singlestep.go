@@ -1,7 +1,6 @@
 package pvm
 
 import (
-	"fmt"
 	"log"
 	"math/bits"
 	"os"
@@ -47,15 +46,11 @@ func (pvm *PVM) SingleStep() ExitReason {
 
 	ctx := InstructionContext{
 		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
-		SkipLength:  skip(pvm.InstructionCounter, pvm.Opcodes),
+		SkipLength:  pvm.SkipLengths[pvm.InstructionCounter],
 	}
 
 	var exitReason ExitReason
 	var nextIC types.Register
-
-	if 11826 == pvm.InstructionCounter {
-		fmt.Println("hi")
-	}
 
 	handler := dispatchTable[ctx.Instruction]
 	if handler == nil || !pvm.Opcodes.BitAt(int(pvm.InstructionCounter)) {

@@ -199,14 +199,52 @@
             "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
             "args": [
                 "-test.v",
-                "-test.run=TestConformanceVectors"
+                "-test.run=TestStateTransitions"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.0/traces"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage"
+            }
+        },
+        {
+            "name": "Debug Fuzzclient Test with CPU Profile",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
+            "args": [
+                "-test.v",
+                "-test.run=TestConformanceVectors",
+                "-test.cpuprofile=cpu.prof"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "showLog": true,
+            "env": {
+                "GODEBUG": "gctrace=1",
+                "TEST_VECTORS_DIR": "${workspaceFolder}/zzzz"
+            }
+        },
+        {
+            "name": "Debug Fuzzclient Test with Execution Trace",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
+            "args": [
+                "-test.v",
+                "-test.run=TestConformanceVectors",
+                "-test.trace=trace.out"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "showLog": true,
+            "env": {
+                "GODEBUG": "gctrace=1",
+                "TEST_VECTORS_DIR": "${workspaceFolder}/zzzz"
             }
         },
         {
