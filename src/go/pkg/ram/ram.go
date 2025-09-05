@@ -131,29 +131,27 @@ func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions
 	return result[0]
 }
 
-// rangeOperation performs bulk operations on memory ranges with optimized page-level access checking
-func (r *RAM) rangeOperation(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool,
-	accessCheck func(RamAccess) bool, operation func([]byte, uint64, uint64, []byte)) []byte {
+// pageIterator handles the common logic of iterating through pages and checking access
+func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool,
+	accessCheck func(RamAccess) bool, pageOperation func([]byte, uint64, uint64, uint64)) {
 
 	// Handle zero-length ranges
 	if length == 0 {
-		return make([]byte, 0)
+		return
 	}
 
-	result := make([]byte, length)
-
-	// Calculate page range for access checking
-	startPage := uint32(start / PageSize)
-	endPage := uint32((start + length - 1) / PageSize)
-
-	// Get access permissions for all pages in range
-	pageAccess := make(map[uint32]RamAccess)
-	for pageNum := startPage; pageNum <= endPage; pageNum++ {
-		pageAccess[pageNum] = r.getPageAccess(pageNum)
+	// For small ranges, avoid map allocation
+	var pageAccess map[uint32]RamAccess
+	if length > PageSize*2 { // Only cache for multi-page operations
+		startPage := uint32(start / PageSize)
+		endPage := uint32((start + length - 1) / PageSize)
+		pageAccess = make(map[uint32]RamAccess, endPage-startPage+1)
+		for pageNum := startPage; pageNum <= endPage; pageNum++ {
+			pageAccess[pageNum] = r.getPageAccess(pageNum)
+		}
 	}
 
-	// Process data page by page for efficiency
-	resultOffset := uint64(0)
+	// Process data page by page
 	for i := uint64(0); i < length; {
 		index := start + i
 		if mode == Wrap {
@@ -163,31 +161,44 @@ func (r *RAM) rangeOperation(start, length uint64, mode MemoryAccessMode, trackA
 		pageNum := uint32(index / PageSize)
 		pageOffset := index % PageSize
 
-		// Check access using cached page permissions
-		if accessCheck(pageAccess[pageNum]) && trackAccessExceptions {
-			// Track first byte in this chunk as access exception
+		// Check access - use cached or direct lookup
+		var access RamAccess
+		if pageAccess != nil {
+			access = pageAccess[pageNum]
+		} else {
+			access = r.getPageAccess(pageNum)
+		}
+
+		if accessCheck(access) && trackAccessExceptions {
 			r.memoryAccessExceptionIndices = append(r.memoryAccessExceptionIndices, RamIndex(index))
 		}
 
 		// Get the page and perform the operation
 		page := r.getOrCreatePage(pageNum)
 		bytesToCopy := min(PageSize-pageOffset, length-i)
-		operation(page, pageOffset, bytesToCopy, result[resultOffset:resultOffset+bytesToCopy])
+		pageOperation(page, pageOffset, bytesToCopy, i)
 
-		resultOffset += bytesToCopy
 		i += bytesToCopy
 	}
-
-	return result
 }
 
 // InspectRange returns bytes from start to end, optionally tracking access violations
 func (r *RAM) InspectRange(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
-	return r.rangeOperation(start, length, mode, trackAccessExceptions,
+	if length == 0 {
+		return make([]byte, 0)
+	}
+
+	result := make([]byte, length)
+	resultOffset := uint64(0)
+
+	r.pageIterator(start, length, mode, trackAccessExceptions,
 		func(access RamAccess) bool { return access == Inaccessible },
-		func(page []byte, pageOffset, bytesToCopy uint64, result []byte) {
-			copy(result, page[pageOffset:pageOffset+bytesToCopy])
+		func(page []byte, pageOffset, bytesToCopy, i uint64) {
+			copy(result[resultOffset:resultOffset+bytesToCopy], page[pageOffset:pageOffset+bytesToCopy])
+			resultOffset += bytesToCopy
 		})
+
+	return result
 }
 
 // Mutate changes a byte at the given index, optionally tracking access violations and updating rollback state
@@ -200,9 +211,9 @@ func (r *RAM) MutateRange(start uint64, newBytes []byte, mode MemoryAccessMode, 
 	length := uint64(len(newBytes))
 	sourceOffset := uint64(0)
 
-	r.rangeOperation(start, length, mode, trackAccessExceptions,
+	r.pageIterator(start, length, mode, trackAccessExceptions,
 		func(access RamAccess) bool { return access != Mutable },
-		func(page []byte, pageOffset, bytesToCopy uint64, _ []byte) {
+		func(page []byte, pageOffset, bytesToCopy, i uint64) {
 			copy(page[pageOffset:pageOffset+bytesToCopy], newBytes[sourceOffset:sourceOffset+bytesToCopy])
 			sourceOffset += bytesToCopy
 		})

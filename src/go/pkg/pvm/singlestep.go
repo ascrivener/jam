@@ -79,7 +79,7 @@ func (pvm *PVM) SingleStep() ExitReason {
 }
 
 func getInstruction(instructions []byte, instructionCounter types.Register) byte {
-	if instructionCounter >= types.Register(len(instructions)) {
+	if int(instructionCounter) >= len(instructions) {
 		return 0
 	}
 	return instructions[instructionCounter]
@@ -87,10 +87,14 @@ func getInstruction(instructions []byte, instructionCounter types.Register) byte
 
 func getInstructionRange(instructions []byte, instructionCounter types.Register, count int) []byte {
 	start := int(instructionCounter)
-	if start >= len(instructions) {
+	instructionsLen := len(instructions)
+
+	if start >= instructionsLen {
 		return []byte{}
 	}
-	end := min(start+count, len(instructions))
+
+	end := min(start+count, instructionsLen)
+
 	return instructions[start:end]
 }
 

@@ -275,10 +275,11 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register
 }
 
 func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register) {
+	instrByte := getInstruction(pvm.Instructions, pvm.InstructionCounter+1)
 	// Extract the two register operands from the same instruction byte.
 	// Lower 4 bits for 'ra' (destination) and upper 4 bits for 'rb' (source).
-	ra := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))%16)
-	rb := min(12, int(getInstruction(pvm.Instructions, pvm.InstructionCounter+1))/16)
+	ra := min(12, int(instrByte)%16)
+	rb := min(12, int(instrByte)/16)
 
 	// Compute the immediate value.
 	lx := min(4, max(0, ctx.SkipLength-1))

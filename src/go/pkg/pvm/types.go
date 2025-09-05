@@ -28,12 +28,29 @@ type ExitReason struct {
 	ComplexExitReason *ComplexExitReason
 }
 
+// Pre-allocated ExitReason constants to avoid heap allocations
+var (
+	ExitReasonGo       = ExitReason{SimpleExitReason: &[]SimpleExitReasonType{ExitGo}[0]}
+	ExitReasonPanic    = ExitReason{SimpleExitReason: &[]SimpleExitReasonType{ExitPanic}[0]}
+	ExitReasonHalt     = ExitReason{SimpleExitReason: &[]SimpleExitReasonType{ExitHalt}[0]}
+	ExitReasonOutOfGas = ExitReason{SimpleExitReason: &[]SimpleExitReasonType{ExitOutOfGas}[0]}
+)
+
 // NewSimpleExitReason creates an ExitReason representing a simple exit.
 // It sets only the SimpleExitReason field.
 func NewSimpleExitReason(reason SimpleExitReasonType) ExitReason {
-	return ExitReason{
-		SimpleExitReason:  &reason,
-		ComplexExitReason: nil,
+	// Use pre-allocated constants for common cases
+	switch reason {
+	case ExitGo:
+		return ExitReasonGo
+	case ExitPanic:
+		return ExitReasonPanic
+	case ExitHalt:
+		return ExitReasonHalt
+	case ExitOutOfGas:
+		return ExitReasonOutOfGas
+	default:
+		panic("NewSimpleExitReason: invalid reason")
 	}
 }
 
