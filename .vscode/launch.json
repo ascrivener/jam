@@ -207,7 +207,7 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/fallback"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage"
             }
         },
         {

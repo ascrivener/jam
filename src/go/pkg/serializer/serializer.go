@@ -22,7 +22,6 @@ var (
 	executionExitReasonType  = reflect.TypeOf(types.ExecutionExitReason{})
 	workItemType             = reflect.TypeOf(workpackage.WorkItem{})
 	sealingKeySequenceType   = reflect.TypeOf(sealingkeysequence.SealingKeySequence{})
-	bitSequenceType          = reflect.TypeOf(bitsequence.BitSequence{})
 	coreBitMaskType          = reflect.TypeOf(bitsequence.CoreBitMask{})
 	genericNumType           = reflect.TypeOf(types.GenericNum(0))
 	genericGasValueType      = reflect.TypeOf(types.GenericGasValue(0))
@@ -103,11 +102,6 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 				buf.WriteByte(1)
 				serializeValue(reflect.ValueOf(*sks.BandersnatchKeys), buf)
 			}
-			return
-		case bitSequenceType:
-			bs := v.Interface().(bitsequence.BitSequence)
-			buf.Write(EncodeLength(reflect.ValueOf(bs.ToBytesLSB())))
-			buf.Write(bs.ToBytesLSB())
 			return
 		case coreBitMaskType:
 			cm := v.Interface().(bitsequence.CoreBitMask)
@@ -253,29 +247,6 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 				sks.BandersnatchKeys = &keyArray
 			}
 			v.Set(reflect.ValueOf(sks))
-			return nil
-
-		case bitSequenceType:
-			// First read length of the bit sequence
-			seqLength, n, ok := DecodeGeneralNatural(buf.Bytes())
-			if !ok {
-				return fmt.Errorf("failed to decode BitSequence length")
-			}
-			// Consume the length bytes
-			buf.Next(n)
-
-			// Now read only the required bytes for the BitSequence
-			requiredBytes := (seqLength + 7) / 8
-			dataBytes := make([]byte, requiredBytes)
-			if _, err := buf.Read(dataBytes); err != nil {
-				return fmt.Errorf("failed to read BitSequence data: %w", err)
-			}
-
-			bs, err := bitsequence.FromBytesLSBWithLength(dataBytes, int(seqLength))
-			if err != nil {
-				return fmt.Errorf("failed to create BitSequence from bytes: %w", err)
-			}
-			v.Set(reflect.ValueOf(*bs))
 			return nil
 
 		case coreBitMaskType:
@@ -642,24 +613,23 @@ func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 }
 
 func EncodeLittleEndian(octets int, x uint64) []byte {
-	// Use Go's built-in binary encoding for common sizes
 	switch octets {
 	case 1:
 		return []byte{byte(x)}
 	case 2:
-		result := make([]byte, 2)
-		binary.LittleEndian.PutUint16(result, uint16(x))
-		return result
+		var buf [2]byte
+		binary.LittleEndian.PutUint16(buf[:], uint16(x))
+		return buf[:]
 	case 4:
-		result := make([]byte, 4)
-		binary.LittleEndian.PutUint32(result, uint32(x))
-		return result
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], uint32(x))
+		return buf[:]
 	case 8:
-		result := make([]byte, 8)
-		binary.LittleEndian.PutUint64(result, x)
-		return result
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], x)
+		return buf[:]
 	default:
-		// Fallback for unusual sizes
+		// Fallback for unusual sizes - still needs heap allocation
 		result := make([]byte, octets)
 		for i := range octets {
 			result[i] = byte(x)
@@ -735,58 +705,6 @@ func SignedToUnsigned(octets int, a int64) uint64 {
 	modVal := uint64(1) << uint(totalBits)
 	// Adjust a so that negative values wrap around properly.
 	return (modVal + uint64(a)) % modVal
-}
-
-// UintToBitsLE converts an unsigned integer x (with x in [0, 2^(8*n)))
-// into a bit vector of length 8*n in little-endian order. That is, the bit at index 0
-// is the least-significant bit of x.
-func UintToBitSequenceLE(octets int, x uint64) *bitsequence.BitSequence {
-	total := 8 * octets
-	bs := bitsequence.NewZeros(total) // Create a BitSequence of 'total' bits, all initialized to false.
-	for i := range total {
-		// Set bit i if the i-th bit of x (starting from LSB) is 1.
-		bs.SetBitAt(i, ((x>>uint(i))&1) == 1)
-	}
-	return bs
-}
-
-// BitsToUintLE converts a bit vector (in little-endian order) back into an unsigned integer.
-// It assumes bits[0] is the least-significant bit.
-func BitSequenceToUintLE(bs *bitsequence.BitSequence) uint64 {
-	var x uint64 = 0
-	total := bs.Len()
-	for i := range total {
-		if bs.BitAt(i) {
-			x |= 1 << uint(i)
-		}
-	}
-	return x
-}
-
-// UintToBitsBE converts an unsigned integer x (with x in [0, 2^(8*n)))
-// into a bit vector of length 8*n in big-endian order. That is, the bit at index 0
-// is the most-significant bit.
-func UintToBitSequenceBE(octets int, x uint64) *bitsequence.BitSequence {
-	total := 8 * octets
-	bs := bitsequence.NewZeros(total)
-	for i := range total {
-		// For big-endian, bit at index i corresponds to the bit at position (total-1-i) in x.
-		bs.SetBitAt(i, ((x>>uint(total-1-i))&1) == 1)
-	}
-	return bs
-}
-
-// BitsToUintBE converts a bit vector (in big-endian order) back into an unsigned integer.
-// It assumes bits[0] is the most-significant bit.
-func BitSequenceToUintBE(bs *bitsequence.BitSequence) uint64 {
-	total := bs.Len()
-	var x uint64 = 0
-	for i := range total {
-		if bs.BitAt(i) {
-			x |= 1 << uint(total-1-i)
-		}
-	}
-	return x
 }
 
 func BlobLengthFromPreimageLookupHistoricalStatusKey(key [31]byte) types.BlobLength {

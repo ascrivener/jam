@@ -233,34 +233,22 @@ func handleTwoReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register
 		}
 
 	case 102: // count_set_bits_64
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).SumBits(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.OnesCount64(uint64(pvm.State.Registers[ra])))
 
 	case 103: // count_set_bits_32
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).SumBits(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.OnesCount32(uint32(pvm.State.Registers[ra])))
 
 	case 104: // leading_zero_bits_64
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).LeadingZeros(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.LeadingZeros64(uint64(pvm.State.Registers[ra])))
 
 	case 105: // leading_zero_bits_32
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).LeadingZeros(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.LeadingZeros32(uint32(pvm.State.Registers[ra])))
 
 	case 106: // trailing_zero_bits_64
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(8, uint64(pvm.State.Registers[ra])).TrailingZeros(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.TrailingZeros64(uint64(pvm.State.Registers[ra])))
 
 	case 107: // trailing_zero_bits_32
-		pvm.State.Registers[rd] = types.Register(
-			serializer.UintToBitSequenceBE(4, uint64(uint32(pvm.State.Registers[ra]))).TrailingZeros(),
-		)
+		pvm.State.Registers[rd] = types.Register(bits.TrailingZeros32(uint32(pvm.State.Registers[ra])))
 
 	case 108: // sign_extend_8
 		pvm.State.Registers[rd] = types.Register(
@@ -440,17 +428,23 @@ func handleTwoRegOneImm(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Re
 		pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
 			serializer.UnsignedToSigned(8, uint64(vx))>>(pvm.State.Registers[rb]%64)))
 	case 158: // rot_r_64_imm
-		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[rb])).Rotate(int(vx))))
+		val := uint64(pvm.State.Registers[rb])
+		shift := vx % 64
+		pvm.State.Registers[ra] = types.Register((val >> shift) | (val << (64 - shift)))
 	case 159: // rot_r_64_imm_alt
-		pvm.State.Registers[ra] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(vx)).Rotate(int(pvm.State.Registers[rb]))))
+		val := uint64(vx)
+		shift := pvm.State.Registers[rb] % 64
+		pvm.State.Registers[ra] = types.Register((val >> shift) | (val << (64 - shift)))
 	case 160: // rot_r_32_imm
-		pvm.State.Registers[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(4, uint64(pvm.State.Registers[rb])).Rotate(int(vx))))
+		val := uint32(pvm.State.Registers[rb])
+		shift := vx % 32
+		rotated := (val >> shift) | (val << (32 - shift))
+		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(rotated))
 	case 161: // rot_r_32_imm_alt
-		pvm.State.Registers[ra] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(4, uint64(vx)).Rotate(int(pvm.State.Registers[rb]))))
+		val := uint32(vx)
+		shift := pvm.State.Registers[rb] % 32
+		rotated := (val >> shift) | (val << (32 - shift))
+		pvm.State.Registers[ra] = signExtendImmediate(4, uint64(rotated))
 	default:
 		panic(fmt.Sprintf("handleTwoRegOneImm: unexpected opcode %d", ctx.Instruction))
 	}
@@ -664,17 +658,23 @@ func handleThreeReg(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Regist
 			pvm.State.Registers[rd] = pvm.State.Registers[ra]
 		}
 	case 220: // rot_l_64
-		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Rotate(-int(pvm.State.Registers[rb]))))
+		val := uint64(pvm.State.Registers[ra])
+		shift := pvm.State.Registers[rb] % 64
+		pvm.State.Registers[rd] = types.Register((val << shift) | (val >> (64 - shift)))
 	case 221: // rot_l_32
-		pvm.State.Registers[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(4, uint64(pvm.State.Registers[ra])).Rotate(-int(pvm.State.Registers[rb]))))
+		val := uint32(pvm.State.Registers[ra])
+		shift := pvm.State.Registers[rb] % 32
+		rotated := (val << shift) | (val >> (32 - shift))
+		pvm.State.Registers[rd] = signExtendImmediate(4, uint64(rotated))
 	case 222: // rot_r_64
-		pvm.State.Registers[rd] = types.Register(serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(8, uint64(pvm.State.Registers[ra])).Rotate(int(pvm.State.Registers[rb]))))
+		val := uint64(pvm.State.Registers[ra])
+		shift := pvm.State.Registers[rb] % 64
+		pvm.State.Registers[rd] = types.Register((val >> shift) | (val << (64 - shift)))
 	case 223: // rot_r_32
-		pvm.State.Registers[rd] = signExtendImmediate(4, serializer.BitSequenceToUintLE(
-			serializer.UintToBitSequenceLE(4, uint64(pvm.State.Registers[ra])).Rotate(int(pvm.State.Registers[rb]))))
+		val := uint32(pvm.State.Registers[ra])
+		shift := pvm.State.Registers[rb] % 32
+		rotated := (val >> shift) | (val << (32 - shift))
+		pvm.State.Registers[rd] = signExtendImmediate(4, uint64(rotated))
 	case 224: // and_inv
 		pvm.State.Registers[rd] = pvm.State.Registers[ra] & ^pvm.State.Registers[rb]
 	case 225: // or_inv
