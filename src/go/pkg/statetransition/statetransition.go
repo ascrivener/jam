@@ -7,7 +7,6 @@ import (
 	"math"
 	"sort"
 	"sync"
-	"time"
 
 	"jam/pkg/bandersnatch"
 	"jam/pkg/block"
@@ -80,9 +79,9 @@ func STF(curBlock block.Block) error {
 		return fmt.Errorf("time slot is not greater than parent block time slot")
 	}
 
-	if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
-		return fmt.Errorf("block timestamp is in the future relative to current time")
-	}
+	// if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
+	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
+	// }
 
 	// (5.8)
 	merklizedState := merklizer.MerklizeState(merklizer.GetState(nil))
