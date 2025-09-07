@@ -59,11 +59,11 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	pages                        map[uint32][]byte    // Page number -> page content
-	access                       map[uint32]RamAccess // Page number -> access rights
-	BeginningOfHeap              *RamIndex            // nil if no heap
-	rollbackLog                  map[RamIndex]byte
-	memoryAccessExceptionIndices []RamIndex // Track memory access exceptions internally
+	pages                    map[uint32][]byte    // Page number -> page content
+	access                   map[uint32]RamAccess // Page number -> access rights
+	BeginningOfHeap          *RamIndex            // nil if no heap
+	rollbackLog              map[RamIndex]byte
+	minMemoryAccessException *RamIndex // Track minimum memory access exception
 }
 
 //
@@ -73,10 +73,10 @@ type RAM struct {
 // NewEmptyRAM creates an empty RAM with rollback log initialized
 func NewEmptyRAM() *RAM {
 	return &RAM{
-		pages:                        make(map[uint32][]byte),
-		access:                       make(map[uint32]RamAccess),
-		rollbackLog:                  make(map[RamIndex]byte),
-		memoryAccessExceptionIndices: make([]RamIndex, 0),
+		pages:                    make(map[uint32][]byte),
+		access:                   make(map[uint32]RamAccess),
+		rollbackLog:              make(map[RamIndex]byte),
+		minMemoryAccessException: nil,
 	}
 }
 
@@ -170,7 +170,10 @@ func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode, trackAcc
 		}
 
 		if accessCheck(access) && trackAccessExceptions {
-			r.memoryAccessExceptionIndices = append(r.memoryAccessExceptionIndices, RamIndex(index))
+			if r.minMemoryAccessException == nil || index < uint64(*r.minMemoryAccessException) {
+				r.minMemoryAccessException = new(RamIndex)
+				*r.minMemoryAccessException = RamIndex(index)
+			}
 		}
 
 		// Get the page and perform the operation
@@ -368,10 +371,10 @@ func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode Mem
 
 // ClearMemoryAccessExceptions clears the memory access exceptions
 func (r *RAM) ClearMemoryAccessExceptions() {
-	r.memoryAccessExceptionIndices = r.memoryAccessExceptionIndices[:0]
+	r.minMemoryAccessException = nil
 }
 
-// GetMemoryAccessExceptions returns the memory access exceptions
-func (r *RAM) GetMemoryAccessExceptions() []RamIndex {
-	return r.memoryAccessExceptionIndices
+// GetMinMemoryAccessException returns the minimum memory access exception
+func (r *RAM) GetMinMemoryAccessException() *RamIndex {
+	return r.minMemoryAccessException
 }

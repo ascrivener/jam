@@ -67,7 +67,7 @@ func (pvm *PVM) SingleStep() ExitReason {
 		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
 	}
 
-	minRamIndex := minRamIndex(pvm.State.RAM.GetMemoryAccessExceptions())
+	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
 	if minRamIndex != nil {
 		if *minRamIndex < ram.MinValidRamIndex {
 			return NewSimpleExitReason(ExitPanic)
@@ -192,19 +192,6 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 		fileLogger.Printf("djump: SUCCESS - jumping to nextPC=%d", nextInstructionCounter)
 	}
 	return NewSimpleExitReason(ExitGo), nextInstructionCounter
-}
-
-func minRamIndex(ramIndices []ram.RamIndex) *ram.RamIndex {
-	if len(ramIndices) == 0 {
-		return nil
-	}
-	minRamIndex := ramIndices[0]
-	for _, ramIndex := range ramIndices {
-		if ramIndex < minRamIndex {
-			minRamIndex = ramIndex
-		}
-	}
-	return &minRamIndex
 }
 
 func smod(a, b int64) int64 {
