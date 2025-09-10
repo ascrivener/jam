@@ -26,7 +26,8 @@ type Server struct {
 func NewServer() *Server {
 	return &Server{
 		peerInfo: PeerInfo{
-			Name: []byte("jamzilla"),
+			FuzzVersion: 1,
+			Features:    FEATURE_FORK,
 			AppVersion: Version{
 				Major: 0,
 				Minor: 1,
@@ -37,6 +38,7 @@ func NewServer() *Server {
 				Minor: 7,
 				Patch: 0,
 			},
+			Name: []byte("jamzilla"),
 		},
 	}
 }
@@ -126,10 +128,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		resp, err := s.HandleMessageData(msgData)
-		if err != nil {
-			log.Printf("Error handling message: %v", err)
-		}
+		resp := s.HandleMessageData(msgData)
 
 		if err := s.sendMessage(conn, resp); err != nil {
 			log.Printf("Error sending response: %v", err)
@@ -168,7 +167,7 @@ func (s *Server) sendMessage(conn net.Conn, msg ResponseMessage) error {
 }
 
 // HandleMessage processes an incoming message and returns the appropriate response
-func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
+func (s *Server) HandleMessageData(msgData []byte) ResponseMessage {
 	// Get the message type
 	msgType := RequestMessageType(msgData[0])
 	// Skip the type byte
@@ -176,7 +175,7 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 
 	switch msgType {
 	case RequestMessageTypePeerInfo:
-		return ResponseMessage{PeerInfo: &s.peerInfo}, nil
+		return ResponseMessage{PeerInfo: &s.peerInfo}
 
 	case RequestMessageTypeSetState:
 		return s.handleSetState(msgData)
@@ -188,20 +187,20 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 		return s.handleGetState(msgData)
 
 	default:
-		return ResponseMessage{}, fmt.Errorf("unsupported message type")
+		return ResponseMessage{Error: &struct{}{}}
 	}
 }
 
 // handleSetState handles a SetState request
-func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
+func (s *Server) handleSetState(setStateData []byte) ResponseMessage {
 	var setState SetState
 	err := serializer.Deserialize(setStateData, &setState)
 	if err != nil {
-		return ResponseMessage{}, err
+		return ResponseMessage{Error: &struct{}{}}
 	}
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
-		return ResponseMessage{}, fmt.Errorf("global repository not initialized")
+		return ResponseMessage{Error: &struct{}{}}
 	}
 
 	// Begin a transaction
@@ -215,7 +214,7 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 		}
 	}()
 	if err := setState.State.OverwriteCurrentState(globalBatch); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
+		return ResponseMessage{Error: &struct{}{}}
 	}
 
 	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
@@ -237,12 +236,12 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 	}
 
 	if err := blockWithInfo.Set(globalBatch); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to store block: %w", err)
+		return ResponseMessage{Error: &struct{}{}}
 	}
 
 	// Commit the transaction
 	if err := globalBatch.Commit(nil); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to commit transaction: %w", err)
+		return ResponseMessage{Error: &struct{}{}}
 	}
 	txSuccess = true
 
@@ -250,30 +249,32 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
-	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
+	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}
 }
 
 // handleImportBlock handles an ImportBlock request
-func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, error) {
+func (s *Server) handleImportBlock(importBlockData []byte) ResponseMessage {
 	var importBlock ImportBlock
 	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
-		stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
-		return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
+		return ResponseMessage{Error: &struct{}{}}
 	}
 	err = statetransition.STF(block.Block(importBlock))
+	if err != nil {
+		return ResponseMessage{Error: &struct{}{}}
+	}
 	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
-	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
+	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}
 }
 
 // handleGetState handles a GetState request
-func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
+func (s *Server) handleGetState(getStateData []byte) ResponseMessage {
 	state := merklizer.GetState(nil)
 	var getState GetState
 	err := serializer.Deserialize(getStateData, &getState)
 	if err != nil {
-		return ResponseMessage{}, err
+		return ResponseMessage{Error: &struct{}{}}
 	}
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
-	return ResponseMessage{State: &state}, nil
+	return ResponseMessage{State: &state}
 }

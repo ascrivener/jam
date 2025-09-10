@@ -131,7 +131,6 @@ func (fc *FuzzerClient) handshake() error {
 
 func (fc *FuzzerClient) setupPeerInfo() {
 	fc.peerInfo = fuzzinterface.PeerInfo{
-		Name: []byte("fuzzer-client"),
 		AppVersion: fuzzinterface.Version{
 			Major: 0,
 			Minor: 1,
@@ -142,6 +141,7 @@ func (fc *FuzzerClient) setupPeerInfo() {
 			Minor: 6,
 			Patch: 6,
 		},
+		Name: []byte("fuzzer-client"),
 	}
 }
 
@@ -249,7 +249,7 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 	if fc.inProcess {
 		// Process message directly using server
 		// skip length bytes
-		return fc.server.HandleMessageData(data[4:])
+		return fc.server.HandleMessageData(data[4:]), nil
 	}
 
 	_, err = fc.conn.Write(data)

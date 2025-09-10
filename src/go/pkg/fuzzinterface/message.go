@@ -18,10 +18,15 @@ type Version struct {
 	Patch uint8
 }
 
+const FEATURE_ANCESTRY = 1 << 0
+const FEATURE_FORK = 1 << 1
+
 type PeerInfo struct {
-	Name       []byte
-	AppVersion Version
-	JamVersion Version
+	FuzzVersion uint8
+	Features    uint32
+	AppVersion  Version
+	JamVersion  Version
+	Name        []byte
 }
 
 type ImportBlock block.Block
@@ -46,6 +51,7 @@ type ResponseMessage struct {
 	PeerInfo  *PeerInfo        `json:"peer_info,omitempty"`
 	State     *merklizer.State `json:"state,omitempty"`
 	StateRoot *StateRoot       `json:"state_root,omitempty"`
+	Error     *struct{}        `json:"error,omitempty"`
 }
 
 // RequestMessageType identifies the type of a request message
@@ -67,6 +73,7 @@ const (
 	ResponseMessageTypePeerInfo  ResponseMessageType = 0
 	ResponseMessageTypeState     ResponseMessageType = 4
 	ResponseMessageTypeStateRoot ResponseMessageType = 5
+	ResponseMessageTypeError     ResponseMessageType = 255
 )
 
 // EncodeMessage encodes a Message according to the JAM codec format
@@ -86,6 +93,8 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 	case msg.StateRoot != nil:
 		encodedMessage = serializer.Serialize(*msg.StateRoot)
 		msgType = ResponseMessageTypeStateRoot
+	case msg.Error != nil:
+		msgType = ResponseMessageTypeError
 	default:
 		return nil, fmt.Errorf("unknown message type")
 	}
