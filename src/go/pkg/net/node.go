@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	quic "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/logging"
 )
 
@@ -254,7 +254,7 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 
 // Start starts the node. Initiate connections and UP 0 stream
 func (n *Node) Start(ctx context.Context) error {
-	state, err := state.GetState()
+	state, err := state.GetState(nil)
 	if err != nil {
 		return fmt.Errorf("failed to get state: %w", err)
 	}
@@ -342,7 +342,7 @@ func (n *Node) Start(ctx context.Context) error {
 }
 
 // createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
-func (n *Node) createAndStoreConnection(ctx context.Context, quicConn quic.Connection, validatorInfo ValidatorInfo, initializedByRemote bool, totalValidators int) error {
+func (n *Node) createAndStoreConnection(ctx context.Context, quicConn *quic.Conn, validatorInfo ValidatorInfo, initializedByRemote bool, totalValidators int) error {
 	// Create JAMNP-S connection (this will register handlers, start accepting streams, and open required streams)
 	conn, err := NewConnection(ctx, quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey), validatorInfo, initializedByRemote, n.myValidator.Index, totalValidators)
 	if err != nil {
@@ -372,7 +372,7 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []Validat
 	connectedValidators := make(map[string]bool)
 
 	// Channel to deliver new QUIC connections
-	newConnections := make(chan quic.Connection, 1)
+	newConnections := make(chan *quic.Conn, 1)
 
 	// Goroutine to accept connections and forward them to the channel
 	go func() {
@@ -411,7 +411,7 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []Validat
 
 		case quicConn := <-newConnections:
 			// Handle the connection in a goroutine
-			go func(conn quic.Connection) {
+			go func(conn *quic.Conn) {
 				// Extract the peer's public key from the TLS certificate
 				tlsState := conn.ConnectionState().TLS
 				if len(tlsState.PeerCertificates) == 0 {

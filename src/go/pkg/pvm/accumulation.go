@@ -1,6 +1,7 @@
 package pvm
 
 import (
+	"bytes"
 	"errors"
 	"sort"
 	"sync"
@@ -44,7 +45,7 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
+func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -93,7 +94,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 		ServiceIndex types.ServiceIndex
 		GasUsed      types.GasValue
 	}
-	accumulationOutputPairings := make([]BEEFYCommitment, 0)
+	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
 	n := make(serviceaccount.ServiceAccounts)
 
 	// Collect errors from goroutines
@@ -144,10 +145,10 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 			if _, exists := originalServiceIndicesMap[sIndex]; exists {
 
 				if preimageResult != nil {
-					accumulationOutputPairings = append(accumulationOutputPairings, BEEFYCommitment{
+					accumulationOutputPairings[BEEFYCommitment{
 						ServiceIndex:   sIndex,
 						PreimageResult: *preimageResult,
-					})
+					}] = struct{}{}
 				}
 
 				// Record gas usage
@@ -383,7 +384,7 @@ func OuterAccumulation(batch *pebble.Batch, gas types.GasValue, timeslot types.T
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
 	allDeferredTransfers := make([]DeferredTransfer, 0)
-	allOutputPairings := make([]BEEFYCommitment, 0)
+	allOutputPairings := make(map[BEEFYCommitment]struct{}, 0)
 	allServiceGasUsage := make([]struct {
 		ServiceIndex types.ServiceIndex
 		GasUsed      types.GasValue
@@ -443,7 +444,9 @@ func OuterAccumulation(batch *pebble.Batch, gas types.GasValue, timeslot types.T
 		allServiceGasUsage = append(allServiceGasUsage, batchServiceGasUsage...)
 
 		// Merge the output pairings
-		allOutputPairings = append(allOutputPairings, batchPairings...)
+		for commitment := range batchPairings {
+			allOutputPairings[commitment] = struct{}{}
+		}
 
 		// Update the count of reports processed
 		totalProcessedReports += (batchEndIdx - startIdx)
@@ -455,5 +458,18 @@ func OuterAccumulation(batch *pebble.Batch, gas types.GasValue, timeslot types.T
 		freeAccumulationServices = make(map[types.ServiceIndex]types.GasValue)
 	}
 
-	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairings, allServiceGasUsage, nil
+	// Convert back to slice and sort
+	allOutputPairingsSlice := make([]BEEFYCommitment, 0, len(allOutputPairings))
+	for commitment := range allOutputPairings {
+		allOutputPairingsSlice = append(allOutputPairingsSlice, commitment)
+	}
+
+	sort.Slice(allOutputPairingsSlice, func(i, j int) bool {
+		if allOutputPairingsSlice[i].ServiceIndex != allOutputPairingsSlice[j].ServiceIndex {
+			return allOutputPairingsSlice[i].ServiceIndex < allOutputPairingsSlice[j].ServiceIndex
+		}
+		return bytes.Compare(allOutputPairingsSlice[i].PreimageResult[:], allOutputPairingsSlice[j].PreimageResult[:]) < 0
+	})
+
+	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairingsSlice, allServiceGasUsage, nil
 }

@@ -15,7 +15,10 @@ type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 // R
 func (s *ServiceAccounts) IsNewPreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
-	serviceAccount := (*s)[serviceIndex]
+	serviceAccount, exists := (*s)[serviceIndex]
+	if !exists {
+		return false, fmt.Errorf("service account %d does not exist", serviceIndex)
+	}
 	_, exists, err := serviceAccount.GetPreimageForHash(batch, hash)
 	if err != nil {
 		return false, err

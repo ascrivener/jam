@@ -37,12 +37,12 @@ var (
 
 // jamnpsConnection implements the Connection interface
 type jamnpsConnection struct {
-	conn                quic.Connection
+	conn                *quic.Conn
 	localKey            ed25519.PublicKey
 	validatorInfo       ValidatorInfo
 	initializedByRemote bool
 	isNeighbor          bool
-	upStreams           map[StreamKind]quic.Stream
+	upStreams           map[StreamKind]*quic.Stream
 	upStreamsMu         sync.Mutex
 	handlers            map[StreamKind]StreamHandler
 	handlersMu          sync.RWMutex
@@ -56,7 +56,7 @@ type jamnpsConnection struct {
 
 // jamnpsStream implements the Stream interface
 type jamnpsStream struct {
-	stream    quic.Stream
+	stream    *quic.Stream
 	kind      StreamKind
 	readMu    sync.Mutex
 	writeMu   sync.Mutex
@@ -66,7 +66,7 @@ type jamnpsStream struct {
 }
 
 // NewConnection creates a new Connection from a QUIC connection
-func NewConnection(ctx context.Context, conn quic.Connection, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool, myValidatorIndex int, totalValidators int) (Connection, error) {
+func NewConnection(ctx context.Context, conn *quic.Conn, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool, myValidatorIndex int, totalValidators int) (Connection, error) {
 	// Create connection context
 	connCtx, cancel := context.WithCancel(ctx)
 
@@ -75,7 +75,7 @@ func NewConnection(ctx context.Context, conn quic.Connection, localKey ed25519.P
 		localKey:            localKey,
 		validatorInfo:       validatorInfo,
 		initializedByRemote: initializedByRemote,
-		upStreams:           make(map[StreamKind]quic.Stream),
+		upStreams:           make(map[StreamKind]*quic.Stream),
 		handlers:            make(map[StreamKind]StreamHandler),
 		ctx:                 connCtx,
 		cancel:              cancel,
@@ -148,7 +148,7 @@ func (c *jamnpsConnection) acceptStreams() {
 }
 
 // handleStreamWithHandler dispatches a stream to its registered handler
-func (c *jamnpsConnection) handleStreamWithHandler(stream quic.Stream, kind StreamKind, isUPStream bool) {
+func (c *jamnpsConnection) handleStreamWithHandler(stream *quic.Stream, kind StreamKind, isUPStream bool) {
 	c.handlersMu.RLock()
 	handler, ok := c.handlers[kind]
 	c.handlersMu.RUnlock()
@@ -196,7 +196,7 @@ func (c *jamnpsConnection) handleStreamWithHandler(stream quic.Stream, kind Stre
 }
 
 // handleUPStream processes a UP (Unique Persistent) stream
-func (c *jamnpsConnection) handleUPStream(kind StreamKind, stream quic.Stream) {
+func (c *jamnpsConnection) handleUPStream(kind StreamKind, stream *quic.Stream) {
 	c.upStreamsMu.Lock()
 	defer c.upStreamsMu.Unlock()
 
@@ -375,7 +375,7 @@ type Handshake struct {
 
 // createHandshake creates a handshake message with current finalized block info and known leaves
 func createHandshake() (Handshake, error) {
-	state, err := state.GetState()
+	state, err := state.GetState(nil)
 	if err != nil {
 		return Handshake{}, fmt.Errorf("failed to get state: %w", err)
 	}
@@ -585,7 +585,7 @@ func (c *jamnpsConnection) Close() error {
 		stream.CancelRead(0)
 		stream.CancelWrite(0)
 	}
-	c.upStreams = make(map[StreamKind]quic.Stream)
+	c.upStreams = make(map[StreamKind]*quic.Stream)
 	c.upStreamsMu.Unlock()
 
 	// Close the connection
@@ -624,7 +624,7 @@ func (c *jamnpsConnection) TLSConnectionState() tls.ConnectionState {
 }
 
 // QuicConnection returns the underlying QUIC connection
-func (c *jamnpsConnection) QuicConnection() quic.Connection {
+func (c *jamnpsConnection) QuicConnection() *quic.Conn {
 	return c.conn
 }
 

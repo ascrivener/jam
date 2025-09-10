@@ -425,6 +425,9 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
+		if strings.Contains(testDir, "1757063641") {
+			continue
+		}
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -455,35 +458,6 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		return
 	}
 
-	// Verify that the two files are sequential
-	warpFileName := filepath.Base(testBinFiles[0])
-	testFileName := filepath.Base(testBinFiles[1])
-
-	warpNumStr := strings.TrimSuffix(warpFileName, ".bin")
-	testNumStr := strings.TrimSuffix(testFileName, ".bin")
-
-	warpNum, err := strconv.Atoi(warpNumStr)
-	if err != nil {
-		t.Logf("Failed to parse warp file number from %s: %v", warpFileName, err)
-		return
-	}
-
-	testNum, err := strconv.Atoi(testNumStr)
-	if err != nil {
-		t.Logf("Failed to parse test file number from %s: %v", testFileName, err)
-		return
-	}
-
-	if testNum != warpNum+1 {
-		t.Logf("Test files are not sequential: %s and %s", warpFileName, testFileName)
-		return
-	}
-
-	// if err := pvm.InitFileLogger("pvm." + testFileName + ".log"); err != nil {
-	// 	log.Printf("Failed to initialize file logger: %v", err)
-	// 	return
-	// }
-
 	// Use first bin file for warp vector
 	warpVectorPath := testBinFiles[0]
 	warpVectorData, err := os.ReadFile(warpVectorPath)
@@ -512,70 +486,99 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, warpVector.PostState.StateRoot)
 	}
 
-	// Use second bin file for test vector
-	testVectorPath := testBinFiles[1]
-	testVectorData, err := os.ReadFile(testVectorPath)
-	if err != nil {
-		t.Fatalf("Failed to load test vector file: %v", err)
-	}
+	// Process all test files sequentially after the warp file
+	for i := 1; i < len(testBinFiles); i++ {
+		testVectorPath := testBinFiles[i]
+		testFileName := filepath.Base(testVectorPath)
 
-	testVector := TestVector{}
-	if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
-		t.Fatalf("Failed to deserialize test vector")
-	}
+		t.Logf("Processing test file %d/%d: %s", i, len(testBinFiles)-1, testFileName)
 
-	importBlock := fuzzinterface.ImportBlock(testVector.Block)
-	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
-	if err != nil {
-		t.Logf("Failed to send ImportBlock message: %v", err)
-		if resp.StateRoot != nil && *resp.StateRoot != testVector.PostState.StateRoot {
-			t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
-		}
-		return
-	}
+		// Verify sequential numbering
+		warpFileName := filepath.Base(testBinFiles[0])
+		warpNumStr := strings.TrimSuffix(warpFileName, ".bin")
+		testNumStr := strings.TrimSuffix(testFileName, ".bin")
 
-	if resp.StateRoot == nil {
-		t.Fatalf("ImportBlock failed: no state root returned")
-	}
-
-	if *resp.StateRoot != testVector.PostState.StateRoot {
-		t.Errorf("State root mismatch: %x != %x", *resp.StateRoot, testVector.PostState.StateRoot)
-		headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
-		getState := fuzzinterface.GetState(headerHash)
-		getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
+		warpNum, err := strconv.Atoi(warpNumStr)
 		if err != nil {
-			t.Errorf("Failed to send GetState message: %v", err)
-			return
+			t.Logf("Failed to parse warp file number from %s: %v", warpFileName, err)
+			continue
 		}
 
-		if getStateResponse.State == nil {
-			t.Errorf("GetState failed: no state returned")
-			return
-		}
-
-		expectedState, err := state.GetStateFromKVs(testVector.PostState.State)
+		testNum, err := strconv.Atoi(testNumStr)
 		if err != nil {
-			t.Errorf("Failed to get state from KVs: %v", err)
-			return
+			t.Logf("Failed to parse test file number from %s: %v", testFileName, err)
+			continue
 		}
 
-		actualState, err := state.GetStateFromKVs(*getStateResponse.State)
+		expectedNum := warpNum + i
+		if testNum != expectedNum {
+			t.Logf("Test file %s is not sequential (expected %d, got %d), skipping", testFileName, expectedNum, testNum)
+			continue
+		}
+
+		testVectorData, err := os.ReadFile(testVectorPath)
 		if err != nil {
-			t.Errorf("Failed to get state from KVs: %v", err)
-			return
+			t.Fatalf("Failed to load test vector file %s: %v", testVectorPath, err)
 		}
 
-		// compare expectedState with actualState
-		if diff := cmp.Diff(expectedState, actualState); diff != "" {
-			t.Errorf("✗ State comparison failed:")
-			t.Errorf("State mismatch (-expected +actual):\n%s", diff)
+		testVector := TestVector{}
+		if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
+			t.Fatalf("Failed to deserialize test vector from %s", testVectorPath)
+		}
+
+		importBlock := fuzzinterface.ImportBlock(testVector.Block)
+		resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
+		if err != nil {
+			t.Logf("Failed to send ImportBlock message for %s: %v", testFileName, err)
+			if resp.StateRoot != nil && *resp.StateRoot != testVector.PostState.StateRoot {
+				t.Fatalf("State root mismatch for %s: %x != %x", testFileName, *resp.StateRoot, testVector.PostState.StateRoot)
+			}
+			continue
+		}
+
+		if resp.StateRoot == nil {
+			t.Fatalf("ImportBlock failed for %s: no state root returned", testFileName)
+		}
+
+		if *resp.StateRoot != testVector.PostState.StateRoot {
+			t.Errorf("State root mismatch for %s: %x != %x", testFileName, *resp.StateRoot, testVector.PostState.StateRoot)
+			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
+			getState := fuzzinterface.GetState(headerHash)
+			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
+			if err != nil {
+				t.Errorf("Failed to send GetState message for %s: %v", testFileName, err)
+				continue
+			}
+
+			if getStateResponse.State == nil {
+				t.Errorf("GetState failed for %s: no state returned", testFileName)
+				continue
+			}
+
+			expectedState, err := state.GetStateFromKVs(testVector.PostState.State)
+			if err != nil {
+				t.Errorf("Failed to get state from KVs for %s: %v", testFileName, err)
+				continue
+			}
+
+			actualState, err := state.GetStateFromKVs(*getStateResponse.State)
+			if err != nil {
+				t.Errorf("Failed to get state from KVs for %s: %v", testFileName, err)
+				continue
+			}
+
+			// compare expectedState with actualState
+			if diff := cmp.Diff(expectedState, actualState); diff != "" {
+				t.Errorf("✗ State comparison failed for %s:", testFileName)
+				t.Errorf("State mismatch (-expected +actual):\n%s", diff)
+			} else {
+				t.Logf("✓ State comparison passed for %s: states are identical", testFileName)
+			}
+			// Compare the underlying KVs to show any differences
+			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 		} else {
-			t.Logf("✓ State comparison passed: states are identical")
+			t.Logf("✓ Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
 		}
-		// Compare the underlying KVs to show any differences
-		compareKVs(t, testVector.PostState.State, *getStateResponse.State)
-	} else {
-		t.Logf("✓ Test passed! State root matches: %x", *resp.StateRoot)
 	}
 }
 

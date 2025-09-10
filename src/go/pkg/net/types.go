@@ -95,7 +95,7 @@ type Connection interface {
 	TLSConnectionState() tls.ConnectionState
 
 	// QuicConnection returns the underlying QUIC connection
-	QuicConnection() quic.Connection
+	QuicConnection() *quic.Conn
 
 	// Close closes the connection
 	Close() error

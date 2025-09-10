@@ -83,13 +83,6 @@ func STF(curBlock block.Block) error {
 	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
 	// }
 
-	// (5.8)
-	merklizedState := merklizer.MerklizeState(merklizer.GetState(nil))
-
-	if parentBlock.Info.PosteriorStateRoot != merklizedState {
-		return fmt.Errorf("parent block state root does not match merklized state")
-	}
-
 	// Always find LCA and apply necessary state transitions
 	currentTip, err := block.GetTip(nil)
 	if err != nil {
@@ -120,6 +113,11 @@ func STF(curBlock block.Block) error {
 	// Replay the specific path
 	if err := block.ReplayPath(reorgBatch, pathFromLCAToParent); err != nil {
 		return err
+	}
+
+	// 5.8
+	if curBlock.Header.PriorStateRoot != merklizer.MerklizeState(merklizer.GetState(reorgBatch)) {
+		return fmt.Errorf("parent block state root does not match merklized state")
 	}
 
 	// 2. Begin a transaction for the STF
@@ -176,7 +174,7 @@ func STF(curBlock block.Block) error {
 func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	// Load state
-	priorState, err := state.GetState()
+	priorState, err := state.GetState(batch)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}

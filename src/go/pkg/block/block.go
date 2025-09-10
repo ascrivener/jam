@@ -358,11 +358,11 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	// (12.38)
 	for _, preimage := range b.Extrinsics.Preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		exists, err := priorState.ServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		isNew, err := priorState.ServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return fmt.Errorf("failed to check if preimage %x exists: %w", hash, err)
 		}
-		if !exists {
+		if !isNew {
 			return fmt.Errorf("preimage %x already exists", hash)
 		}
 	}

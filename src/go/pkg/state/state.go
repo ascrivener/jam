@@ -69,9 +69,9 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	}
 }
 
-func GetState() (State, error) {
+func GetState(batch *pebble.Batch) (State, error) {
 	// Create a data source that reads from repository
-	dataSource := &repositoryDataSource{}
+	dataSource := &repositoryDataSource{batch: batch}
 	return getStateFromDataSource(dataSource)
 }
 
@@ -105,13 +105,14 @@ type serviceAccountIterator interface {
 	Close() error
 }
 
-// repositoryDataSource reads from the repository
+// repositoryDataSource reads from the repository or batch
 type repositoryDataSource struct {
+	batch *pebble.Batch // nil means read from repository directly
 }
 
 func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
 	prefixedKey := append([]byte("state:"), key[:]...)
-	value, closer, err := staterepository.Get(nil, prefixedKey)
+	value, closer, err := staterepository.Get(ds.batch, prefixedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get component: %w", err)
 	}
@@ -126,7 +127,7 @@ func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
 
 func (ds *repositoryDataSource) iterateServiceAccounts() (serviceAccountIterator, error) {
 	serviceAccountPrefix := append([]byte("state:"), 255)
-	iter, err := staterepository.NewIter(nil, &pebble.IterOptions{
+	iter, err := staterepository.NewIter(ds.batch, &pebble.IterOptions{
 		LowerBound: serviceAccountPrefix,
 		UpperBound: append(append([]byte{}, serviceAccountPrefix...), 0xFF),
 	})
