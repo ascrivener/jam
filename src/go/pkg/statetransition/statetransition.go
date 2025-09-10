@@ -13,6 +13,7 @@ import (
 	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
 	"jam/pkg/constants"
+	"jam/pkg/errors"
 	"jam/pkg/merklizer"
 	"jam/pkg/pvm"
 	"jam/pkg/sealingkeysequence"
@@ -66,17 +67,21 @@ func STF(curBlock block.Block) error {
 	parentBlock, err := block.Get(nil, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
-		return fmt.Errorf("failed to get parent block: %w", err)
+		if err == pebble.ErrNotIndexed {
+			return errors.ProtocolErrorf("parent block not found")
+		} else {
+			return fmt.Errorf("failed to get parent block: %w", err)
+		}
 	}
 
 	// (5.4)
 	if curBlock.Header.ExtrinsicHash != curBlock.Extrinsics.MerkleCommitment() {
-		return fmt.Errorf("extrinsic hash does not match actual extrinsic hash")
+		return errors.ProtocolErrorf("extrinsic hash does not match actual extrinsic hash")
 	}
 
 	// (5.7)
 	if curBlock.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
-		return fmt.Errorf("time slot is not greater than parent block time slot")
+		return errors.ProtocolErrorf("time slot is not greater than parent block time slot")
 	}
 
 	// if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
@@ -181,7 +186,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	// Verify block
 	if err := curBlock.Verify(batch, priorState); err != nil {
-		return fmt.Errorf("failed to verify block: %w", err)
+		return err
 	}
 
 	posteriorMostRecentBlockTimeslot := computeMostRecentBlockTimeslot(curBlock.Header)
@@ -204,13 +209,13 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 			found = true
 		}
 		if !found {
-			return fmt.Errorf("refinement context work package hash not found in recent blocks")
+			return errors.ProtocolErrorf("refinement context work package hash not found in recent blocks")
 		}
 	}
 
 	posteriorEntropyAccumulator, err := computeEntropyAccumulator(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.EntropyAccumulator)
 	if err != nil {
-		return fmt.Errorf("failed to compute entropy accumulator: %w", err)
+		return err
 	}
 
 	posteriorValidatorKeysetsActive := computeValidatorKeysetsActive(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsActive, priorState.SafroleBasicState)
@@ -219,7 +224,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	posteriorSafroleBasicState, err := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
 	if err != nil {
-		return fmt.Errorf("failed to compute safrole basic state: %w", err)
+		return err
 	}
 
 	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
@@ -228,7 +233,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	availableReports, err := computeAvailableReports(postJudgementIntermediatePendingReports, curBlock.Extrinsics.Assurances)
 	if err != nil {
-		return fmt.Errorf("failed to compute available reports: %w", err)
+		return err
 	}
 
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
@@ -242,7 +247,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 		posteriorEntropyAccumulator,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to accumulate and integrate: %w", err)
+		return err
 	}
 
 	postguaranteesExtrinsicIntermediatePendingReports := computePostGuaranteesExtrinsicIntermediatePendingReports(curBlock.Header, curBlock.Extrinsics.Assurances, postJudgementIntermediatePendingReports)
@@ -250,7 +255,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 	for _, guarantee := range curBlock.Extrinsics.Guarantees {
 		// (11.29)
 		if postguaranteesExtrinsicIntermediatePendingReports[guarantee.WorkReport.CoreIndex] != nil {
-			return fmt.Errorf("duplicate guarantee for core %d", guarantee.WorkReport.CoreIndex)
+			return errors.ProtocolErrorf("duplicate guarantee for core %d", guarantee.WorkReport.CoreIndex)
 		}
 		authorizersPoolHasWorkReport := false
 		for _, authorizer := range priorState.AuthorizersPool[guarantee.WorkReport.CoreIndex] {
@@ -260,7 +265,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 			}
 		}
 		if !authorizersPoolHasWorkReport {
-			return fmt.Errorf("authorizer %s not in authorizers pool for core %d", guarantee.WorkReport.AuthorizerHash, guarantee.WorkReport.CoreIndex)
+			return errors.ProtocolErrorf("authorizer %s not in authorizers pool for core %d", guarantee.WorkReport.AuthorizerHash, guarantee.WorkReport.CoreIndex)
 		}
 	}
 
@@ -299,7 +304,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	// Post-transition validation
 	if err := curBlock.VerifyPostStateTransition(priorState, postState); err != nil {
-		return fmt.Errorf("failed to verify state: %w", err)
+		return err
 	}
 
 	// Save state
@@ -315,7 +320,7 @@ func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingRe
 	for _, assurance := range assurances {
 		for coreIndex := range constants.NumCores {
 			if assurance.CoreAvailabilityContributions.BitAt(int(coreIndex)) && pendingReports[coreIndex] == nil {
-				return nil, fmt.Errorf("assurance for core %d is missing", coreIndex)
+				return nil, errors.ProtocolErrorf("assurance for core %d is missing", coreIndex)
 			}
 		}
 	}
@@ -438,7 +443,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 	for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
 		for _, newTicket := range posteriorTicketAccumulator {
 			if priorTicket.VerifiablyRandomIdentifier == newTicket.VerifiablyRandomIdentifier {
-				return state.SafroleBasicState{}, fmt.Errorf("duplicate ticket: %v", priorTicket.VerifiablyRandomIdentifier)
+				return state.SafroleBasicState{}, errors.ProtocolErrorf("duplicate ticket: %v", priorTicket.VerifiablyRandomIdentifier)
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
 	"jam/pkg/constants"
+	"jam/pkg/errors"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
@@ -33,12 +34,12 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		comparison := bytes.Compare(b.Extrinsics.Disputes.Verdicts[i].WorkReportHash[:],
 			b.Extrinsics.Disputes.Verdicts[i-1].WorkReportHash[:])
 		if comparison <= 0 {
-			return fmt.Errorf("verdicts must be strictly ordered by WorkReportHash")
+			return errors.ProtocolErrorf("verdicts must be strictly ordered by WorkReportHash")
 		}
 		// (10.10)
 		for j := 1; j < len(b.Extrinsics.Disputes.Verdicts[i].Judgements); j++ {
 			if b.Extrinsics.Disputes.Verdicts[i].Judgements[j].ValidatorIndex <= b.Extrinsics.Disputes.Verdicts[i].Judgements[j-1].ValidatorIndex {
-				return fmt.Errorf("judgements must be strictly ordered by ValidatorIndex")
+				return errors.ProtocolErrorf("judgements must be strictly ordered by ValidatorIndex")
 			}
 		}
 	}
@@ -48,7 +49,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		comparison := bytes.Compare(b.Extrinsics.Disputes.Culprits[i].ValidatorKey[:],
 			b.Extrinsics.Disputes.Culprits[i-1].ValidatorKey[:])
 		if comparison <= 0 {
-			return fmt.Errorf("culprits must be strictly ordered by ValidatorKey")
+			return errors.ProtocolErrorf("culprits must be strictly ordered by ValidatorKey")
 		}
 	}
 
@@ -56,20 +57,20 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		comparison := bytes.Compare(b.Extrinsics.Disputes.Faults[i].ValidatorKey[:],
 			b.Extrinsics.Disputes.Faults[i-1].ValidatorKey[:])
 		if comparison <= 0 {
-			return fmt.Errorf("faults must be strictly ordered by ValidatorKey")
+			return errors.ProtocolErrorf("faults must be strictly ordered by ValidatorKey")
 		}
 	}
 
 	for _, verdict := range b.Extrinsics.Disputes.Verdicts {
 		// (10.9)
 		if _, ok := priorState.Disputes.WorkReportHashesGood[verdict.WorkReportHash]; ok {
-			return fmt.Errorf("work report hash %x is already in good disputes", verdict.WorkReportHash)
+			return errors.ProtocolErrorf("work report hash %x is already in good disputes", verdict.WorkReportHash)
 		}
 		if _, ok := priorState.Disputes.WorkReportHashesBad[verdict.WorkReportHash]; ok {
-			return fmt.Errorf("work report hash %x is already in bad disputes", verdict.WorkReportHash)
+			return errors.ProtocolErrorf("work report hash %x is already in bad disputes", verdict.WorkReportHash)
 		}
 		if _, ok := priorState.Disputes.WorkReportHashesWonky[verdict.WorkReportHash]; ok {
-			return fmt.Errorf("work report hash %x is already in wonky disputes", verdict.WorkReportHash)
+			return errors.ProtocolErrorf("work report hash %x is already in wonky disputes", verdict.WorkReportHash)
 		}
 		// (10.3)
 		var validatorKeysets types.ValidatorKeysets
@@ -78,7 +79,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		} else if verdict.EpochIndex == uint32(priorState.MostRecentBlockTimeslot.EpochIndex()-1) {
 			validatorKeysets = priorState.ValidatorKeysetsPriorEpoch
 		} else { // (10.2)
-			return fmt.Errorf("verdict epoch index does not match prior state most recent block timeslot epoch index or previous")
+			return errors.ProtocolErrorf("verdict epoch index does not match prior state most recent block timeslot epoch index or previous")
 		}
 		for _, judgement := range verdict.Judgements {
 			key := validatorKeysets[judgement.ValidatorIndex].ToEd25519PublicKey()
@@ -90,7 +91,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			}
 			message = append(message, verdict.WorkReportHash[:]...)
 			if !ed25519.Verify(key[:], message, judgement.Signature[:]) {
-				return fmt.Errorf("invalid signature from validator %d", judgement.ValidatorIndex)
+				return errors.ProtocolErrorf("invalid signature from validator %d", judgement.ValidatorIndex)
 			}
 		}
 	}
@@ -106,7 +107,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 				}
 			}
 			if !foundCorrespondingFault {
-				return fmt.Errorf("no corresponding fault for verdict %x", verdict)
+				return errors.ProtocolErrorf("no corresponding fault for verdict %x", verdict)
 			}
 		} else if positiveJudgments == 0 {
 			culpritCount := 0
@@ -116,11 +117,11 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 				}
 			}
 			if culpritCount < 2 {
-				return fmt.Errorf("culprit count for verdict %x is less than 2: %d", verdict, culpritCount)
+				return errors.ProtocolErrorf("culprit count for verdict %x is less than 2: %d", verdict, culpritCount)
 			}
 		} else if positiveJudgments == int(constants.OneThirdNumValidators) {
 		} else { // (10.11)
-			return fmt.Errorf("sum of valid judgements for verdict %x is invalid: %d", verdict, positiveJudgments)
+			return errors.ProtocolErrorf("sum of valid judgements for verdict %x is invalid: %d", verdict, positiveJudgments)
 		}
 	}
 
@@ -134,7 +135,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	}
 	for index, key := range b.Header.UnsignedHeader.OffendersMarker {
 		if key != concatCulpritAndFaultKeys[index] {
-			return fmt.Errorf("offender key %d does not match expected key", index)
+			return errors.ProtocolErrorf("offender key %d does not match expected key", index)
 		}
 	}
 
@@ -142,14 +143,14 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		workReport := guarantee.WorkReport
 		// (11.2)
 		if len(workReport.WorkDigests) == 0 {
-			return fmt.Errorf("work report has no work digests")
+			return errors.ProtocolErrorf("work report has no work digests")
 		}
 		if len(workReport.WorkDigests) > int(constants.MaxWorkItemsInPackage) {
-			return fmt.Errorf("work report has too many work digests")
+			return errors.ProtocolErrorf("work report has too many work digests")
 		}
 		// (11.3)
 		if len(workReport.SegmentRootLookup)+len(workReport.RefinementContext.PrerequisiteWorkPackageHashes) > int(constants.MaxSumDependencyItemsInReport) {
-			return fmt.Errorf("sum of segment root lookup and prerequisite work package hashes is greater than max sum dependency items in report")
+			return errors.ProtocolErrorf("sum of segment root lookup and prerequisite work package hashes is greater than max sum dependency items in report")
 		}
 
 		// (11.8)
@@ -162,24 +163,24 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			totalOutputBlobSize += len(*workResult.Blob)
 		}
 		if totalOutputBlobSize+len(workReport.Output) > int(constants.MaxTotalSizeWorkReportBlobs) {
-			return fmt.Errorf("total output blob size is greater than max total size work report blobs")
+			return errors.ProtocolErrorf("total output blob size is greater than max total size work report blobs")
 		}
 	}
 
 	// (11.10)
 	if len(b.Extrinsics.Assurances) > int(constants.NumValidators) {
-		return fmt.Errorf("too many assurances. Expected at most %d, got %d", constants.NumValidators, len(b.Extrinsics.Assurances))
+		return errors.ProtocolErrorf("too many assurances. Expected at most %d, got %d", constants.NumValidators, len(b.Extrinsics.Assurances))
 	}
 
 	for idx, assurance := range b.Extrinsics.Assurances {
 		// (11.11)
 		if assurance.ParentHash != b.Header.ParentHash {
-			return fmt.Errorf("assurance parent hash does not match block parent hash: %x != %x", assurance.ParentHash, b.Header.ParentHash)
+			return errors.ProtocolErrorf("assurance parent hash does not match block parent hash: %x != %x", assurance.ParentHash, b.Header.ParentHash)
 		}
 		// (11.12)
 		if idx > 0 {
 			if b.Extrinsics.Assurances[idx-1].ValidatorIndex >= assurance.ValidatorIndex {
-				return fmt.Errorf("assurance validator index is not strictly ordered: %d >= %d", b.Extrinsics.Assurances[idx-1].ValidatorIndex, assurance.ValidatorIndex)
+				return errors.ProtocolErrorf("assurance validator index is not strictly ordered: %d >= %d", b.Extrinsics.Assurances[idx-1].ValidatorIndex, assurance.ValidatorIndex)
 			}
 		}
 		// (11.13)
@@ -187,25 +188,25 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		message := append([]byte("jam_available"), messageHash[:]...)
 		key := priorState.ValidatorKeysetsActive[assurance.ValidatorIndex].ToEd25519PublicKey()
 		if !ed25519.Verify(key[:], message, assurance.Signature[:]) {
-			return fmt.Errorf("invalid signature from validator %d", assurance.ValidatorIndex)
+			return errors.ProtocolErrorf("invalid signature from validator %d", assurance.ValidatorIndex)
 		}
 	}
 
 	// (11.23)
 	if len(b.Extrinsics.Guarantees) > int(constants.NumCores) {
-		return fmt.Errorf("too many assurances. Expected at most %d, got %d", constants.NumCores, len(b.Extrinsics.Guarantees))
+		return errors.ProtocolErrorf("too many assurances. Expected at most %d, got %d", constants.NumCores, len(b.Extrinsics.Guarantees))
 	}
 
 	for i := 1; i < len(b.Extrinsics.Guarantees); i++ {
 		if b.Extrinsics.Guarantees[i].WorkReport.CoreIndex <= b.Extrinsics.Guarantees[i-1].WorkReport.CoreIndex {
-			return fmt.Errorf("guarantees must be strictly ordered by CoreIndex")
+			return errors.ProtocolErrorf("guarantees must be strictly ordered by CoreIndex")
 		}
 	}
 
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		for i := 1; i < len(guarantee.Credentials); i++ {
 			if guarantee.Credentials[i].ValidatorIndex <= guarantee.Credentials[i-1].ValidatorIndex {
-				return fmt.Errorf("credentials must be strictly ordered by ValidatorIndex")
+				return errors.ProtocolErrorf("credentials must be strictly ordered by ValidatorIndex")
 			}
 		}
 
@@ -214,17 +215,17 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 		for _, workDigest := range guarantee.WorkReport.WorkDigests {
 			totalAccumulateGasLimit += workDigest.AccumulateGasLimit
 			if workDigest.AccumulateGasLimit < priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate {
-				return fmt.Errorf("accumulate gas limit %d less than minimum gas for accumulate %d", workDigest.AccumulateGasLimit, priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate)
+				return errors.ProtocolErrorf("accumulate gas limit %d less than minimum gas for accumulate %d", workDigest.AccumulateGasLimit, priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate)
 			}
 		}
 		if totalAccumulateGasLimit > types.GasValue(constants.SingleAccumulationAllocatedGas) {
-			return fmt.Errorf("total accumulate gas limit %d greater than single accumulation allocated gas %d", totalAccumulateGasLimit, constants.SingleAccumulationAllocatedGas)
+			return errors.ProtocolErrorf("total accumulate gas limit %d greater than single accumulation allocated gas %d", totalAccumulateGasLimit, constants.SingleAccumulationAllocatedGas)
 		}
 	}
 
 	// (11.32)
 	if len(b.Extrinsics.Guarantees.WorkPackageHashes()) != len(b.Extrinsics.Guarantees) {
-		return fmt.Errorf("number of work package hashes does not match number of guarantees")
+		return errors.ProtocolErrorf("number of work package hashes does not match number of guarantees")
 	}
 
 	for _, refinementContext := range b.Extrinsics.Guarantees.RefinementContexts() {
@@ -236,7 +237,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			minAcceptableTimeslot = 0
 		}
 		if refinementContext.Timeslot < minAcceptableTimeslot {
-			return fmt.Errorf("refinement context timeslot is too old")
+			return errors.ProtocolErrorf("refinement context timeslot is too old")
 		}
 
 		// (11.35)
@@ -280,7 +281,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 
 	for wph := range b.Extrinsics.Guarantees.WorkPackageHashes() {
 		if _, ok := existingWorkPackageHashes[wph]; ok {
-			return fmt.Errorf("work package hash %x already exists", wph)
+			return errors.ProtocolErrorf("work package hash %x already exists", wph)
 		}
 	}
 
@@ -306,7 +307,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			if _, ok := recentBlockWorkPackageHashes[wph]; ok {
 				continue
 			}
-			return fmt.Errorf("work package hash %x does not exist in extrinsic or recent history", wph)
+			return errors.ProtocolErrorf("work package hash %x does not exist in extrinsic or recent history", wph)
 		}
 	}
 
@@ -321,10 +322,10 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		for key, value := range guarantee.WorkReport.SegmentRootLookup {
 			if _, ok := correctSegmentRootLookup[key]; !ok {
-				return fmt.Errorf("segment root %x does not exist in recent history", key)
+				return errors.ProtocolErrorf("segment root %x does not exist in recent history", key)
 			}
 			if correctSegmentRootLookup[key] != value {
-				return fmt.Errorf("segment root %x does not match recent history", key)
+				return errors.ProtocolErrorf("segment root %x does not match recent history", key)
 			}
 		}
 	}
@@ -333,7 +334,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		for _, workDigest := range guarantee.WorkReport.WorkDigests {
 			if workDigest.ServiceCodeHash != priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash {
-				return fmt.Errorf("service code hash %x does not match service account code hash %x", workDigest.ServiceCodeHash, priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash)
+				return errors.ProtocolErrorf("service code hash %x does not match service account code hash %x", workDigest.ServiceCodeHash, priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash)
 			}
 		}
 	}
@@ -342,7 +343,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	for i := 1; i < len(b.Extrinsics.Preimages); i++ {
 		// First check if ordered by ServiceIndex
 		if b.Extrinsics.Preimages[i].ServiceIndex < b.Extrinsics.Preimages[i-1].ServiceIndex {
-			return fmt.Errorf("preimages must be ordered by ServiceIndex")
+			return errors.ProtocolErrorf("preimages must be ordered by ServiceIndex")
 		}
 
 		// If ServiceIndex is equal, check that Data is lexicographically greater
@@ -350,7 +351,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 			// Compare Data bytes lexicographically
 			result := bytes.Compare(b.Extrinsics.Preimages[i].Data, b.Extrinsics.Preimages[i-1].Data)
 			if result <= 0 {
-				return fmt.Errorf("preimages must be strictly ordered lexicographically when ServiceIndex is equal")
+				return errors.ProtocolErrorf("preimages must be strictly ordered lexicographically when ServiceIndex is equal")
 			}
 		}
 	}
@@ -358,12 +359,12 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	// (12.38)
 	for _, preimage := range b.Extrinsics.Preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		isNew, err := priorState.ServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		isNew, err := priorState.ServiceAccounts.IsNewPreimage(nil, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
-			return fmt.Errorf("failed to check if preimage %x exists: %w", hash, err)
+			return err
 		}
 		if !isNew {
-			return fmt.Errorf("preimage %x already exists", hash)
+			return errors.ProtocolErrorf("preimage %x already exists", hash)
 		}
 	}
 	return nil
@@ -380,19 +381,19 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		// Verify block seal matches the expected ticket's VRF output
 		expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
 		if err != nil {
-			return fmt.Errorf("failed to extract VRF output from block seal: %w", err)
+			return errors.WrapProtocolError(err, "failed to extract VRF output from block seal")
 		}
 
 		if expectedTicket.VerifiablyRandomIdentifier != actualVRFOutput {
-			return fmt.Errorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
+			return errors.ProtocolErrorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
 		}
 
 		verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
 		if err != nil {
-			return fmt.Errorf("failed to verify block seal: %w", err)
+			return errors.WrapProtocolError(err, "failed to verify block seal")
 		}
 		if !verified {
-			return fmt.Errorf("block seal verification failed")
+			return errors.ProtocolErrorf("block seal verification failed")
 		}
 	} else {
 		// (6.16)
@@ -400,93 +401,93 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		expectedKey := postState.SafroleBasicState.SealingKeySequence.BandersnatchKeys[slotIndexInEpoch]
 
 		if expectedKey != authorKey {
-			return fmt.Errorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
+			return errors.ProtocolErrorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
 		}
 
 		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
 		if err != nil {
-			return fmt.Errorf("failed to verify block seal: %w", err)
+			return errors.WrapProtocolError(err, "failed to verify block seal")
 		}
 		if !verified {
-			return fmt.Errorf("block seal verification failed")
+			return errors.ProtocolErrorf("block seal verification failed")
 		}
 	}
 
 	// (6.17)
 	verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_entropy"), actualVRFOutput[:]...), []byte{}, b.Header.VRFSignature)
 	if err != nil {
-		return fmt.Errorf("failed to verify block VRF signature: %w", err)
+		return errors.WrapProtocolError(err, "failed to verify block VRF signature")
 	}
 	if !verified {
-		return fmt.Errorf("block VRF signature verification failed")
+		return errors.ProtocolErrorf("block VRF signature verification failed")
 	}
 
 	// (6.27)
 	if b.Header.TimeSlot.EpochIndex() > priorState.MostRecentBlockTimeslot.EpochIndex() {
 		if b.Header.EpochMarker == nil {
-			return fmt.Errorf("epoch marker should not be nil")
+			return errors.ProtocolErrorf("epoch marker should not be nil")
 		}
 		if b.Header.EpochMarker.CurrentEpochRandomness != priorState.EntropyAccumulator[0] {
-			return fmt.Errorf("epoch marker current epoch randomness does not match post state current epoch randomness")
+			return errors.ProtocolErrorf("epoch marker current epoch randomness does not match post state current epoch randomness")
 		}
 		if b.Header.EpochMarker.TicketsRandomness != priorState.EntropyAccumulator[1] {
-			return fmt.Errorf("epoch marker tickets randomness does not match post state tickets randomness")
+			return errors.ProtocolErrorf("epoch marker tickets randomness does not match post state tickets randomness")
 		}
 		for idx, validatorKey := range b.Header.EpochMarker.ValidatorKeys {
 			if validatorKey.BandersnatchPublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToBandersnatchPublicKey() {
-				return fmt.Errorf("epoch marker validator key does not match post state safrole pending validator key")
+				return errors.ProtocolErrorf("epoch marker validator key does not match post state safrole pending validator key")
 			}
 			if validatorKey.Ed25519PublicKey != postState.SafroleBasicState.ValidatorKeysetsPending[idx].ToEd25519PublicKey() {
-				return fmt.Errorf("epoch marker validator key does not match post state safrole pending validator key")
+				return errors.ProtocolErrorf("epoch marker validator key does not match post state safrole pending validator key")
 			}
 		}
 	} else {
 		if b.Header.EpochMarker != nil {
-			return fmt.Errorf("epoch marker should be nil")
+			return errors.ProtocolErrorf("epoch marker should be nil")
 		}
 	}
 	// (6.28)
 	if b.Header.TimeSlot.EpochIndex() == priorState.MostRecentBlockTimeslot.EpochIndex() && uint32(priorState.MostRecentBlockTimeslot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber && uint32(postState.MostRecentBlockTimeslot.SlotPhaseIndex()) >= constants.TicketSubmissionEndingSlotPhaseNumber && uint32(len(priorState.SafroleBasicState.TicketAccumulator)) == constants.NumTimeslotsPerEpoch {
 		if b.Header.WinningTicketsMarker == nil {
-			return fmt.Errorf("winning tickets marker should not be nil")
+			return errors.ProtocolErrorf("winning tickets marker should not be nil")
 		}
 		if len(b.Header.WinningTicketsMarker) != len(priorState.SafroleBasicState.TicketAccumulator) {
-			return fmt.Errorf("winning tickets marker should have %d tickets", len(priorState.SafroleBasicState.TicketAccumulator))
+			return errors.ProtocolErrorf("winning tickets marker should have %d tickets", len(priorState.SafroleBasicState.TicketAccumulator))
 		}
 		for idx, ticket := range ticket.ReorderTicketsOutsideIn(priorState.SafroleBasicState.TicketAccumulator) {
 			if ticket.VerifiablyRandomIdentifier != b.Header.WinningTicketsMarker[idx].VerifiablyRandomIdentifier {
-				return fmt.Errorf("winning tickets marker ticket does not match post state ticket")
+				return errors.ProtocolErrorf("winning tickets marker ticket does not match post state ticket")
 			}
 			if ticket.EntryIndex != b.Header.WinningTicketsMarker[idx].EntryIndex {
-				return fmt.Errorf("winning tickets marker ticket does not match post state ticket")
+				return errors.ProtocolErrorf("winning tickets marker ticket does not match post state ticket")
 			}
 		}
 	} else {
 		if b.Header.WinningTicketsMarker != nil {
-			return fmt.Errorf("winning tickets marker should be nil")
+			return errors.ProtocolErrorf("winning tickets marker should be nil")
 		}
 	}
 	// (6.29)
 	for _, ticket := range b.Extrinsics.Tickets {
 		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
-			return fmt.Errorf("ticket entry index should be less than %d", constants.NumTicketEntries)
+			return errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
 		}
 		verified, err := bandersnatch.VerifyRingSignature(postState.SafroleBasicState.EpochTicketSubmissionsRoot, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(ticket.EntryIndex)), []byte{}, ticket.ValidityProof)
 		if err != nil {
-			return fmt.Errorf("failed to verify ticket signature: %w", err)
+			return errors.WrapProtocolError(err, "failed to verify ticket signature")
 		}
 		if !verified {
-			return fmt.Errorf("ticket signature verification failed")
+			return errors.ProtocolErrorf("ticket signature verification failed")
 		}
 	}
 	// (6.30)
 	if uint32(postState.MostRecentBlockTimeslot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber {
 		if len(b.Extrinsics.Tickets) > int(constants.MaxTicketsPerExtrinsic) {
-			return fmt.Errorf("extrinsics should have at most %d tickets", constants.MaxTicketsPerExtrinsic)
+			return errors.ProtocolErrorf("extrinsics should have at most %d tickets", constants.MaxTicketsPerExtrinsic)
 		}
 	} else {
 		if len(b.Extrinsics.Tickets) != 0 {
-			return fmt.Errorf("extrinsics should have no tickets")
+			return errors.ProtocolErrorf("extrinsics should have no tickets")
 		}
 	}
 
@@ -505,14 +506,14 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 	// (10.5)
 	for _, culprit := range b.Extrinsics.Disputes.Culprits {
 		if _, ok := postState.Disputes.WorkReportHashesBad[culprit.InvalidWorkReportHash]; !ok {
-			return fmt.Errorf("culprit invalid work report hash is not in bad set")
+			return errors.ProtocolErrorf("culprit invalid work report hash is not in bad set")
 		}
 		if _, ok := reportableKeys[culprit.ValidatorKey]; !ok {
-			return fmt.Errorf("culprit validator key is not in reportable keyset")
+			return errors.ProtocolErrorf("culprit validator key is not in reportable keyset")
 		}
 		var message = append([]byte("jam_guarantee"), culprit.InvalidWorkReportHash[:]...)
 		if !ed25519.Verify(culprit.ValidatorKey[:], message, culprit.Signature[:]) {
-			return fmt.Errorf("invalid signature from validator %d", culprit.ValidatorKey)
+			return errors.ProtocolErrorf("invalid signature from validator %d", culprit.ValidatorKey)
 		}
 	}
 	// (10.6)
@@ -520,10 +521,10 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		_, reportIsBad := postState.Disputes.WorkReportHashesBad[fault.WorkReportHash]
 		_, reportIsGood := postState.Disputes.WorkReportHashesGood[fault.WorkReportHash]
 		if (reportIsBad == reportIsGood) || (reportIsBad != fault.CorrectValidity) {
-			return fmt.Errorf("inconsistent work report hash")
+			return errors.ProtocolErrorf("inconsistent work report hash")
 		}
 		if _, ok := reportableKeys[fault.ValidatorKey]; !ok {
-			return fmt.Errorf("fault validator key is not in reportable keyset")
+			return errors.ProtocolErrorf("fault validator key is not in reportable keyset")
 		}
 		var message []byte
 		if fault.CorrectValidity {
@@ -533,7 +534,7 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		}
 		message = append(message, fault.WorkReportHash[:]...)
 		if !ed25519.Verify(fault.ValidatorKey[:], message, fault.Signature[:]) {
-			return fmt.Errorf("invalid signature from validator %d", fault.ValidatorKey)
+			return errors.ProtocolErrorf("invalid signature from validator %d", fault.ValidatorKey)
 		}
 	}
 
@@ -544,7 +545,7 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		for _, credential := range guarantee.Credentials {
 			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
 			if !ed25519.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
-				return fmt.Errorf("invalid signature from validator %d", credential.ValidatorIndex)
+				return errors.ProtocolErrorf("invalid signature from validator %d", credential.ValidatorIndex)
 			}
 			var k uint16
 			rotationIndex := uint16(postState.MostRecentBlockTimeslot.CoreAssignmentRotationIndex())
@@ -554,13 +555,13 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 				k = 0 // If we're in the first rotation period, accept all guarantees
 			}
 			if guarantorAssignments.CoreIndices[credential.ValidatorIndex] != types.CoreIndex(guarantee.WorkReport.CoreIndex) {
-				return fmt.Errorf("guarantee core index does not match work report core index")
+				return errors.ProtocolErrorf("guarantee core index does not match work report core index")
 			}
 			if k > uint16(guarantee.Timeslot) {
-				return fmt.Errorf("guarantee timeslot is too old")
+				return errors.ProtocolErrorf("guarantee timeslot is too old")
 			}
 			if guarantee.Timeslot > postState.MostRecentBlockTimeslot {
-				return fmt.Errorf("guarantee timeslot is too new")
+				return errors.ProtocolErrorf("guarantee timeslot is too new")
 			}
 		}
 	}
@@ -586,7 +587,7 @@ func Get(batch *pebble.Batch, headerHash [32]byte) (*BlockWithInfo, error) {
 	// Retrieve the serialized block from the repository
 	data, closer, err := staterepository.Get(batch, key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get block %x: %w", headerHash, err)
+		return nil, err
 	}
 	defer closer.Close()
 
@@ -608,12 +609,16 @@ func GetAnchorBlock(batch *pebble.Batch, header header.Header, targetAnchorHeade
 		// Get the current block
 		blockWithInfo, err := Get(batch, currentHeaderHash)
 		if err != nil {
-			return nil, fmt.Errorf("ancestor chain ended without finding anchor block %x", targetAnchorHeaderHash)
+			if err == pebble.ErrNotIndexed {
+				return nil, errors.ProtocolErrorf("ancestor chain ended without finding anchor block %x", targetAnchorHeaderHash)
+			} else {
+				return nil, fmt.Errorf("failed to get block %x: %w", currentHeaderHash, err)
+			}
 		}
 
 		// Check if the block is too old (more than 24 hours)
 		if header.TimeSlot > blockWithInfo.Block.Header.TimeSlot+types.Timeslot(constants.LookupAnchorMaxAgeTimeslots) {
-			return nil, fmt.Errorf("anchor block is too old (more than 24 hours before current block)")
+			return nil, errors.ProtocolErrorf("anchor block is too old (more than 24 hours before current block)")
 		}
 
 		if currentHeaderHash == targetAnchorHeaderHash {

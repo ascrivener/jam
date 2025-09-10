@@ -27,9 +27,14 @@ func main() {
 	defer staterepository.CloseGlobalRepository()
 	// Create and start the server
 	server := fuzzinterface.NewServer()
-	if err := server.Start(*socketPath); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+
+	// Start server in goroutine so we can handle signals
+	go func() {
+		if err := server.Start(*socketPath); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+		log.Println("Server completed successfully")
+	}()
 
 	// Wait for termination signal
 	signalChan := make(chan os.Signal, 1)

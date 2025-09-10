@@ -249,7 +249,7 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 	if fc.inProcess {
 		// Process message directly using server
 		// skip length bytes
-		return fc.server.HandleMessageData(data[4:]), nil
+		return fc.server.HandleMessageData(data[4:])
 	}
 
 	_, err = fc.conn.Write(data)
