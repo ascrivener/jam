@@ -47,11 +47,8 @@ func FromBytesLSBWithLength(b []byte, bitLen int) (*BitSequence, error) {
 // BitAt returns the bit at position i (0-indexed).
 // It panics if i is out of range.
 func (bs *BitSequence) BitAt(i int) bool {
-	if i < 0 || i >= bs.bitLen {
-		panic("bit index out of range")
-	}
-	byteIndex := i / 8
-	bitPos := i % 8 // LSB-first: bit 0 is least significant, no subtraction from 7
+	byteIndex := i >> 3
+	bitPos := i & 7
 	return (bs.buf[byteIndex] & (1 << uint(bitPos))) != 0
 }
 

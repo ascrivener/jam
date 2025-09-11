@@ -17,12 +17,7 @@ type State struct {
 	RAM       *ram.RAM
 }
 
-type InstructionContext struct {
-	Instruction byte
-	SkipLength  int // Computed skip length for the current instruction.
-}
-
-type InstructionHandler func(pvm *PVM, ctx *InstructionContext) (ExitReason, types.Register)
+type InstructionHandler func(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register)
 
 var dispatchTable [256]InstructionHandler
 
@@ -44,33 +39,28 @@ func (pvm *PVM) SingleStep() ExitReason {
 	// Reset the pre-allocated slice without allocating new memory.
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 
-	ctx := InstructionContext{
-		Instruction: getInstruction(pvm.Instructions, pvm.InstructionCounter),
-		SkipLength:  pvm.SkipLengths[pvm.InstructionCounter],
-	}
+	instruction := pvm.getInstruction(pvm.InstructionCounter)
+	skipLength := pvm.SkipLengths[pvm.InstructionCounter]
 
-	var exitReason ExitReason
-	var nextIC types.Register
-
-	handler := dispatchTable[ctx.Instruction]
+	handler := dispatchTable[instruction]
 	if handler == nil || !pvm.Opcodes.BitAt(int(pvm.InstructionCounter)) {
 		handler = dispatchTable[0]
 	}
 
-	exitReason, nextIC = handler(pvm, &ctx)
+	exitReason, nextIC := handler(pvm, instruction, skipLength)
 
 	pvm.State.Gas -= types.SignedGasValue(1)
 
 	pvm.InstructionCounter = nextIC
 
 	if fileLogger != nil {
-		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", ctx.Instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
+		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
 	}
 
 	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
 	if minRamIndex != nil {
 		if *minRamIndex < ram.MinValidRamIndex {
-			return NewSimpleExitReason(ExitPanic)
+			return ExitReasonPanic
 		} else {
 			return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
 		}
@@ -78,24 +68,26 @@ func (pvm *PVM) SingleStep() ExitReason {
 	return exitReason
 }
 
-func getInstruction(instructions []byte, instructionCounter types.Register) byte {
-	if int(instructionCounter) >= len(instructions) {
+func (pvm *PVM) getInstruction(instructionCounter types.Register) byte {
+	if int(instructionCounter) >= pvm.InstructionsLength {
 		return 0
 	}
-	return instructions[instructionCounter]
+	return pvm.Instructions[instructionCounter]
 }
 
-func getInstructionRange(instructions []byte, instructionCounter types.Register, count int) []byte {
+func (pvm *PVM) getInstructionRange(instructionCounter types.Register, count int) []byte {
 	start := int(instructionCounter)
-	instructionsLen := len(instructions)
 
-	if start >= instructionsLen {
+	if start >= pvm.InstructionsLength || count <= 0 {
 		return []byte{}
 	}
 
-	end := min(start+count, instructionsLen)
+	end := start + count
+	if end > pvm.InstructionsLength {
+		end = pvm.InstructionsLength
+	}
 
-	return instructions[start:end]
+	return pvm.Instructions[start:end]
 }
 
 func skip(instructionCounter types.Register, opcodes bitsequence.BitSequence) int {
@@ -144,14 +136,14 @@ func signExtendImmediate(n int, x uint64) types.Register {
 	return types.Register(x + sign*offset)
 }
 
-func branch(pvm *PVM, ctx *InstructionContext, b types.Register, C bool) (ExitReason, types.Register) {
+func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, types.Register) {
 	if !C {
-		return NewSimpleExitReason(ExitGo), pvm.nextInstructionCounter(ctx.SkipLength)
+		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
 	if _, exists := pvm.BasicBlockBeginningOpcodes[int(b)]; !exists {
-		return NewSimpleExitReason(ExitPanic), pvm.InstructionCounter
+		return ExitReasonPanic, pvm.InstructionCounter
 	}
-	return NewSimpleExitReason(ExitGo), b
+	return ExitReasonGo, b
 }
 
 func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
@@ -163,7 +155,7 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 		if fileLogger != nil {
 			fileLogger.Printf("djump: HALT condition (a == %d)", (1<<32)-(1<<16))
 		}
-		return NewSimpleExitReason(ExitHalt), defaultNextInstructionCounter
+		return ExitReasonHalt, defaultNextInstructionCounter
 	}
 
 	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
@@ -171,7 +163,7 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 			fileLogger.Printf("djump: PANIC condition (a=%d, maxAddr=%d, alignment=%d)",
 				a, uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor), constants.DynamicAddressAlignmentFactor)
 		}
-		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
+		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
 	nextInstructionCounter := dynamicJumpTable[a/uint32(constants.DynamicAddressAlignmentFactor)-1]
@@ -185,13 +177,13 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 		if fileLogger != nil {
 			fileLogger.Printf("djump: PANIC - nextPC=%d not in basicBlockBeginningOpcodes", nextInstructionCounter)
 		}
-		return NewSimpleExitReason(ExitPanic), defaultNextInstructionCounter
+		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
 	if fileLogger != nil {
 		fileLogger.Printf("djump: SUCCESS - jumping to nextPC=%d", nextInstructionCounter)
 	}
-	return NewSimpleExitReason(ExitGo), nextInstructionCounter
+	return ExitReasonGo, nextInstructionCounter
 }
 
 func smod(a, b int64) int64 {

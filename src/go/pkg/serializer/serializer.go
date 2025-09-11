@@ -590,7 +590,7 @@ func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 		if len(p) < 9 {
 			return 0, 0, false
 		}
-		x = DecodeLittleEndian(p[1:9])
+		x = binary.LittleEndian.Uint64(p[1:9])
 		return x, 1 + 8, true
 	}
 	// Case 3: header + remainder.
@@ -709,7 +709,7 @@ func SignedToUnsigned(octets int, a int64) uint64 {
 
 func BlobLengthFromPreimageLookupHistoricalStatusKey(key [31]byte) types.BlobLength {
 	_, h := InvertStateKeyConstructorFromHash(key)
-	return types.BlobLength(DecodeLittleEndian(h[:4]))
+	return types.BlobLength(binary.LittleEndian.Uint32(h[:4]))
 }
 
 func InvertStateKeyConstructorFromHash(key [31]byte) (types.ServiceIndex, [32]byte) {

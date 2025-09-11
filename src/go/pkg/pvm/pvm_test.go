@@ -196,7 +196,9 @@ func TestPVMWithDirectoryTestVectors(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Failed to get memory contents: %v", err)
 				}
-				pvm.State.RAM.MutateRange(memBlock.Address, contents, ram.NoWrap, false)
+				pvm.State.RAM.MutateRange(memBlock.Address, len(contents), ram.NoWrap, false, func(dest []byte) {
+					copy(dest, contents)
+				})
 			}
 
 			// // Run the PVM and track if it panicked

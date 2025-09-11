@@ -10,6 +10,7 @@ import (
 
 type PVM struct {
 	Instructions               []byte
+	InstructionsLength         int // Cached length to avoid repeated len() calls
 	Opcodes                    bitsequence.BitSequence
 	BasicBlockBeginningOpcodes map[int]struct{} // Precomputed basic block beginning opcodes.
 	SkipLengths                []int            // Precomputed skip lengths for all instruction positions.
@@ -43,6 +44,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	}
 	return &PVM{
 		Instructions:               instructions,
+		InstructionsLength:         len(instructions),
 		Opcodes:                    opcodes,
 		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes,
 		SkipLengths:                skipLengths,
@@ -189,7 +191,7 @@ func (pvm *PVM) Run() ExitReason {
 		}
 		// Otherwise, adjust for out-of-gas or panic/halt conditions.
 		if pvm.State.Gas < 0 {
-			exitReason = NewSimpleExitReason(ExitOutOfGas)
+			exitReason = ExitReasonOutOfGas
 		} else if exitReason.IsSimple() &&
 			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
 			// Reset the instruction counter on panic/halt.
@@ -241,7 +243,7 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
 			start := pvm.State.Registers[7]
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap) {
-				blob := pvm.State.RAM.InspectRange(uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap, false)
+				blob := pvm.State.RAM.InspectRange(uint64(start), 8, ram.NoWrap, false)
 				return types.NewExecutionExitReasonBlob(blob), gasUsed, nil
 			} else {
 				return types.NewExecutionExitReasonBlob([]byte{}), gasUsed, nil

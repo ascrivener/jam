@@ -36,24 +36,6 @@ var (
 	ExitReasonOutOfGas = ExitReason{SimpleExitReason: &[]SimpleExitReasonType{ExitOutOfGas}[0]}
 )
 
-// NewSimpleExitReason creates an ExitReason representing a simple exit.
-// It sets only the SimpleExitReason field.
-func NewSimpleExitReason(reason SimpleExitReasonType) ExitReason {
-	// Use pre-allocated constants for common cases
-	switch reason {
-	case ExitGo:
-		return ExitReasonGo
-	case ExitPanic:
-		return ExitReasonPanic
-	case ExitHalt:
-		return ExitReasonHalt
-	case ExitOutOfGas:
-		return ExitReasonOutOfGas
-	default:
-		panic("NewSimpleExitReason: invalid reason")
-	}
-}
-
 // NewComplexExitReason creates an ExitReason representing a complex exit.
 // It sets only the ComplexExitReason field.
 func NewComplexExitReason(reasonType ComplexExitReasonType, parameter types.Register) ExitReason {
