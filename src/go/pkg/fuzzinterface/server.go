@@ -197,7 +197,7 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 	var setState SetState
 	err := serializer.Deserialize(setStateData, &setState)
 	if err != nil {
-		return ResponseMessage{Error: &struct{}{}}, nil
+		return ResponseMessage{}, err
 	}
 	repo := staterepository.GetGlobalRepository()
 	if repo == nil {
@@ -272,7 +272,7 @@ func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
 	var getState GetState
 	err := serializer.Deserialize(getStateData, &getState)
 	if err != nil {
-		return ResponseMessage{Error: &struct{}{}}, nil
+		return ResponseMessage{}, err
 	}
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
 	return ResponseMessage{State: &state}, nil
