@@ -59,11 +59,10 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	pages                    map[uint32][]byte    // Page number -> page content
-	access                   map[uint32]RamAccess // Page number -> access rights
-	BeginningOfHeap          *RamIndex            // nil if no heap
-	rollbackLog              map[RamIndex]byte
-	minMemoryAccessException *RamIndex // Track minimum memory access exception
+	pages                    [NumRamPages]*[]byte   // Page number -> page content (nil = unallocated)
+	access                   [NumRamPages]RamAccess // Page number -> access rights
+	BeginningOfHeap          *RamIndex              // nil if no heap
+	minMemoryAccessException *RamIndex              // Track the minimum index that caused an access exception
 }
 
 //
@@ -73,9 +72,8 @@ type RAM struct {
 // NewEmptyRAM creates an empty RAM with rollback log initialized
 func NewEmptyRAM() *RAM {
 	return &RAM{
-		pages:                    make(map[uint32][]byte),
-		access:                   make(map[uint32]RamAccess),
-		rollbackLog:              make(map[RamIndex]byte),
+		pages:                    [NumRamPages]*[]byte{},
+		access:                   [NumRamPages]RamAccess{},
 		minMemoryAccessException: nil,
 	}
 }
@@ -85,10 +83,14 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	ram := NewEmptyRAM()
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
 	// read-only section
-	ram.MutateRange(MajorZoneSize, readData, NoWrap, false)
+	ram.MutateRange(MajorZoneSize, len(readData), NoWrap, false, func(dest []byte) {
+		copy(dest, readData)
+	})
 	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)
 	// heap
-	ram.MutateRange(uint64(heapStart), writeData, NoWrap, false)
+	ram.MutateRange(uint64(heapStart), len(writeData), NoWrap, false, func(dest []byte) {
+		copy(dest, writeData)
+	})
 	// Calculate total heap size including both data and extra space
 	heapLength := uint64(TotalSizeNeededPages(len(writeData)) + z*PageSize)
 	ram.MutateAccessRange(uint64(heapStart), heapLength, Mutable, NoWrap)
@@ -101,7 +103,9 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	ram.MutateAccessRange(uint64(stackStart), uint64(TotalSizeNeededPages(stackSize)), Mutable, NoWrap)
 	// arguments
 	argumentsStart := RamIndex(RamSize - MajorZoneSize - ArgumentsZoneSize)
-	ram.MutateRange(uint64(argumentsStart), arguments, NoWrap, false)
+	ram.MutateRange(uint64(argumentsStart), len(arguments), NoWrap, false, func(dest []byte) {
+		copy(dest, arguments)
+	})
 	ram.MutateAccessRange(uint64(argumentsStart), uint64(TotalSizeNeededPages(len(arguments))), Immutable, NoWrap)
 	return ram
 }
@@ -110,46 +114,150 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 // Memory access and mutation methods
 //
 
-// getOrCreatePage returns the page at the given page number, creating it if it doesn't exist
+// getOrCreatePage returns the page at the given page number for write operations
+// Creates the page if it doesn't exist since we need to mutate it
 func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
 	// Bounds check
 	if pageNum >= NumRamPages {
 		panic(fmt.Sprintf("Attempted to create page at invalid index %d (max is %d)", pageNum, NumRamPages-1))
 	}
 
-	page, exists := r.pages[pageNum]
-	if !exists {
-		page = make([]byte, PageSize)
-		r.pages[pageNum] = page
+	if r.pages[pageNum] == nil {
+		page := make([]byte, PageSize)
+		r.pages[pageNum] = &page
 	}
-	return page
+	return *r.pages[pageNum]
 }
 
 // Inspect returns the byte at the given index, optionally tracking access violations
 func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions bool) byte {
-	result := r.InspectRange(index, 1, mode, trackAccessExceptions)
-	return result[0]
+	return r.InspectRange(index, 1, mode, trackAccessExceptions)[0]
 }
 
-// pageIterator handles the common logic of iterating through pages and checking access
-func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool,
-	accessCheck func(RamAccess) bool, pageOperation func([]byte, uint64, uint64, uint64)) {
+// checkAccessViolations pre-checks access violations and sets exceptions early
+func (r *RAM) checkAccessViolations(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool,
+	accessCheck func(RamAccess) bool) {
 
-	// Handle zero-length ranges
+	if !trackAccessExceptions {
+		return
+	}
+
+	startPage := uint32(start / PageSize)
+	endPage := uint32((start + length - 1) / PageSize)
+
+	for pageNum := startPage; pageNum <= endPage; pageNum++ {
+		access := r.getPageAccess(pageNum)
+		if accessCheck(access) {
+			// Found violation - calculate the actual violating index within our range
+			pageStart := uint64(pageNum) * PageSize
+
+			// Find the intersection of [start, start+length-1] and [pageStart, pageEnd]
+			violationIndex := max(start, pageStart)
+
+			if mode == Wrap {
+				violationIndex = violationIndex % RamSize
+			}
+
+			if r.minMemoryAccessException == nil || violationIndex < uint64(*r.minMemoryAccessException) {
+				r.minMemoryAccessException = new(RamIndex)
+				*r.minMemoryAccessException = RamIndex(violationIndex)
+			}
+			break // Found first violation, no need to check further
+		}
+	}
+}
+
+// isSinglePageAccess checks if the given range fits within a single page
+func (r *RAM) isSinglePageAccess(index uint64, length uint64, mode MemoryAccessMode) (bool, uint32, uint64) {
+	actualStart := index
+	if mode == Wrap {
+		actualStart = index % RamSize
+	}
+	startPageNum := uint32(actualStart / PageSize)
+	startPageOffset := actualStart % PageSize
+	isSinglePage := startPageOffset+length <= PageSize
+
+	return isSinglePage, startPageNum, startPageOffset
+}
+
+// InspectRange returns a contiguous buffer for the range, either direct page memory or combined slices
+func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
+	if length == 0 {
+		return nil
+	}
+
+	r.checkAccessViolations(index, length, mode, trackAccessExceptions,
+		func(access RamAccess) bool { return access == Inaccessible })
+
+	// Check if this is a single page operation
+	isSinglePage, pageNum, pageOffset := r.isSinglePageAccess(index, length, mode)
+
+	if isSinglePage {
+		// Fast path: single page access - return direct slice
+		page := r.getOrCreatePage(pageNum)
+		return page[pageOffset : pageOffset+length]
+	} else {
+		// Slow path: multi-page access
+		slices := r.pageIterator(index, length, mode)
+
+		// Combine into contiguous buffer
+		combined := make([]byte, length)
+		offset := 0
+		for _, slice := range slices {
+			copy(combined[offset:offset+len(slice)], slice)
+			offset += len(slice)
+		}
+		return combined
+	}
+}
+
+// Mutate changes a byte at the given index, optionally tracking access violations and updating rollback state
+func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAccessExceptions bool) {
+	r.MutateRange(index, 1, mode, trackAccessExceptions, func(dest []byte) {
+		dest[0] = newByte
+	})
+}
+
+// MutateRange provides direct access to writable memory via a callback function
+func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, trackAccessExceptions bool, fn func([]byte)) {
 	if length == 0 {
 		return
 	}
 
-	// For small ranges, avoid map allocation
-	var pageAccess map[uint32]RamAccess
-	if length > PageSize*2 { // Only cache for multi-page operations
-		startPage := uint32(start / PageSize)
-		endPage := uint32((start + length - 1) / PageSize)
-		pageAccess = make(map[uint32]RamAccess, endPage-startPage+1)
-		for pageNum := startPage; pageNum <= endPage; pageNum++ {
-			pageAccess[pageNum] = r.getPageAccess(pageNum)
+	r.checkAccessViolations(index, uint64(length), mode, trackAccessExceptions,
+		func(access RamAccess) bool { return access == Inaccessible || access == Immutable })
+
+	// Check if this is a single page operation
+	isSinglePage, pageNum, pageOffset := r.isSinglePageAccess(index, uint64(length), mode)
+
+	if isSinglePage {
+		page := r.getOrCreatePage(pageNum)
+		fn(page[pageOffset : pageOffset+uint64(length)])
+	} else {
+		slices := r.pageIterator(index, uint64(length), mode)
+
+		temp := make([]byte, length)
+		fn(temp)
+
+		offset := 0
+		for _, slice := range slices {
+			copy(slice, temp[offset:offset+len(slice)])
+			offset += len(slice)
 		}
 	}
+}
+
+// pageIterator yields slices of memory for the given range, allowing callers to process each slice
+// Note: This is only called for multi-page operations now
+func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode) [][]byte {
+
+	if length == 0 {
+		return nil
+	}
+
+	// Multi-page access - pre-allocate slice capacity
+	expectedPages := (length + PageSize - 1) / PageSize
+	slices := make([][]byte, 0, expectedPages)
 
 	// Process data page by page
 	for i := uint64(0); i < length; {
@@ -161,65 +269,17 @@ func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode, trackAcc
 		pageNum := uint32(index / PageSize)
 		pageOffset := index % PageSize
 
-		// Check access - use cached or direct lookup
-		var access RamAccess
-		if pageAccess != nil {
-			access = pageAccess[pageNum]
-		} else {
-			access = r.getPageAccess(pageNum)
-		}
-
-		if accessCheck(access) && trackAccessExceptions {
-			if r.minMemoryAccessException == nil || index < uint64(*r.minMemoryAccessException) {
-				r.minMemoryAccessException = new(RamIndex)
-				*r.minMemoryAccessException = RamIndex(index)
-			}
-		}
-
-		// Get the page and perform the operation
+		// Get the page for operations
 		page := r.getOrCreatePage(pageNum)
 		bytesToCopy := min(PageSize-pageOffset, length-i)
-		pageOperation(page, pageOffset, bytesToCopy, i)
+
+		// Add slice to results
+		slices = append(slices, page[pageOffset:pageOffset+bytesToCopy])
 
 		i += bytesToCopy
 	}
-}
 
-// InspectRange returns bytes from start to end, optionally tracking access violations
-func (r *RAM) InspectRange(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
-	if length == 0 {
-		return make([]byte, 0)
-	}
-
-	result := make([]byte, length)
-	resultOffset := uint64(0)
-
-	r.pageIterator(start, length, mode, trackAccessExceptions,
-		func(access RamAccess) bool { return access == Inaccessible },
-		func(page []byte, pageOffset, bytesToCopy, i uint64) {
-			copy(result[resultOffset:resultOffset+bytesToCopy], page[pageOffset:pageOffset+bytesToCopy])
-			resultOffset += bytesToCopy
-		})
-
-	return result
-}
-
-// Mutate changes a byte at the given index, optionally tracking access violations and updating rollback state
-func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAccessExceptions bool) {
-	r.MutateRange(index, []byte{newByte}, mode, trackAccessExceptions)
-}
-
-// MutateRange changes multiple bytes, optionally tracking access violations and updating rollback state
-func (r *RAM) MutateRange(start uint64, newBytes []byte, mode MemoryAccessMode, trackAccessExceptions bool) {
-	length := uint64(len(newBytes))
-	sourceOffset := uint64(0)
-
-	r.pageIterator(start, length, mode, trackAccessExceptions,
-		func(access RamAccess) bool { return access != Mutable },
-		func(page []byte, pageOffset, bytesToCopy, i uint64) {
-			copy(page[pageOffset:pageOffset+bytesToCopy], newBytes[sourceOffset:sourceOffset+bytesToCopy])
-			sourceOffset += bytesToCopy
-		})
+	return slices
 }
 
 //
@@ -234,11 +294,8 @@ func (r *RAM) getPageAccess(pageNum uint32) RamAccess {
 		panic(fmt.Sprintf("Attempted to access permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
 
-	access, exists := r.access[pageNum]
-	if !exists {
-		return Inaccessible // Default access is Inaccessible
-	}
-	return access
+	// Direct slice access is faster than map lookup
+	return r.access[pageNum]
 }
 
 // pageRangeCheck performs a check on all pages in a range with early termination
@@ -312,7 +369,7 @@ func (r *RAM) ZeroPage(pageNum uint32) {
 
 	// Delete the page from the pages map if it exists
 	// Since non-existent pages default to zeros, this effectively zeroes the page
-	delete(r.pages, pageNum)
+	r.pages[pageNum] = nil
 }
 
 // ClearPageAccess removes a page from the access map
@@ -324,7 +381,8 @@ func (r *RAM) ClearPageAccess(pageNum uint32) {
 	}
 
 	// Delete the page from the access map if it exists
-	delete(r.access, pageNum)
+	// Since non-existent pages default to Inaccessible, this effectively clears the page's access
+	r.access[pageNum] = Inaccessible
 }
 
 // MutateAccess sets the access type for a page containing the given index

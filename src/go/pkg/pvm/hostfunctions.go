@@ -2,6 +2,7 @@ package pvm
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 
 	"jam/pkg/constants"
@@ -91,19 +92,19 @@ const GasUsage types.GasValue = 10
 func Gas(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
 func Default(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		ctx.State.Registers[7] = types.Register(HostCallWhat)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
 func Log(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
-	return NewSimpleExitReason(ExitGo), nil
+	return ExitReasonGo, nil
 }
 
 // VerifyAndReturnStateForAccessor implements the state lookup host function
@@ -138,7 +139,7 @@ func Read(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccoun
 
 		// Check if key memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Determine 'v'
@@ -162,7 +163,7 @@ func Read(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccoun
 
 		// Check if output memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Set result in register 7 and copy data to memory
@@ -170,10 +171,12 @@ func Read(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccoun
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(len(preImage))
-			ctx.State.RAM.MutateRange(uint64(o), preImage[int(f):int(f+l)], ram.NoWrap, false)
+			ctx.State.RAM.MutateRange(uint64(o), len(preImage[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+				copy(dest, preImage[int(f):int(f+l)])
+			})
 		}
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -186,7 +189,7 @@ func Write(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccou
 
 		// Check if key memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
@@ -210,7 +213,7 @@ func Write(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccou
 				return ExitReason{}, err
 			}
 		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
@@ -234,7 +237,7 @@ func Write(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAccou
 			ctx.State.Registers[7] = l
 		}
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -301,20 +304,22 @@ func Info(ctx *HostFunctionContext[struct{}], serviceIndex types.ServiceIndex, s
 
 		// Check if memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(l), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		if v == nil {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Write to memory
-		ctx.State.RAM.MutateRange(uint64(outputOffset), v[int(f):int(f+l)], ram.NoWrap, false)
+		ctx.State.RAM.MutateRange(uint64(outputOffset), len(v[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+			copy(dest, v[int(f):int(f+l)])
+		})
 
 		// Set successful result
 		ctx.State.Registers[7] = types.Register(len(v))
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -331,21 +336,21 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		totalSize := entrySize * uint64(numEntries)
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(authIndicesOffset), uint64(4*constants.NumCores), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if mainIndex > types.Register(^uint32(0)) || validIndex > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Create gas mapping g
@@ -384,7 +389,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		}
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -400,18 +405,18 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 		totalSize := 32 * queueLength // 32 bytes per hash * queue length
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), uint64(totalSize), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Check if core index is within valid range
 		if coreIndex >= types.Register(constants.NumCores) {
 			ctx.State.Registers[7] = types.Register(HostCallCore)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.AssignServiceIndices[coreIndex] {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Read the queue of authorizer hashes from memory
@@ -432,7 +437,7 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 		// Set successful result
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -447,12 +452,12 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 
 		// Check if memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		if ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.DesignateServiceIndex {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Read the validator keysets from memory
@@ -471,7 +476,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 		// Set successful result
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -485,7 +490,7 @@ func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReas
 		ctx.Argument.ExceptionalAccumulationResultContext = *ctx.Argument.AccumulationResultContext.DeepCopy()
 
 		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -498,12 +503,12 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 		gratisStorageOffset := ctx.State.Registers[11] // f - gratis storage offset
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) || labelLength > types.Register(^uint32(0)) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		if gratisStorageOffset != types.Register(0) && ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Read code hash from memory
@@ -537,7 +542,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 				return ExitReason{}, err
 			}
 			ctx.State.Registers[7] = types.Register(HostCallCash)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 		accumulatingServiceAccount.Balance -= newAccount.Balance
 
@@ -547,7 +552,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.Ba
 		ctx.State.Registers[7] = types.Register(newAccount.ServiceIndex)
 		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = types.ServiceIndex((1 << 8) + ((uint64(newAccount.ServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -558,7 +563,7 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason,
 		minGasForOnTransfer := ctx.State.Registers[9] // m - minimum gas for on transfer
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap, false)
@@ -576,7 +581,7 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason,
 		// Set return status to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -589,7 +594,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		memoOffset := ctx.State.Registers[10]                          // o - memo offset
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		memoBytes := ctx.State.RAM.InspectRange(uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap, false)
@@ -603,12 +608,12 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
 		if !destinationExists {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if gasLimit < destinationAccount.MinimumGasForOnTransfer {
 			ctx.State.Registers[7] = types.Register(HostCallLow)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Get source account
@@ -620,7 +625,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		// Check if source has enough balance after transfer
 		if newBalance < sourceAccount.ThresholdBalanceNeeded() {
 			ctx.State.Registers[7] = types.Register(HostCallCash)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Create transfer object
@@ -642,7 +647,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -652,7 +657,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		hashOffset := ctx.State.Registers[8]                           // o - hash offset
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(hashOffset), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap, false)
@@ -666,23 +671,23 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		// 2. Check destination account exists and matches code hash
 		if destServiceIndex == ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		destinationAccount, destinationExists := serviceAccounts[destServiceIndex]
 		if !destinationExists {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if !bytes.Equal(destinationAccount.CodeHash[:], serializer.EncodeLittleEndian(32, uint64(ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex))) {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if destinationAccount.TotalItemsUsedInStorage != 2 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		length := max(81, destinationAccount.TotalOctetsUsedInStorage) - 81
@@ -694,7 +699,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		}
 		if !exists || length > uint64(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Get the most recent timeslot in the historical status
@@ -724,12 +729,12 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 
 				// Set status to OK
 				ctx.State.Registers[7] = types.Register(HostCallOK)
-				return NewSimpleExitReason(ExitGo), nil
+				return ExitReasonGo, nil
 			}
 		}
 		// Entry not expired
 		ctx.State.Registers[7] = types.Register(HostCallHuh)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -739,7 +744,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		z := ctx.State.Registers[8] // Length/Value
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
@@ -754,7 +759,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		if !ok || z > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 			ctx.State.Registers[8] = 0
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Set result registers based on list content according to the spec
@@ -774,7 +779,7 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 			panic(fmt.Sprintf("unreachable: impossible historical status length %v", len(historicalStatus)))
 		}
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -784,7 +789,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 		z := ctx.State.Registers[8] // BlobLength
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
@@ -812,7 +817,7 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 		} else {
 			// Key exists but doesn't have exactly two elements
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Check if we've exceeded storage limits
@@ -828,11 +833,11 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 				}
 			}
 			ctx.State.Registers[7] = types.Register(HostCallFull)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -842,7 +847,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble
 		z := ctx.State.Registers[8] // BlobLength
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
@@ -860,7 +865,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble
 		if !exists || z > types.Register(^uint32(0)) {
 			// Key doesn't exist, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Define cutoff time for "old enough" timeslots
@@ -897,11 +902,11 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble
 		} else {
 			// For any other case, return HUH
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -911,7 +916,7 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		o := ctx.State.Registers[7] // Offset
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
@@ -925,7 +930,7 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 		// Set OK status in register reg7
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -936,7 +941,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 		z := ctx.State.Registers[9]
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), uint64(z), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		i := ctx.State.RAM.InspectRange(uint64(o), uint64(z), ram.NoWrap, false)
@@ -951,7 +956,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 		serviceAccount, ok := d[types.ServiceIndex(sStar)]
 		if sStar > types.Register(^uint32(0)) || !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		historicalStatus, _, err := serviceAccount.GetPreimageLookupHistoricalStatus(batch, uint32(z), blake2b.Sum256(i))
@@ -961,7 +966,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 
 		if len(historicalStatus) > 0 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		preimageProvision := struct {
@@ -974,7 +979,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 
 		if _, ok := ctx.Argument.AccumulationResultContext.PreimageProvisions[preimageProvision]; ok {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		ctx.Argument.AccumulationResultContext.PreimageProvisions[preimageProvision] = struct{}{}
@@ -982,7 +987,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebbl
 		// Set OK status in register reg7
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1163,14 +1168,16 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 		l := min(ctx.State.Registers[9], types.Register(preimageLen)-f)
 
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		} else if preimage == nil {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(preimageLen)
-			ctx.State.RAM.MutateRange(uint64(o), preimage[int(f):int(f+l)], ram.NoWrap, false)
+			ctx.State.RAM.MutateRange(uint64(o), len(preimage[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+				copy(dest, preimage[int(f):int(f+l)])
+			})
 		}
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1179,16 +1186,16 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 		preimage := ctx.State.Registers[7]
 		z := min(ctx.State.Registers[8], types.Register(constants.SegmentSize))
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(z), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 		if exportSegmentOffset+len(ctx.Argument.ExportSequence) >= int(constants.MaxExportsInWorkPackage) {
 			ctx.State.Registers[7] = types.Register(HostCallFull)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.NoWrap, false), int(constants.SegmentSize))
 		ctx.State.Registers[7] = types.Register(exportSegmentOffset + len(ctx.Argument.ExportSequence))
 		ctx.Argument.ExportSequence = append(ctx.Argument.ExportSequence, x)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1198,12 +1205,12 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 		pz := ctx.State.Registers[8]
 		i := ctx.State.Registers[9]
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(po), uint64(pz), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 		p := ctx.State.RAM.InspectRange(uint64(po), uint64(pz), ram.NoWrap, false)
 		if _, _, _, ok := Deblob(p); !ok {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 		n := uint64(0)
 		for {
@@ -1219,7 +1226,7 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 			RAM:                u,
 			InstructionCounter: i,
 		}
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1233,27 +1240,30 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 
 		// Check if destination range is accessible
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Check if integrated PVM exists
 		sourcePVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if sourcePVM.RAM.RangeHas(ram.Inaccessible, uint64(s), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallOOB)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Copy the memory
-		ctx.State.RAM.MutateRange(uint64(o), sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.NoWrap, false)
+		data := sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false)
+		ctx.State.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, false, func(dest []byte) {
+			copy(dest, data)
+		})
 
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1269,18 +1279,18 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Check for invalid memory range
 		if r > 4 || p < 16 || p+c >= (1<<32)/ram.PageSize {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if r > 2 && targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(p)*ram.PageSize, uint64(c)*ram.PageSize, ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		if r < 3 {
@@ -1307,7 +1317,7 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1321,27 +1331,30 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 
 		// Check if source range is accessible in current context
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(s), uint64(z), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Check if integrated PVM exists
 		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// Check if destination range is writable in target PVM
 		if !targetPVM.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallOOB)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
-		targetPVM.RAM.MutateRange(uint64(o), ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false), ram.NoWrap, false)
+		data := ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false)
+		targetPVM.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, false, func(dest []byte) {
+			copy(dest, data)
+		})
 
 		// Set result to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1353,14 +1366,14 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 
 		// Check if memory range o to o+112 is accessible for reading
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(112), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Check if integrated PVM exists
 		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
 		if !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, ram.NoWrap, false)
@@ -1375,17 +1388,19 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 		pvm := NewPVM(targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
 		if pvm == nil {
 			ctx.State.Registers[7] = types.Register(InnerPanic)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 		exitReason := pvm.Run()
 
 		// Update memory with new gas and registers
-		gasBytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Gas))
-		ctx.State.RAM.MutateRange(uint64(o), gasBytes, ram.NoWrap, false)
+		ctx.State.RAM.MutateRange(uint64(o), 8, ram.NoWrap, false, func(dest []byte) {
+			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Gas))
+		})
 
 		for i := range 13 {
-			regBytes := serializer.EncodeLittleEndian(8, uint64(ctx.State.Registers[i]))
-			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), regBytes, ram.NoWrap, false)
+			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, ram.NoWrap, false, func(dest []byte) {
+				binary.LittleEndian.PutUint64(dest, uint64(ctx.State.Registers[i]))
+			})
 		}
 
 		targetPVM.InstructionCounter = pvm.InstructionCounter
@@ -1413,7 +1428,7 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 		}
 		// Always update the integrated PVM in one place
 		ctx.Argument.IntegratedPVMs[uint64(n)] = targetPVM
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1428,7 +1443,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 		if !ok {
 			// n is not a key in the map, return WHO error
 			ctx.State.Registers[7] = types.Register(HostCallWho)
-			return NewSimpleExitReason(ExitGo), nil
+			return ExitReasonGo, nil
 		}
 
 		// PVM exists, store its index in Register 7
@@ -1438,7 +1453,7 @@ func Expunge(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 		// Remove the PVM from the map
 		delete(ctx.Argument.IntegratedPVMs, uint64(n))
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1449,7 +1464,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAcco
 
 		// Check if key memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		var a *serviceaccount.ServiceAccount
@@ -1467,7 +1482,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAcco
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 			v, ok, err := a.GetPreimageForHash(batch, keyArray)
 			if err != nil {
-				return NewSimpleExitReason(ExitPanic), err
+				return ExitReasonPanic, err
 			}
 			if ok {
 				preImage = v
@@ -1488,7 +1503,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAcco
 
 		// Check if output memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Set result in register 7 and copy data to memory
@@ -1498,11 +1513,13 @@ func Lookup(ctx *HostFunctionContext[struct{}], batch *pebble.Batch, serviceAcco
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
+				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, false, func(dest []byte) {
+					copy(dest, slicedData)
+				})
 			}
 		}
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1514,7 +1531,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 
 		// Check if key memory range is accessible
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		var a *serviceaccount.ServiceAccount
@@ -1553,7 +1570,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 
 		// Check if output memory range is writable
 		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
-			return NewSimpleExitReason(ExitPanic), nil
+			return ExitReasonPanic, nil
 		}
 
 		// Set result in register 7 and copy data to memory
@@ -1563,11 +1580,13 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), slicedData, ram.NoWrap, false)
+				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, false, func(dest []byte) {
+					copy(dest, slicedData)
+				})
 			}
 		}
 
-		return NewSimpleExitReason(ExitGo), nil
+		return ExitReasonGo, nil
 	})
 }
 
@@ -1579,7 +1598,7 @@ func withGasCheck[T any](
 ) (ExitReason, error) {
 	ctx.State.Gas -= types.SignedGasValue(GasUsage)
 	if ctx.State.Gas < 0 {
-		return NewSimpleExitReason(ExitOutOfGas), nil
+		return ExitReasonOutOfGas, nil
 	}
 	return fn(ctx)
 }
