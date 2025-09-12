@@ -82,7 +82,7 @@ func handleOneRegOneImm(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 		if fileLogger != nil {
 			fileLogger.Printf("jump_ind: targetAddr=%d, ra=%d, vx=%d", targetAddr, pvm.State.Registers[ra], vx)
 		}
-		return djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.BasicBlockBeginningOpcodes)
+		return djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.InstructionSlice)
 	case 51: // load_imm
 		pvm.State.Registers[ra] = vx
 	case 52: // load_u8
@@ -402,15 +402,16 @@ func handleLoadImmJumpInd(pvm *PVM, instruction byte, skipLength int) (ExitReaso
 		uint32(pvm.State.Registers[rb]+vy),
 		pvm.InstructionCounter,
 		pvm.DynamicJumpTable,
-		pvm.BasicBlockBeginningOpcodes,
+		pvm.InstructionSlice,
 	)
 }
 
 func handleThreeReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+	instructionByte := pvm.getInstruction(pvm.InstructionCounter + 1)
 	// Extract source registers from the same instruction byte.
 	// Lower 4 bits: ra; upper 4 bits: rb.
-	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))%16)
-	rb := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))/16)
+	ra := min(12, int(instructionByte)%16)
+	rb := min(12, int(instructionByte)/16)
 	// Extract destination register from the following byte.
 	rd := min(12, int(pvm.getInstruction(pvm.InstructionCounter+2)))
 
