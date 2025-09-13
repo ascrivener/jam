@@ -281,28 +281,32 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 func (pvm *PVM) Run() ExitReason {
 	for {
 		ic := pvm.InstructionCounter
-		if int(ic) >= pvm.InstructionsLength {
+		if int(ic) >= pvm.InstructionsLength || pvm.InstructionSlice[ic] == nil {
 			ic = 0
 		}
 		instruction := pvm.InstructionSlice[ic]
-		if instruction == nil {
-			return ExitReasonPanic
-		}
 
 		// Execute single instruction
-		exitReason, _ := pvm.executeInstruction(instruction)
-		if exitReason != ExitReasonGo {
-			return exitReason
+		exitReason := pvm.executeInstruction(instruction)
+		if exitReason == ExitReasonGo {
+			continue
 		}
+		// Otherwise, adjust for out-of-gas or panic/halt conditions.
+		if pvm.State.Gas < 0 {
+			exitReason = ExitReasonOutOfGas
+		} else if exitReason.IsSimple() &&
+			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+			// Reset the instruction counter on panic/halt.
+			pvm.InstructionCounter = 0
+		}
+		return exitReason
 	}
 }
 
-func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) (ExitReason, types.Register) {
+func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
 	// Clear memory access exceptions for each instruction
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 
-	// Temporarily set instruction counter for handler
-	pvm.InstructionCounter = instruction.PC
 	exitReason, nextIC := instruction.Handler(pvm, instruction.InstrBytes[0], len(instruction.InstrBytes)-1)
 
 	// Consume gas
@@ -310,5 +314,5 @@ func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) (ExitReason, 
 
 	// Always update instruction counter and return what the handler gave us
 	pvm.InstructionCounter = nextIC
-	return exitReason, nextIC
+	return exitReason
 }
