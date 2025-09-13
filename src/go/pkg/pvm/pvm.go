@@ -280,10 +280,11 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 
 func (pvm *PVM) Run() ExitReason {
 	for {
-		if int(pvm.InstructionCounter) >= len(pvm.InstructionSlice) {
-			return ExitReasonPanic
+		ic := pvm.InstructionCounter
+		if int(ic) >= pvm.InstructionsLength {
+			ic = 0
 		}
-		instruction := pvm.InstructionSlice[pvm.InstructionCounter]
+		instruction := pvm.InstructionSlice[ic]
 		if instruction == nil {
 			return ExitReasonPanic
 		}
