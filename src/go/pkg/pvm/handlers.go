@@ -11,36 +11,36 @@ import (
 	"jam/pkg/types"
 )
 
-func handleTrap(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
-	return ExitReasonPanic, pvm.nextInstructionCounter(skipLength)
+func handleTrap(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
+	return ExitReasonPanic, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleFallthrough(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+func handleFallthrough(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleEcalli(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
-	lx := min(4, skipLength)
+func handleEcalli(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
+	lx := min(4, instruction.SkipLength)
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+1, lx)))
-	return NewComplexExitReason(ExitHostCall, vx), pvm.nextInstructionCounter(skipLength)
+	return NewComplexExitReason(ExitHostCall, vx), pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleLoadImm64(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleLoadImm64(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1)%16))
 	vx := binary.LittleEndian.Uint64(pvm.getInstructionRange(pvm.InstructionCounter+2, 8))
 	pvm.State.Registers[ra] = types.Register(vx)
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleTwoImmValues(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleTwoImmValues(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Precompute the common immediate values.
 	lx := min(4, int(pvm.getInstruction(pvm.InstructionCounter+1)%8))
-	ly := min(4, max(0, skipLength-lx-1))
+	ly := min(4, max(0, instruction.SkipLength-lx-1))
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2, lx)))
 	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2+types.Register(lx), ly)))
 
 	// Use the opcode from the instruction parameter
-	switch instruction {
+	switch instruction.Opcode {
 	case 30: // store_imm_u8
 		pvm.State.RAM.Mutate(uint64(vx), byte(vy), ram.Wrap, true)
 	case 31: // store_imm_u16
@@ -56,26 +56,26 @@ func handleTwoImmValues(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 			binary.LittleEndian.PutUint64(dest, uint64(vy))
 		})
 	default:
-		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", instruction.Opcode))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleJump(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
-	lx := min(4, skipLength)
+func handleJump(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
+	lx := min(4, instruction.SkipLength)
 	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+1, lx))))
-	return branch(pvm, skipLength, vx, true)
+	return branch(pvm, instruction.SkipLength, vx, true)
 }
 
-func handleOneRegOneImm(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleOneRegOneImm(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Compute the register operand from the next byte (mod 16, capped to 12).
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1)%16))
 	// Compute how many bytes remain for the immediate (skipLength-1).
-	lx := min(4, max(0, skipLength-1))
+	lx := min(4, max(0, instruction.SkipLength-1))
 	// Decode the immediate value (and sign-extend it).
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2, lx)))
 
-	switch instruction {
+	switch instruction.Opcode {
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[ra] + vx)
@@ -122,10 +122,10 @@ func handleOneRegOneImm(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 	default:
 		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", instruction))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleOneRegTwoImm(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleOneRegTwoImm(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Precompute the common immediate values, including the base register.
 	// Extract the base register (ra) from the first instruction byte.
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))%16)
@@ -134,7 +134,7 @@ func handleOneRegTwoImm(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 	// Compute vx from the next lx bytes.
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2, lx)))
 	// Determine ly based on the remaining skip length.
-	ly := min(4, max(0, skipLength-lx-1))
+	ly := min(4, max(0, instruction.SkipLength-lx-1))
 	// Compute vy from the following ly bytes.
 	vy := signExtendImmediate(ly, serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2+types.Register(lx), ly)))
 
@@ -142,7 +142,7 @@ func handleOneRegTwoImm(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 	addr := pvm.State.Registers[ra] + vx
 
 	// Use the opcode from the context to choose the correct store operation.
-	switch instruction {
+	switch instruction.Opcode {
 	case 70: // store_imm_ind_u8
 		pvm.State.RAM.Mutate(uint64(addr), byte(vy), ram.Wrap, true)
 	case 71: // store_imm_ind_u16
@@ -158,19 +158,19 @@ func handleOneRegTwoImm(pvm *PVM, instruction byte, skipLength int) (ExitReason,
 			binary.LittleEndian.PutUint64(dest, uint64(vy))
 		})
 	default:
-		panic(fmt.Sprintf("handleTwoImmValuesIndirect: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleTwoImmValuesIndirect: unexpected opcode %d", instruction.Opcode))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-func handleOneRegOneImmOneOff(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleOneRegOneImmOneOff(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Precompute the immediate values and the register operand.
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1)%16))
 	lx := min(4, int(pvm.getInstruction(pvm.InstructionCounter+1)/16%8))
 	// vx is the first immediate.
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(
 		pvm.getInstructionRange(pvm.InstructionCounter+2, lx)))
-	ly := min(4, max(0, skipLength-lx-1))
+	ly := min(4, max(0, instruction.SkipLength-lx-1))
 	// For branch instructions the second immediate is an offset,
 	// so add it to the current instruction counter.
 	branchOffset := serializer.UnsignedToSigned(ly, serializer.DecodeLittleEndian(
@@ -178,7 +178,7 @@ func handleOneRegOneImmOneOff(pvm *PVM, instruction byte, skipLength int) (ExitR
 	vy := pvm.InstructionCounter + types.Register(branchOffset)
 
 	var cond bool
-	switch instruction {
+	switch instruction.Opcode {
 	case 80: // load_imm_jump
 		// For load-imm-jump, store vx into the destination register.
 		pvm.State.Registers[ra] = vx
@@ -209,17 +209,17 @@ func handleOneRegOneImmOneOff(pvm *PVM, instruction byte, skipLength int) (ExitR
 
 	// Execute the branch. The branch() function returns the exit reason
 	// and the next instruction counter based on the branch condition.
-	return branch(pvm, skipLength, vy, cond)
+	return branch(pvm, instruction.SkipLength, vy, cond)
 }
 
-func handleTwoReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleTwoReg(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Extract the two register operands from the same instruction byte.
 	// The lower 4 bits specify the destination register (rd),
 	// and the upper 4 bits specify the source register (ra).
 	rd := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))%16)
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))/16)
 
-	switch instruction {
+	switch instruction.Opcode {
 	case 100: // move_reg
 		// Copy the value from source register to destination register.
 		pvm.State.Registers[rd] = pvm.State.Registers[ra]
@@ -280,10 +280,10 @@ func handleTwoReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, types
 	default:
 		panic(fmt.Sprintf("handleTwoReg: unexpected opcode %d", instruction))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
-type twoRegOneImmHandler func(pvm *PVM, ra, rb int, vx types.Register)
+type twoRegOneImmHandler func(pvm *PVM, instruction *ParsedInstruction)
 
 var twoRegOneImmDispatch = [256]twoRegOneImmHandler{
 	120: handleStoreIndU8,
@@ -330,32 +330,24 @@ var twoRegOneImmDispatch = [256]twoRegOneImmHandler{
 	161: handleRotR32ImmAlt,
 }
 
-func handleTwoRegOneImm(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
-	instrByte := pvm.getInstruction(pvm.InstructionCounter + 1)
-	ra := min(12, int(instrByte)%16)
-	rb := min(12, int(instrByte)/16)
-
-	lx := min(4, max(0, skipLength-1))
-	vx := signExtendImmediate(lx, uint64(serializer.DecodeLittleEndian(
-		pvm.getInstructionRange(pvm.InstructionCounter+2, lx))))
-
-	twoRegOneImmDispatch[instruction](pvm, ra, rb, vx)
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+func handleTwoRegOneImm(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
+	twoRegOneImmDispatch[instruction.Opcode](pvm, instruction)
+	return ExitReasonGo, instruction.NextPC
 }
 
-func handleTwoRegOneOffset(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleTwoRegOneOffset(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Extract two register operands from the same instruction byte.
 	// Lower 4 bits for 'ra', upper 4 bits for 'rb'.
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))%16)
 	rb := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))/16)
 
 	// Compute the immediate branch offset.
-	lx := min(4, max(0, skipLength-1))
+	lx := min(4, max(0, instruction.SkipLength-1))
 	vx := pvm.InstructionCounter + types.Register(serializer.UnsignedToSigned(lx,
 		serializer.DecodeLittleEndian(pvm.getInstructionRange(pvm.InstructionCounter+2, lx))))
 
 	var cond bool
-	switch instruction {
+	switch instruction.Opcode {
 	case 170: // branch_eq
 		cond = pvm.State.Registers[ra] == pvm.State.Registers[rb]
 	case 171: // branch_ne
@@ -369,14 +361,14 @@ func handleTwoRegOneOffset(pvm *PVM, instruction byte, skipLength int) (ExitReas
 	case 175: // branch_ge_s
 		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[ra])) >= serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))
 	default:
-		panic(fmt.Sprintf("handleTwoRegOneOffset: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleTwoRegOneOffset: unexpected opcode %d", instruction.Opcode))
 	}
 
 	// Execute the branch based on the computed condition.
-	return branch(pvm, skipLength, vx, cond)
+	return branch(pvm, instruction.SkipLength, vx, cond)
 }
 
-func handleLoadImmJumpInd(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleLoadImmJumpInd(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	// Extract the register operands from the same instruction byte.
 	// Lower 4 bits: destination register (ra); upper 4 bits: base register (rb).
 	ra := min(12, int(pvm.getInstruction(pvm.InstructionCounter+1))%16)
@@ -385,7 +377,7 @@ func handleLoadImmJumpInd(pvm *PVM, instruction byte, skipLength int) (ExitReaso
 	// Extract the immediate length for the first immediate.
 	lx := min(4, int(pvm.getInstruction(pvm.InstructionCounter+2))%8)
 	// Compute the length for the second immediate.
-	ly := min(4, max(0, skipLength-lx-2))
+	ly := min(4, max(0, instruction.SkipLength-lx-2))
 
 	// Decode the first immediate value.
 	vx := signExtendImmediate(lx, serializer.DecodeLittleEndian(
@@ -406,7 +398,7 @@ func handleLoadImmJumpInd(pvm *PVM, instruction byte, skipLength int) (ExitReaso
 	)
 }
 
-func handleThreeReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register) {
+func handleThreeReg(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register) {
 	instructionByte := pvm.getInstruction(pvm.InstructionCounter + 1)
 	// Extract source registers from the same instruction byte.
 	// Lower 4 bits: ra; upper 4 bits: rb.
@@ -415,7 +407,7 @@ func handleThreeReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, typ
 	// Extract destination register from the following byte.
 	rd := min(12, int(pvm.getInstruction(pvm.InstructionCounter+2)))
 
-	switch instruction {
+	switch instruction.Opcode {
 	case 190: // add_32
 		pvm.State.Registers[rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[ra]+pvm.State.Registers[rb])))
 	case 191: // sub_32
@@ -595,9 +587,9 @@ func handleThreeReg(pvm *PVM, instruction byte, skipLength int) (ExitReason, typ
 	case 230: // min_u
 		pvm.State.Registers[rd] = min(pvm.State.Registers[ra], pvm.State.Registers[rb])
 	default:
-		panic(fmt.Sprintf("handleThreeReg: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleThreeReg: unexpected opcode %d", instruction.Opcode))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
 // nextInstructionCounter returns the next instruction counter position
@@ -606,248 +598,248 @@ func (pvm *PVM) nextInstructionCounter(skipLength int) types.Register {
 	return pvm.InstructionCounter + 1 + types.Register(skipLength)
 }
 
-func handleStoreIndU8(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.RAM.Mutate(uint64(pvm.State.Registers[rb]+types.Register(vx)),
-		byte(pvm.State.Registers[ra]), ram.Wrap, true)
+func handleStoreIndU8(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.RAM.Mutate(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)),
+		byte(pvm.State.Registers[instruction.Ra]), ram.Wrap, true)
 }
 
-func handleStoreIndU16(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 2, ram.Wrap, true, func(dest []byte) {
-		binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[ra]))
+func handleStoreIndU16(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true, func(dest []byte) {
+		binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
-func handleStoreIndU32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true, func(dest []byte) {
-		binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[ra]))
+func handleStoreIndU32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true, func(dest []byte) {
+		binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
-func handleStoreIndU64(pvm *PVM, ra, rb int, vx types.Register) {
-	addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+func handleStoreIndU64(pvm *PVM, instruction *ParsedInstruction) {
+	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
 	pvm.State.RAM.MutateRange(addr, 8, ram.Wrap, true, func(dest []byte) {
-		binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[ra]))
+		binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 	})
 
 	if fileLogger != nil {
 		fileLogger.Printf("store_ind_u64: RAM[%d:%d] = 0x%x (from reg[%d]=%d, base reg[%d]=%d + offset=%d)",
-			addr, addr+8, pvm.State.Registers[ra], ra, pvm.State.Registers[ra], rb, pvm.State.Registers[rb], vx)
+			addr, addr+8, pvm.State.Registers[instruction.Ra], instruction.Ra, pvm.State.Registers[instruction.Ra], instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
 	}
 }
 
-func handleLoadIndU8(pvm *PVM, ra, rb int, vx types.Register) {
-	addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+func handleLoadIndU8(pvm *PVM, instruction *ParsedInstruction) {
+	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
 	value := pvm.State.RAM.Inspect(addr, ram.Wrap, true)
-	pvm.State.Registers[ra] = types.Register(value)
+	pvm.State.Registers[instruction.Ra] = types.Register(value)
 
 	if fileLogger != nil {
 		fileLogger.Printf("load_ind_u8: reg[%d] = RAM[%d] = 0x%x (from reg[%d]=%d + offset=%d)",
-			ra, addr, value, rb, pvm.State.Registers[rb], vx)
+			instruction.Ra, addr, value, instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
 	}
 }
 
-func handleLoadIndI8(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[rb]+types.Register(vx)), ram.Wrap, true)))))
+func handleLoadIndI8(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
+		serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), ram.Wrap, true)))))
 }
 
-func handleLoadIndU16(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(binary.LittleEndian.Uint16(
-		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 2, ram.Wrap, true)))
+func handleLoadIndU16(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(
+		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true)))
 }
 
-func handleLoadIndI16(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
+func handleLoadIndI16(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
 		serializer.UnsignedToSigned(2, uint64(binary.LittleEndian.Uint16(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 2, ram.Wrap, true))))))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true))))))
 }
 
-func handleLoadIndU32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(binary.LittleEndian.Uint32(
-		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true)))
+func handleLoadIndU32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(
+		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true)))
 }
 
-func handleLoadIndI32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
+func handleLoadIndI32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
 		serializer.UnsignedToSigned(4, uint64(binary.LittleEndian.Uint32(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[rb]+types.Register(vx)), 4, ram.Wrap, true))))))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true))))))
 }
 
-func handleLoadIndU64(pvm *PVM, ra, rb int, vx types.Register) {
-	addr := uint64(pvm.State.Registers[rb] + types.Register(vx))
+func handleLoadIndU64(pvm *PVM, instruction *ParsedInstruction) {
+	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
 	data := pvm.State.RAM.InspectRange(addr, 8, ram.Wrap, true)
 	value := types.Register(binary.LittleEndian.Uint64(data))
-	pvm.State.Registers[ra] = value
+	pvm.State.Registers[instruction.Ra] = value
 
 	if fileLogger != nil {
 		fileLogger.Printf("load_ind_u64: reg[%d] = RAM[%d:%d] = 0x%x (from reg[%d]=%d + offset=%d)",
-			ra, addr, addr+8, value, rb, pvm.State.Registers[rb], vx)
+			instruction.Ra, addr, addr+8, value, instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
 	}
 }
 
-func handleAddImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]+vx)))
+func handleAddImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]+instruction.Vx)))
 }
 
-func handleAndImm(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = pvm.State.Registers[rb] & vx
+func handleAndImm(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = pvm.State.Registers[instruction.Rb] & instruction.Vx
 }
 
-func handleXorImm(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = pvm.State.Registers[rb] ^ vx
+func handleXorImm(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = pvm.State.Registers[instruction.Rb] ^ instruction.Vx
 }
 
-func handleOrImm(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = pvm.State.Registers[rb] | vx
+func handleOrImm(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = pvm.State.Registers[instruction.Rb] | instruction.Vx
 }
 
-func handleMulImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]*vx)))
+func handleMulImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]*instruction.Vx)))
 }
 
-func handleSetLtUImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if pvm.State.Registers[rb] < vx {
-		pvm.State.Registers[ra] = 1
+func handleSetLtUImm(pvm *PVM, instruction *ParsedInstruction) {
+	if pvm.State.Registers[instruction.Rb] < instruction.Vx {
+		pvm.State.Registers[instruction.Ra] = 1
 	} else {
-		pvm.State.Registers[ra] = 0
+		pvm.State.Registers[instruction.Ra] = 0
 	}
 }
 
-func handleSetLtSImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])) < serializer.UnsignedToSigned(8, uint64(vx)) {
-		pvm.State.Registers[ra] = 1
+func handleSetLtSImm(pvm *PVM, instruction *ParsedInstruction) {
+	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) < serializer.UnsignedToSigned(8, uint64(instruction.Vx)) {
+		pvm.State.Registers[instruction.Ra] = 1
 	} else {
-		pvm.State.Registers[ra] = 0
+		pvm.State.Registers[instruction.Ra] = 0
 	}
 }
 
-func handleShloLImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb]<<(vx%32))))
+func handleShloLImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]<<(instruction.Vx%32))))
 }
 
-func handleShloRImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[rb])>>(vx%32)))
+func handleShloRImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb])>>(instruction.Vx%32)))
 }
 
-func handleSharRImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[rb])))>>(vx%32)))
+func handleSharRImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
+		serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Rb])))>>(instruction.Vx%32)))
 }
 
-func handleNegAddImm32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(vx-pvm.State.Registers[rb])))
+func handleNegAddImm32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx-pvm.State.Registers[instruction.Rb])))
 }
 
-func handleSetGtUImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if pvm.State.Registers[rb] > vx {
-		pvm.State.Registers[ra] = 1
+func handleSetGtUImm(pvm *PVM, instruction *ParsedInstruction) {
+	if pvm.State.Registers[instruction.Rb] > instruction.Vx {
+		pvm.State.Registers[instruction.Ra] = 1
 	} else {
-		pvm.State.Registers[ra] = 0
+		pvm.State.Registers[instruction.Ra] = 0
 	}
 }
 
-func handleSetGtSImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb])) > serializer.UnsignedToSigned(8, uint64(vx)) {
-		pvm.State.Registers[ra] = 1
+func handleSetGtSImm(pvm *PVM, instruction *ParsedInstruction) {
+	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) > serializer.UnsignedToSigned(8, uint64(instruction.Vx)) {
+		pvm.State.Registers[instruction.Ra] = 1
 	} else {
-		pvm.State.Registers[ra] = 0
+		pvm.State.Registers[instruction.Ra] = 0
 	}
 }
 
-func handleShloLImmAlt32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(vx<<(pvm.State.Registers[rb]%32))))
+func handleShloLImmAlt32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx<<(pvm.State.Registers[instruction.Rb]%32))))
 }
 
-func handleShloRImmAlt32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(uint32(vx)>>(pvm.State.Registers[rb]%32)))
+func handleShloRImmAlt32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx)>>(pvm.State.Registers[instruction.Rb]%32)))
 }
 
-func handleSharRImmAlt32(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(4, uint64(uint32(vx)))>>(pvm.State.Registers[rb]%32)))
+func handleSharRImmAlt32(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
+		serializer.UnsignedToSigned(4, uint64(uint32(instruction.Vx)))>>(pvm.State.Registers[instruction.Rb]%32)))
 }
 
-func handleCmovIzImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if pvm.State.Registers[rb] == 0 {
-		pvm.State.Registers[ra] = vx
+func handleCmovIzImm(pvm *PVM, instruction *ParsedInstruction) {
+	if pvm.State.Registers[instruction.Rb] == 0 {
+		pvm.State.Registers[instruction.Ra] = instruction.Vx
 	}
 }
 
-func handleCmovNzImm(pvm *PVM, ra, rb int, vx types.Register) {
-	if pvm.State.Registers[rb] != 0 {
-		pvm.State.Registers[ra] = vx
+func handleCmovNzImm(pvm *PVM, instruction *ParsedInstruction) {
+	if pvm.State.Registers[instruction.Rb] != 0 {
+		pvm.State.Registers[instruction.Ra] = instruction.Vx
 	}
 }
 
-func handleAddImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = pvm.State.Registers[rb] + vx
+func handleAddImm64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = pvm.State.Registers[instruction.Rb] + instruction.Vx
 }
 
-func handleMulImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = pvm.State.Registers[rb] * vx
+func handleMulImm64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = pvm.State.Registers[instruction.Rb] * instruction.Vx
 }
 
-func handleShloLImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	oldValue := pvm.State.Registers[rb]
-	shiftAmount := vx % 64
-	shifted := uint64(pvm.State.Registers[rb] << shiftAmount)
+func handleShloLImm64(pvm *PVM, instruction *ParsedInstruction) {
+	oldValue := pvm.State.Registers[instruction.Rb]
+	shiftAmount := instruction.Vx % 64
+	shifted := uint64(pvm.State.Registers[instruction.Rb] << shiftAmount)
 	result := signExtendImmediate(8, shifted)
-	pvm.State.Registers[ra] = result
+	pvm.State.Registers[instruction.Ra] = result
 
 	if fileLogger != nil {
 		fileLogger.Printf("shlo_l_imm_64: reg[%d] = 0x%x (reg[%d]=0x%x << %d) [shifted=0x%x, sign_extended=0x%x]",
-			ra, result, rb, oldValue, shiftAmount, shifted, result)
+			instruction.Ra, result, instruction.Rb, oldValue, shiftAmount, shifted, result)
 	}
 }
 
-func handleShloRImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = signExtendImmediate(8, uint64(pvm.State.Registers[rb]>>(vx%64)))
+func handleShloRImm64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(8, uint64(pvm.State.Registers[instruction.Rb]>>(instruction.Vx%64)))
 }
 
-func handleSharRImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[rb]))>>(vx%64)))
+func handleSharRImm64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
+		serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))>>(instruction.Vx%64)))
 }
 
-func handleNegAddImm64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = vx - pvm.State.Registers[rb]
+func handleNegAddImm64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = instruction.Vx - pvm.State.Registers[instruction.Rb]
 }
 
-func handleShloLImmAlt64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = vx << (pvm.State.Registers[rb] % 64)
+func handleShloLImmAlt64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = instruction.Vx << (pvm.State.Registers[instruction.Rb] % 64)
 }
 
-func handleShloRImmAlt64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = vx >> (pvm.State.Registers[rb] % 64)
+func handleShloRImmAlt64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = instruction.Vx >> (pvm.State.Registers[instruction.Rb] % 64)
 }
 
-func handleSharRImmAlt64(pvm *PVM, ra, rb int, vx types.Register) {
-	pvm.State.Registers[ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(8, uint64(vx))>>(pvm.State.Registers[rb]%64)))
+func handleSharRImmAlt64(pvm *PVM, instruction *ParsedInstruction) {
+	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
+		serializer.UnsignedToSigned(8, uint64(instruction.Vx))>>(pvm.State.Registers[instruction.Rb]%64)))
 }
 
-func handleRotR64Imm(pvm *PVM, ra, rb int, vx types.Register) {
-	val := uint64(pvm.State.Registers[rb])
-	shift := vx % 64
-	pvm.State.Registers[ra] = types.Register((val >> shift) | (val << (64 - shift)))
+func handleRotR64Imm(pvm *PVM, instruction *ParsedInstruction) {
+	val := uint64(pvm.State.Registers[instruction.Rb])
+	shift := instruction.Vx % 64
+	pvm.State.Registers[instruction.Ra] = types.Register((val >> shift) | (val << (64 - shift)))
 }
 
-func handleRotR64ImmAlt(pvm *PVM, ra, rb int, vx types.Register) {
-	val := uint64(vx)
-	shift := pvm.State.Registers[rb] % 64
-	pvm.State.Registers[ra] = types.Register((val >> shift) | (val << (64 - shift)))
+func handleRotR64ImmAlt(pvm *PVM, instruction *ParsedInstruction) {
+	val := uint64(instruction.Vx)
+	shift := pvm.State.Registers[instruction.Rb] % 64
+	pvm.State.Registers[instruction.Ra] = types.Register((val >> shift) | (val << (64 - shift)))
 }
 
-func handleRotR32Imm(pvm *PVM, ra, rb int, vx types.Register) {
-	val := uint32(pvm.State.Registers[rb])
-	shift := vx % 32
+func handleRotR32Imm(pvm *PVM, instruction *ParsedInstruction) {
+	val := uint32(pvm.State.Registers[instruction.Rb])
+	shift := instruction.Vx % 32
 	rotated := (val >> shift) | (val << (32 - shift))
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(rotated))
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(rotated))
 }
 
-func handleRotR32ImmAlt(pvm *PVM, ra, rb int, vx types.Register) {
-	val := uint32(vx)
-	shift := pvm.State.Registers[rb] % 32
+func handleRotR32ImmAlt(pvm *PVM, instruction *ParsedInstruction) {
+	val := uint32(instruction.Vx)
+	shift := pvm.State.Registers[instruction.Rb] % 32
 	rotated := (val >> shift) | (val << (32 - shift))
-	pvm.State.Registers[ra] = signExtendImmediate(4, uint64(rotated))
+	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(rotated))
 }

@@ -17,7 +17,7 @@ type State struct {
 	RAM       *ram.RAM
 }
 
-type InstructionHandler func(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register)
+type InstructionHandler func(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register)
 
 var dispatchTable [256]InstructionHandler
 
