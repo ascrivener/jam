@@ -10,9 +10,13 @@ import (
 
 type ParsedInstruction struct {
 	PC                    types.Register
-	InstrBytes            []byte // The instruction bytes (opcode + operands)
+	NextPC                types.Register
+	Opcode                byte
+	SkipLength            int
 	Handler               InstructionHandler
 	IsBeginningBasicBlock bool
+	Ra, Rb                int
+	Vx                    types.Register
 }
 
 type PVM struct {
@@ -174,29 +178,37 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 	// Create sparse slice sized to instruction length
 	instructionSlice := make([]*ParsedInstruction, len(instructions))
 
-	if len(instructions) == 0 {
-		return instructionSlice
-	}
-
 	currentOpcode := instructions[0]
 	currentOpcodePC := 0
-	currentInstrBytes := []byte{instructions[0]}
+	skipLength := 0
 	previousWasTerminating := false
 
 	// Helper function to finish current instruction
-	finishInstruction := func() {
+	finishInstruction := func(nextPC int) {
 		handler := dispatchTable[currentOpcode]
+		isBeginning := (currentOpcodePC == 0 || previousWasTerminating) && handler != nil
 		if handler == nil {
 			handler = dispatchTable[0]
 		}
 
-		isBeginning := currentOpcodePC == 0 || previousWasTerminating
+		// TODO: compute these depending on the opcode
+		ra := min(12, int(instructions[currentOpcodePC+1])%16)
+		rb := min(12, int(instructions[currentOpcodePC+1])/16)
+
+		lx := min(4, max(0, skipLength-1))
+		vx := signExtendImmediate(lx, uint64(serializer.DecodeLittleEndian(
+			instructions[currentOpcodePC+2:currentOpcodePC+2+lx])))
 
 		instruction := &ParsedInstruction{
 			PC:                    types.Register(currentOpcodePC),
-			InstrBytes:            currentInstrBytes,
+			NextPC:                types.Register(nextPC),
+			Opcode:                currentOpcode,
+			SkipLength:            skipLength,
 			Handler:               handler,
 			IsBeginningBasicBlock: isBeginning,
+			Ra:                    ra,
+			Rb:                    rb,
+			Vx:                    vx,
 		}
 		instructionSlice[currentOpcodePC] = instruction
 
@@ -208,20 +220,20 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 		// If this is an opcode position
 		if opcodes.BitAt(n) {
 			// Finish the previous instruction
-			finishInstruction()
+			finishInstruction(n)
 
 			// Start new instruction
 			currentOpcode = instructions[n]
 			currentOpcodePC = n
-			currentInstrBytes = []byte{instructions[n]}
+			skipLength = 0
 		} else {
 			// This is a data byte, add to current instruction
-			currentInstrBytes = append(currentInstrBytes, instructions[n])
+			skipLength++
 		}
 	}
 
 	// Handle the final instruction
-	finishInstruction()
+	finishInstruction(len(instructions))
 
 	return instructionSlice
 }
@@ -299,6 +311,15 @@ func (pvm *PVM) Run() ExitReason {
 			// Reset the instruction counter on panic/halt.
 			pvm.InstructionCounter = 0
 		}
+
+		minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
+		if minRamIndex != nil {
+			if *minRamIndex < ram.MinValidRamIndex {
+				return ExitReasonPanic
+			} else {
+				return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
+			}
+		}
 		return exitReason
 	}
 }
@@ -307,7 +328,7 @@ func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
 	// Clear memory access exceptions for each instruction
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 
-	exitReason, nextIC := instruction.Handler(pvm, instruction.InstrBytes[0], len(instruction.InstrBytes)-1)
+	exitReason, nextIC := instruction.Handler(pvm, instruction)
 
 	// Consume gas
 	pvm.State.Gas -= types.SignedGasValue(1)
