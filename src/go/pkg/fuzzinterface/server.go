@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
 
 	"jam/pkg/block"
 	"jam/pkg/errors"
@@ -19,8 +18,7 @@ import (
 
 // Server represents a fuzzer interface server
 type Server struct {
-	peerInfo     PeerInfo
-	stateMapLock sync.RWMutex
+	peerInfo PeerInfo
 }
 
 // NewServer creates a new fuzzer interface server
@@ -265,7 +263,8 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 	merklizedState, err := statetransition.STF(block.Block(importBlock))
 	if err != nil {
 		if errors.IsProtocolError(err) {
-			return ResponseMessage{Error: &struct{}{}}, nil
+			e := []byte(err.Error())
+			return ResponseMessage{Error: &e}, nil
 		} else {
 			return ResponseMessage{}, err
 		}

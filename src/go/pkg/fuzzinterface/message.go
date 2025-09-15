@@ -8,6 +8,7 @@ import (
 	"jam/pkg/block/header"
 	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
+	"jam/pkg/types"
 )
 
 // Protocol message types as defined in the fuzzing spec
@@ -32,8 +33,14 @@ type PeerInfo struct {
 type ImportBlock block.Block
 
 type SetState struct {
-	Header header.Header
-	State  merklizer.State
+	Header   header.Header
+	State    merklizer.State
+	Ancestry []AncestryItem
+}
+
+type AncestryItem struct {
+	Slot       types.Timeslot
+	HeaderHash [32]byte
 }
 
 type GetState [32]byte // HeaderHash
@@ -51,7 +58,7 @@ type ResponseMessage struct {
 	PeerInfo  *PeerInfo        `json:"peer_info,omitempty"`
 	State     *merklizer.State `json:"state,omitempty"`
 	StateRoot *StateRoot       `json:"state_root,omitempty"`
-	Error     *struct{}        `json:"error,omitempty"`
+	Error     *[]byte          `json:"error,omitempty"`
 }
 
 // RequestMessageType identifies the type of a request message

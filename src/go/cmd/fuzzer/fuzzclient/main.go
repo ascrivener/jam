@@ -582,6 +582,81 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 }
 
+func (fc *FuzzerClient) testFuzzerVersion(t *testing.T, dir string) {
+	// Use first bin file for warp vector
+	peerInfoPath := filepath.Join(dir, "00000000_fuzzer_peer_info.bin")
+	peerInfoData, err := os.ReadFile(peerInfoPath)
+	if err != nil {
+		t.Fatalf("Failed to load peer info file: %v", err)
+	}
+
+	peerInfo := fuzzinterface.PeerInfo{}
+	if err := serializer.Deserialize(peerInfoData[1:], &peerInfo); err != nil {
+		t.Fatalf("Failed to deserialize peer info: %v", err)
+	}
+
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{PeerInfo: &peerInfo})
+	if err != nil {
+		t.Fatalf("Failed to send PeerInfo: %v", err)
+	}
+
+	if resp.PeerInfo == nil {
+		t.Fatalf("Server did not respond with PeerInfo")
+	}
+
+	initializePath := filepath.Join(dir, "00000001_fuzzer_initialize.bin")
+	initializeData, err := os.ReadFile(initializePath)
+	if err != nil {
+		t.Fatalf("Failed to load initialize file: %v", err)
+	}
+
+	initialize := fuzzinterface.SetState{}
+	if err := serializer.Deserialize(initializeData[1:], &initialize); err != nil {
+		t.Fatalf("Failed to deserialize initialize: %v", err)
+	}
+
+	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &initialize})
+	if err != nil {
+		t.Fatalf("Failed to send Initialize: %v", err)
+	}
+
+	if resp.StateRoot == nil {
+		t.Fatalf("Server did not respond with Initialize")
+	}
+
+	importBlockPattern := filepath.Join(dir, "*fuzzer_import_block.bin")
+	importBlockFiles, err := filepath.Glob(importBlockPattern)
+	if err != nil {
+		t.Fatalf("Failed to find import block files: %v", err)
+	}
+
+	for _, importBlockPath := range importBlockFiles {
+		t.Logf("Processing import block file: %s", filepath.Base(importBlockPath))
+
+		importBlockData, err := os.ReadFile(importBlockPath)
+		if err != nil {
+			t.Fatalf("Failed to load import block file %s: %v", importBlockPath, err)
+		}
+
+		importBlock := fuzzinterface.ImportBlock{}
+		if err := serializer.Deserialize(importBlockData[1:], &importBlock); err != nil {
+			t.Fatalf("Failed to deserialize import block from %s: %v", importBlockPath, err)
+		}
+
+		resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
+		if err != nil {
+			t.Fatalf("Failed to send ImportBlock from %s: %v", importBlockPath, err)
+		}
+
+		// Log the response for debugging
+		if resp.Error != nil {
+			t.Logf("ImportBlock %s resulted in error: %s", filepath.Base(importBlockPath), string(*resp.Error))
+		} else if resp.StateRoot != nil {
+			t.Logf("ImportBlock %s processed successfully, new state root: %x", filepath.Base(importBlockPath), *resp.StateRoot)
+		}
+	}
+}
+
 func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 	// Compare the underlying KVs to show any differences
 	expectedKVsMap := make(map[[31]byte][]byte)
