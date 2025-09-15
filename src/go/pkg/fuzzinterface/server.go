@@ -58,18 +58,22 @@ func (s *Server) Start(socketPath string) error {
 
 	defer listener.Close()
 
-	conn, err := listener.Accept()
-	if err != nil {
-		return fmt.Errorf("failed to accept connection: %w", err)
-	}
-	defer conn.Close()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Failed to accept connection: %v", err)
+			continue
+		}
 
-	log.Printf("New fuzzer connection accepted")
-	if err := s.handleConnection(conn); err != nil {
-		return err
+		log.Printf("New fuzzer connection accepted")
+		go func(c net.Conn) {
+			defer c.Close()
+			if err := s.handleConnection(c); err != nil {
+				log.Printf("Connection handling error: %v", err)
+			}
+			log.Printf("Connection closed")
+		}(conn)
 	}
-
-	return nil
 }
 
 // handleConnection handles a single fuzzer connection
