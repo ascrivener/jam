@@ -178,8 +178,8 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 	case RequestMessageTypePeerInfo:
 		return ResponseMessage{PeerInfo: &s.peerInfo}, nil
 
-	case RequestMessageTypeSetState:
-		return s.handleSetState(msgData)
+	case RequestMessageTypeInitialize:
+		return s.handleInitialize(msgData)
 
 	case RequestMessageTypeImportBlock:
 		return s.handleImportBlock(msgData)
@@ -192,10 +192,10 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 	}
 }
 
-// handleSetState handles a SetState request
-func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
-	var setState SetState
-	err := serializer.Deserialize(setStateData, &setState)
+// handleInitialize handles an Initialize request
+func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error) {
+	var initialize Initialize
+	err := serializer.Deserialize(initializeData, &initialize)
 	if err != nil {
 		return ResponseMessage{}, err
 	}
@@ -214,7 +214,7 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 			globalBatch.Close()
 		}
 	}()
-	if err := setState.State.OverwriteCurrentState(globalBatch); err != nil {
+	if err := initialize.State.OverwriteCurrentState(globalBatch); err != nil {
 		return ResponseMessage{}, err
 	}
 
@@ -226,10 +226,10 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
-			Header: setState.Header,
+			Header: initialize.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(setState.State),
+			PosteriorStateRoot: merklizer.MerklizeState(initialize.State),
 			Height:             0,
 			ForwardStateDiff:   globalBatch.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),

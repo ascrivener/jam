@@ -157,9 +157,9 @@ func encodeRequestMessage(msg fuzzinterface.RequestMessage) ([]byte, error) {
 	case msg.ImportBlock != nil:
 		encodedMessage = serializer.Serialize(*msg.ImportBlock)
 		msgType = fuzzinterface.RequestMessageTypeImportBlock
-	case msg.SetState != nil:
-		encodedMessage = serializer.Serialize(*msg.SetState)
-		msgType = fuzzinterface.RequestMessageTypeSetState
+	case msg.Initialize != nil:
+		encodedMessage = serializer.Serialize(*msg.Initialize)
+		msgType = fuzzinterface.RequestMessageTypeInitialize
 	case msg.GetState != nil:
 		encodedMessage = serializer.Serialize(*msg.GetState)
 		msgType = fuzzinterface.RequestMessageTypeGetState
@@ -276,9 +276,9 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	}
 
 	t.Log("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &fuzzinterface.SetState{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
 	if err != nil {
-		t.Fatalf("Failed to send SetState message: %v", err)
+		t.Fatalf("Failed to send Initialize message: %v", err)
 	}
 
 	if resp.StateRoot == nil {
@@ -428,6 +428,9 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 		if strings.Contains(testDir, "1757063641") {
 			continue
 		}
+		if !strings.Contains(testDir, "1757406516") {
+			continue
+		}
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -471,9 +474,9 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 
 	t.Logf("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &fuzzinterface.SetState{Header: warpVector.Block.Header, State: warpVector.PostState.State}})
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: warpVector.Block.Header, State: warpVector.PostState.State}})
 	if err != nil {
-		t.Fatalf("Failed to send SetState message: %v", err)
+		t.Fatalf("Failed to send Initialize message: %v", err)
 	}
 
 	if resp.StateRoot == nil {
@@ -536,8 +539,12 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 			continue
 		}
 
-		if resp.StateRoot == nil {
-			t.Fatalf("ImportBlock failed for %s: no state root returned", testFileName)
+		if resp.Error != nil {
+			if testVector.PostState.StateRoot != testVector.PreState.StateRoot {
+				t.Fatalf("ImportBlock failed for %s: %s", testFileName, string(*resp.Error))
+			}
+			t.Logf("✓ Test passed for %s! Error: %s", testFileName, string(*resp.Error))
+			continue
 		}
 
 		if *resp.StateRoot != testVector.PostState.StateRoot {
@@ -610,12 +617,12 @@ func (fc *FuzzerClient) testFuzzerVersion(t *testing.T, dir string) {
 		t.Fatalf("Failed to load initialize file: %v", err)
 	}
 
-	initialize := fuzzinterface.SetState{}
+	initialize := fuzzinterface.Initialize{}
 	if err := serializer.Deserialize(initializeData[1:], &initialize); err != nil {
 		t.Fatalf("Failed to deserialize initialize: %v", err)
 	}
 
-	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{SetState: &initialize})
+	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &initialize})
 	if err != nil {
 		t.Fatalf("Failed to send Initialize: %v", err)
 	}

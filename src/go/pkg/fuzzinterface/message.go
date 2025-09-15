@@ -32,7 +32,7 @@ type PeerInfo struct {
 
 type ImportBlock block.Block
 
-type SetState struct {
+type Initialize struct {
 	Header   header.Header
 	State    merklizer.State
 	Ancestry []AncestryItem
@@ -50,7 +50,7 @@ type StateRoot [32]byte
 type RequestMessage struct {
 	PeerInfo    *PeerInfo    `json:"peer_info,omitempty"`
 	ImportBlock *ImportBlock `json:"import_block,omitempty"`
-	SetState    *SetState    `json:"set_state,omitempty"`
+	Initialize  *Initialize  `json:"initialize,omitempty"`
 	GetState    *GetState    `json:"get_state,omitempty"`
 }
 
@@ -67,9 +67,9 @@ type RequestMessageType byte
 const (
 	// Request message types
 	RequestMessageTypePeerInfo    RequestMessageType = 0
-	RequestMessageTypeImportBlock RequestMessageType = 1
-	RequestMessageTypeSetState    RequestMessageType = 2
-	RequestMessageTypeGetState    RequestMessageType = 3
+	RequestMessageTypeInitialize  RequestMessageType = 1
+	RequestMessageTypeImportBlock RequestMessageType = 3
+	RequestMessageTypeGetState    RequestMessageType = 4
 )
 
 // ResponseMessageType identifies the type of a response message
@@ -78,8 +78,8 @@ type ResponseMessageType byte
 const (
 	// Response message types
 	ResponseMessageTypePeerInfo  ResponseMessageType = 0
-	ResponseMessageTypeState     ResponseMessageType = 4
-	ResponseMessageTypeStateRoot ResponseMessageType = 5
+	ResponseMessageTypeStateRoot ResponseMessageType = 2
+	ResponseMessageTypeState     ResponseMessageType = 5
 	ResponseMessageTypeError     ResponseMessageType = 255
 )
 
