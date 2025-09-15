@@ -15,8 +15,8 @@ type ParsedInstruction struct {
 	SkipLength            int
 	Handler               InstructionHandler
 	IsBeginningBasicBlock bool
-	Ra, Rb                int
-	Vx                    types.Register
+	Ra, Rb, Rd            int
+	Vx, Vy                types.Register
 }
 
 type PVM struct {
@@ -180,24 +180,21 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 
 	currentOpcode := instructions[0]
 	currentOpcodePC := 0
-	skipLength := 0
 	previousWasTerminating := false
 
 	// Helper function to finish current instruction
 	finishInstruction := func(nextPC int) {
-		handler := dispatchTable[currentOpcode]
-		isBeginning := (currentOpcodePC == 0 || previousWasTerminating) && handler != nil
-		if handler == nil {
-			handler = dispatchTable[0]
+		instructionInfo := dispatchTable[currentOpcode]
+		isBeginning := (currentOpcodePC == 0 || previousWasTerminating) && instructionInfo != nil
+		handler := dispatchTable[0].Handler
+		operandExtractor := dispatchTable[0].ExtractOperands
+		if instructionInfo != nil {
+			handler = instructionInfo.Handler
+			operandExtractor = instructionInfo.ExtractOperands
 		}
+		skipLength := nextPC - currentOpcodePC - 1
 
-		// TODO: compute these depending on the opcode
-		ra := min(12, int(instructions[currentOpcodePC+1])%16)
-		rb := min(12, int(instructions[currentOpcodePC+1])/16)
-
-		lx := min(4, max(0, skipLength-1))
-		vx := signExtendImmediate(lx, uint64(serializer.DecodeLittleEndian(
-			instructions[currentOpcodePC+2:currentOpcodePC+2+lx])))
+		ra, rb, rd, vx, vy := operandExtractor(instructions, currentOpcodePC, skipLength)
 
 		instruction := &ParsedInstruction{
 			PC:                    types.Register(currentOpcodePC),
@@ -208,7 +205,9 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 			IsBeginningBasicBlock: isBeginning,
 			Ra:                    ra,
 			Rb:                    rb,
+			Rd:                    rd,
 			Vx:                    vx,
+			Vy:                    vy,
 		}
 		instructionSlice[currentOpcodePC] = instruction
 
@@ -225,10 +224,6 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 			// Start new instruction
 			currentOpcode = instructions[n]
 			currentOpcodePC = n
-			skipLength = 0
-		} else {
-			// This is a data byte, add to current instruction
-			skipLength++
 		}
 	}
 
