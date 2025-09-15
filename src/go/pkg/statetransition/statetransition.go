@@ -62,26 +62,26 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 	return updatedWorkReports
 }
 
-func STF(curBlock block.Block) error {
+func STF(curBlock block.Block) ([32]byte, error) {
 
 	parentBlock, err := block.Get(nil, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
 		if err == pebble.ErrNotIndexed {
-			return errors.ProtocolErrorf("parent block not found")
+			return [32]byte{}, errors.ProtocolErrorf("parent block not found")
 		} else {
-			return fmt.Errorf("failed to get parent block: %w", err)
+			return [32]byte{}, fmt.Errorf("failed to get parent block: %w", err)
 		}
 	}
 
 	// (5.4)
 	if curBlock.Header.ExtrinsicHash != curBlock.Extrinsics.MerkleCommitment() {
-		return errors.ProtocolErrorf("extrinsic hash does not match actual extrinsic hash")
+		return [32]byte{}, errors.ProtocolErrorf("extrinsic hash does not match actual extrinsic hash")
 	}
 
 	// (5.7)
 	if curBlock.Header.TimeSlot <= parentBlock.Block.Header.TimeSlot {
-		return errors.ProtocolErrorf("time slot is not greater than parent block time slot")
+		return [32]byte{}, errors.ProtocolErrorf("time slot is not greater than parent block time slot")
 	}
 
 	// if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
@@ -91,12 +91,12 @@ func STF(curBlock block.Block) error {
 	// Always find LCA and apply necessary state transitions
 	currentTip, err := block.GetTip(nil)
 	if err != nil {
-		return fmt.Errorf("failed to get current tip: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to get current tip: %w", err)
 	}
 	// Find LCA using the efficient height-based algorithm
 	lca, err := block.FindLCA(nil, currentTip, parentBlock)
 	if err != nil {
-		return fmt.Errorf("failed to find LCA: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to find LCA: %w", err)
 	}
 
 	// 1. Begin a transaction for reorganization
@@ -106,23 +106,23 @@ func STF(curBlock block.Block) error {
 
 	// Rewind from current tip to LCA
 	if err := currentTip.RewindToBlock(reorgBatch, lca); err != nil {
-		return err
+		return [32]byte{}, err
 	}
 
 	// Get the specific path from LCA to parent block
 	pathFromLCAToParent, err := parentBlock.GetPathFromAncestor(reorgBatch, lca)
 	if err != nil {
-		return fmt.Errorf("failed to get path from LCA to parent: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to get path from LCA to parent: %w", err)
 	}
 
 	// Replay the specific path
 	if err := block.ReplayPath(reorgBatch, pathFromLCAToParent); err != nil {
-		return err
+		return [32]byte{}, err
 	}
 
 	// 5.8
-	if curBlock.Header.PriorStateRoot != merklizer.MerklizeState(merklizer.GetState(reorgBatch)) {
-		return fmt.Errorf("parent block state root does not match merklized state")
+	if curBlock.Header.PriorStateRoot != parentBlock.Info.PosteriorStateRoot {
+		return [32]byte{}, fmt.Errorf("parent block state root does not match merklized state")
 	}
 
 	// 2. Begin a transaction for the STF
@@ -130,31 +130,33 @@ func STF(curBlock block.Block) error {
 	defer stfBatch.Close()
 
 	if err := stfBatch.Apply(reorgBatch, nil); err != nil {
-		return fmt.Errorf("failed to apply reorgBatch: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to apply reorgBatch: %w", err)
 	}
 
 	// Run state transition function on globalBatch (so it sees the parentBlock state)
 	if err := stfHelper(stfBatch, curBlock); err != nil {
-		return err
+		return [32]byte{}, err
 	}
 
 	stfOperations, err := block.ComputeBatchDelta(reorgBatch, stfBatch)
 	if err != nil {
-		return fmt.Errorf("failed to compute batch delta: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to compute batch delta: %w", err)
 	}
 	defer stfOperations.Close()
 
 	//  Generate reverse diff: operations to go from current block state back to parentBlock state
 	reverseDiff, err := block.GenerateReverseBatch(reorgBatch, stfOperations)
 	if err != nil {
-		return fmt.Errorf("failed to generate reverse diff: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to generate reverse diff: %w", err)
 	}
 	defer reverseDiff.Close()
+
+	merklizedState := merklizer.MerklizeState(merklizer.GetState(stfBatch))
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizer.GetState(stfBatch)),
+			PosteriorStateRoot: merklizedState,
 			Height:             parentBlock.Info.Height + 1,
 			ForwardStateDiff:   stfOperations.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),
@@ -162,15 +164,15 @@ func STF(curBlock block.Block) error {
 	}
 
 	if err := blockWithInfo.Set(stfBatch); err != nil {
-		return fmt.Errorf("failed to save block with info: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to save block with info: %w", err)
 	}
 
 	// Commit the transaction
 	if err := stfBatch.Commit(nil); err != nil {
-		return err
+		return [32]byte{}, err
 	}
 
-	return nil
+	return merklizedState, nil
 }
 
 // StateTransitionFunction computes the new state given a state state and a valid block.
@@ -222,10 +224,16 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	posteriorDisputes := computeDisputes(curBlock.Extrinsics.Disputes, priorState.Disputes)
 
-	posteriorSafroleBasicState, err := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
-	if err != nil {
-		return err
+	// Start Safrole computation in parallel - it's only used in final state assembly
+	type safroleResult struct {
+		state state.SafroleBasicState
+		err   error
 	}
+	safroleResultChan := make(chan safroleResult, 1)
+	go func() {
+		result, err := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
+		safroleResultChan <- safroleResult{result, err}
+	}()
 
 	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
 
@@ -282,10 +290,16 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, deferredTransferStatistics, accumulationStatistics, posteriorEntropyAccumulator, posteriorDisputes)
 
+	// Wait for Safrole computation to complete
+	safroleRes := <-safroleResultChan
+	if safroleRes.err != nil {
+		return fmt.Errorf("failed to compute safrole basic state: %w", safroleRes.err)
+	}
+
 	postState := state.State{
 		AuthorizersPool:            authorizersPool,
 		RecentActivity:             posteriorRecentActivity,
-		SafroleBasicState:          posteriorSafroleBasicState,
+		SafroleBasicState:          safroleRes.state,
 		ServiceAccounts:            postAccumulationIntermediateServiceAccounts,
 		EntropyAccumulator:         posteriorEntropyAccumulator,
 		ValidatorKeysetsStaging:    accumulationStateComponents.UpcomingValidatorKeysets,

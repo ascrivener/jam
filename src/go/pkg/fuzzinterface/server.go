@@ -262,7 +262,7 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 	if err != nil {
 		return ResponseMessage{}, err
 	}
-	err = statetransition.STF(block.Block(importBlock))
+	merklizedState, err := statetransition.STF(block.Block(importBlock))
 	if err != nil {
 		if errors.IsProtocolError(err) {
 			return ResponseMessage{Error: &struct{}{}}, nil
@@ -270,8 +270,7 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 			return ResponseMessage{}, err
 		}
 	}
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
-	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
+	return ResponseMessage{StateRoot: (*StateRoot)(&merklizedState)}, nil
 }
 
 // handleGetState handles a GetState request

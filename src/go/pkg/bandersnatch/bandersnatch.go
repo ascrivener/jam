@@ -7,13 +7,12 @@ package bandersnatch
 // Declaration of the Rust functions.
 int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
-int initialize_pcs_params();
+int initialize_ring_params(size_t ring_size);
 int verify_signature(const unsigned char *public_key_ptr, size_t public_key_len,
                      const unsigned char *message_ptr, size_t message_len,
                      const unsigned char *context_ptr, size_t context_len,
                      const unsigned char *proof_ptr, size_t proof_len);
 int verify_ring_signature(const unsigned char *commitment_ptr, size_t commitment_len,
-                         size_t ring_size,
                          const unsigned char *message_ptr, size_t message_len,
                          const unsigned char *context_ptr, size_t context_len,
                          const unsigned char *proof_ptr, size_t proof_len);
@@ -30,10 +29,10 @@ import (
 
 // init is called when the package is imported
 func init() {
-	// Initialize the PCS parameters on package import
-	ret := C.initialize_pcs_params()
+	// Initialize the ring parameters with the fixed ring size
+	ret := C.initialize_ring_params(C.size_t(constants.NumValidators))
 	if ret != 0 {
-		log.Fatalf("Failed to initialize PCS parameters: %d", ret)
+		log.Fatalf("Failed to initialize ring parameters: %d", ret)
 	}
 }
 
@@ -154,7 +153,6 @@ func VerifyRingSignature(
 	ret := C.verify_ring_signature(
 		(*C.uchar)(unsafe.Pointer(&ringCommitment[0])),
 		C.size_t(len(ringCommitment)),
-		C.size_t(constants.NumValidators),
 		(*C.uchar)(unsafe.Pointer(&message[0])),
 		C.size_t(len(message)),
 		contextPtr,

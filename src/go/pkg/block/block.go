@@ -468,18 +468,41 @@ func (b Block) VerifyPostStateTransition(priorState state.State, postState state
 		}
 	}
 	// (6.29)
+	errChan := make(chan error, len(b.Extrinsics.Tickets))
+
 	for _, ticket := range b.Extrinsics.Tickets {
-		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
-			return errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
-		}
-		verified, err := bandersnatch.VerifyRingSignature(postState.SafroleBasicState.EpochTicketSubmissionsRoot, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(ticket.EntryIndex)), []byte{}, ticket.ValidityProof)
-		if err != nil {
-			return errors.WrapProtocolError(err, "failed to verify ticket signature")
-		}
-		if !verified {
-			return errors.ProtocolErrorf("ticket signature verification failed")
+		go func(t extrinsics.Ticket) {
+			if t.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+				errChan <- errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
+				return
+			}
+
+			verified, err := bandersnatch.VerifyRingSignature(
+				postState.SafroleBasicState.EpochTicketSubmissionsRoot,
+				append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(t.EntryIndex)),
+				[]byte{},
+				t.ValidityProof,
+			)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if !verified {
+				errChan <- errors.ProtocolErrorf("ticket signature verification failed")
+				return
+			}
+
+			errChan <- nil
+		}(ticket)
+	}
+
+	// Check results
+	for i := 0; i < len(b.Extrinsics.Tickets); i++ {
+		if err := <-errChan; err != nil {
+			return err
 		}
 	}
+
 	// (6.30)
 	if uint32(postState.MostRecentBlockTimeslot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber {
 		if len(b.Extrinsics.Tickets) > int(constants.MaxTicketsPerExtrinsic) {
