@@ -5,7 +5,6 @@ import (
 	"math/bits"
 	"os"
 
-	"jam/pkg/bitsequence"
 	"jam/pkg/constants"
 	"jam/pkg/ram"
 	"jam/pkg/types"
@@ -19,7 +18,14 @@ type State struct {
 
 type InstructionHandler func(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register)
 
-var dispatchTable [256]InstructionHandler
+type OperandExtractor func(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register)
+
+type InstructionInfo struct {
+	ExtractOperands OperandExtractor
+	Handler         InstructionHandler
+}
+
+var dispatchTable [256]*InstructionInfo
 
 var terminationOpcodes [256]bool
 
@@ -33,40 +39,6 @@ func InitFileLogger(filename string) error {
 	}
 	fileLogger = log.New(file, "", log.LstdFlags)
 	return nil
-}
-
-func (pvm *PVM) getInstruction(instructionCounter types.Register) byte {
-	if int(instructionCounter) >= pvm.InstructionsLength {
-		return 0
-	}
-	return pvm.Instructions[instructionCounter]
-}
-
-func (pvm *PVM) getInstructionRange(instructionCounter types.Register, count int) []byte {
-	start := int(instructionCounter)
-
-	if count <= 0 || start >= pvm.InstructionsLength {
-		return []byte{}
-	}
-
-	end := start + count
-	if end > pvm.InstructionsLength {
-		end = pvm.InstructionsLength
-	}
-
-	return pvm.Instructions[start:end]
-}
-
-func skip(instructionCounter types.Register, opcodes bitsequence.BitSequence) int {
-	j := 0
-	for j < 24 {
-		idx := instructionCounter + types.Register(1+j)
-		if idx >= types.Register(opcodes.Len()) || opcodes.BitAt(int(idx)) {
-			break
-		}
-		j++
-	}
-	return j
 }
 
 func signExtendImmediate(n int, x uint64) types.Register {
