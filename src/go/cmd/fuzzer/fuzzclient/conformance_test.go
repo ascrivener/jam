@@ -47,3 +47,15 @@ func TestStateTransitions(t *testing.T) {
 	// Run the conformance test
 	fuzzer.testStateTransitions(t, vectorsDir)
 }
+
+func TestFuzzerVersion(t *testing.T) {
+	dir := os.Getenv("TEST_DIR")
+
+	fuzzer := NewFuzzerClient("", true)
+	if err := fuzzer.Connect(); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer fuzzer.Disconnect()
+
+	fuzzer.testFuzzerVersion(t, dir)
+}

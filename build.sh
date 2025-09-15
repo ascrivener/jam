@@ -118,11 +118,10 @@ build_binary() {
         go build -o "${output_name}" -ldflags="-s -w" -tags=netgo -a -installsuffix netgo -trimpath
     elif [ "${goos}" == "linux" ] && [ "${goarch}" == "amd64" ]; then
         # Cross-compile for Linux AMD64 with static linking
-        # Add the temporary directory to the library path
         GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-unknown-linux-gnu-gcc \
         CGO_LDFLAGS="-L/tmp/jam_crossbuild/lib -static -ldl" \
         go build -o "${output_name}" -ldflags="-s -w -linkmode=external -extldflags=-static" \
-          -tags="netgo,osusergo" -trimpath
+          -tags="netgo,osusergo" -trimpath -buildmode=exe
     else
         echo -e "${YELLOW}Skipping unsupported target: ${goos}/${goarch}${NC}"
         cd "${current_dir}"

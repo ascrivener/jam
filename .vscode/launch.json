@@ -249,6 +249,24 @@
             }
         },
         {
+            "name": "Debug Fuzzclient Test (Fuzzer Version)",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
+            "args": [
+                "-test.v",
+                "-test.run=TestFuzzerVersion",
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "showLog": true,
+            "env": {
+                "GODEBUG": "gctrace=1",
+                "TEST_DIR": "${workspaceFolder}/jam-conformance/fuzz-proto/examples/v1"
+            }
+        },
+        {
             "name": "JAM Fuzzserver",
             "type": "go",
             "request": "launch",

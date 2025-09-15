@@ -125,24 +125,29 @@ pub const PCS_SRS_DATA: &[u8] = include_bytes!(concat!(
     "/data/srs/bls12-381-srs-2-11-uncompressed-zcash.bin"
 ));
 
-// Use OnceCell instead of Lazy for explicit initialization
-static PCS_PARAMS: OnceCell<Result<PcsParams, Error>> = OnceCell::new();
+// Cache ring params
+static RING_PARAMS: OnceCell<Result<RingProofParams, Error>> = OnceCell::new();
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Initialize the PCS parameters.
+/// Initialize the ring parameters with a fixed ring size.
 /// Returns 0 on success, -1 on failure.
 /// Safe to call multiple times - will only initialize once.
 #[no_mangle]
-pub extern "C" fn initialize_pcs_params() -> i32 {
+pub extern "C" fn initialize_ring_params(ring_size: usize) -> i32 {
     if INITIALIZED.load(Ordering::Relaxed) {
         return 0; // Already initialized
     }
 
-    let result = || -> Result<PcsParams, Error> {
-        PcsParams::deserialize_uncompressed(&mut &PCS_SRS_DATA[..]).map_err(|_| Error::InvalidData)
+    let result = || -> Result<RingProofParams, Error> {
+        // Deserialize PCS params temporarily
+        let pcs_params = PcsParams::deserialize_uncompressed(&mut &PCS_SRS_DATA[..])
+            .map_err(|_| Error::InvalidData)?;
+
+        // Create ring params and discard PCS params
+        RingProofParams::from_pcs_params(ring_size, pcs_params).map_err(|_| Error::InvalidData)
     }();
 
-    if PCS_PARAMS.set(result).is_err() {
+    if RING_PARAMS.set(result).is_err() {
         return -1; // Error setting the value (should never happen)
     }
 
@@ -150,39 +155,18 @@ pub extern "C" fn initialize_pcs_params() -> i32 {
     0
 }
 
-// Helper function to get the initialized parameters
-fn get_pcs_params() -> Result<&'static PcsParams, Error> {
-    match PCS_PARAMS.get() {
+// Helper function to get the initialized ring parameters
+fn get_ring_params() -> Result<&'static RingProofParams, Error> {
+    match RING_PARAMS.get() {
         Some(Ok(params)) => Ok(params),
         Some(Err(_)) => Err(Error::InvalidData),
-        None => {
-            // Auto-initialize if not explicitly initialized
-            if initialize_pcs_params() != 0 {
-                return Err(Error::InvalidData);
-            }
-
-            // Now try again
-            match PCS_PARAMS.get() {
-                Some(Ok(params)) => Ok(params),
-                _ => Err(Error::InvalidData),
-            }
-        }
+        None => Err(Error::InvalidData), // Must be initialized first
     }
 }
 
 pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> {
-    // Get the initialized PCS parameters
-    let pcs_params = get_pcs_params()?;
-
-    let ring_size: usize = hashes.len();
-
-    // Clone the parameters since from_pcs_params likely takes ownership
-    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params.clone()) {
-        Ok(p) => p,
-        Err(_) => {
-            return Err(Error::InvalidData);
-        }
-    };
+    // Get the initialized ring parameters
+    let ring_proof_params = get_ring_params()?;
 
     let mut ring_pks = Vec::with_capacity(hashes.len());
     for (_i, hash) in hashes.iter().enumerate() {
@@ -257,13 +241,12 @@ pub extern "C" fn kzg_commitment(
 
 pub fn verify_ring_signature_ffi(
     ring_commitment: &[u8],
-    ring_size: usize,
     message: &[u8],
     context: &[u8],
     proof: &[u8],
 ) -> Result<bool, Error> {
-    // 1. Get the initialized PCS parameters
-    let pcs_params = get_pcs_params()?;
+    // Get the initialized ring parameters
+    let ring_proof_params = get_ring_params()?;
 
     // 2. Decode the ring commitment
     let commitment = CanonicalDeserialize::deserialize_compressed(&mut &ring_commitment[..])
@@ -285,20 +268,11 @@ pub fn verify_ring_signature_ffi(
     let deserialized_proof =
         RingProof::deserialize_compressed(&mut &proof[32..]).map_err(|_| Error::InvalidData)?;
 
-    // 6. Create ring parameters using ring_size
-    // Clone the parameters since from_pcs_params likely takes ownership
-    let ring_proof_params = match RingProofParams::from_pcs_params(ring_size, pcs_params.clone()) {
-        Ok(p) => p,
-        Err(_) => {
-            return Err(Error::InvalidData);
-        }
-    };
-
-    // 7. Create a verifier for the commitment
+    // 6. Create a verifier for the commitment
     let verifier_key = ring_proof_params.verifier_key_from_commitment(commitment);
     let verifier = ring_proof_params.verifier(verifier_key);
 
-    // 8. Verify the proof using the EXPLICIT ring::Verifier trait implementation for Public
+    // 7. Verify the proof
     match <Public<BandersnatchSha512Ell2> as ring::Verifier<BandersnatchSha512Ell2>>::verify(
         input,
         output,
@@ -316,7 +290,6 @@ pub fn verify_ring_signature_ffi(
 pub extern "C" fn verify_ring_signature(
     commitment_ptr: *const u8,
     commitment_len: usize,
-    ring_size: usize,
     message_ptr: *const u8,
     message_len: usize,
     context_ptr: *const u8,
@@ -325,7 +298,7 @@ pub extern "C" fn verify_ring_signature(
     proof_len: usize,
 ) -> i32 {
     // Input validation
-    if commitment_ptr.is_null() || message_ptr.is_null() || proof_ptr.is_null() || ring_size == 0 {
+    if commitment_ptr.is_null() || message_ptr.is_null() || proof_ptr.is_null() {
         return -1; // Invalid input pointers or ring size
     }
 
@@ -340,7 +313,7 @@ pub extern "C" fn verify_ring_signature(
     let proof = unsafe { slice::from_raw_parts(proof_ptr, proof_len) };
 
     // Call the internal verification function
-    match verify_ring_signature_ffi(commitment, ring_size, message, context, proof) {
+    match verify_ring_signature_ffi(commitment, message, context, proof) {
         Ok(true) => 1,  // Signature valid
         Ok(false) => 0, // Signature invalid
         Err(_) => -2,   // Error processing inputs

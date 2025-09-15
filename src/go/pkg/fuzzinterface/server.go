@@ -7,9 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
 
 	"jam/pkg/block"
+	"jam/pkg/errors"
 	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
@@ -18,15 +18,15 @@ import (
 
 // Server represents a fuzzer interface server
 type Server struct {
-	peerInfo     PeerInfo
-	stateMapLock sync.RWMutex
+	peerInfo PeerInfo
 }
 
 // NewServer creates a new fuzzer interface server
 func NewServer() *Server {
 	return &Server{
 		peerInfo: PeerInfo{
-			Name: []byte("jamzilla"),
+			FuzzVersion: 1,
+			Features:    FEATURE_FORK,
 			AppVersion: Version{
 				Major: 0,
 				Minor: 1,
@@ -37,6 +37,7 @@ func NewServer() *Server {
 				Minor: 7,
 				Patch: 0,
 			},
+			Name: []byte("jamzilla"),
 		},
 	}
 }
@@ -55,33 +56,31 @@ func (s *Server) Start(socketPath string) error {
 	}
 	log.Printf("Fuzzer interface listening on %s", socketPath)
 
-	go func() {
-		defer listener.Close()
+	defer listener.Close()
 
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Failed to accept connection: %v", err)
-				continue
-			}
+	conn, err := listener.Accept()
+	if err != nil {
+		return fmt.Errorf("failed to accept connection: %w", err)
+	}
+	defer conn.Close()
 
-			log.Printf("New fuzzer connection accepted")
-			go s.handleConnection(conn)
-		}
-	}()
+	log.Printf("New fuzzer connection accepted")
+	if err := s.handleConnection(conn); err != nil {
+		return err
+	}
 
 	return nil
 }
 
 // handleConnection handles a single fuzzer connection
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConnection(conn net.Conn) error {
 	defer conn.Close()
 
 	// Wait for first message (PeerInfo)
 	msgData, err := s.receiveMessageData(conn)
 	if err != nil {
 		log.Printf("Error receiving initial PeerInfo: %v", err)
-		return
+		return err
 	}
 
 	// Get the message type
@@ -89,7 +88,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	if msgType != RequestMessageTypePeerInfo {
 		log.Printf("First message is not PeerInfo, closing connection")
-		return
+		return fmt.Errorf("first message is not PeerInfo")
 	}
 
 	// Skip the type byte
@@ -99,7 +98,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	err = serializer.Deserialize(msgData, &peerInfo)
 	if err != nil {
 		log.Printf("Error deserializing PeerInfo: %v", err)
-		return
+		return err
 	}
 
 	log.Printf("Handshake received from fuzzer: %s (App v%d.%d.%d, JAM v%d.%d.%d)",
@@ -111,7 +110,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	resp := ResponseMessage{PeerInfo: &s.peerInfo}
 	if err := s.sendMessage(conn, resp); err != nil {
 		log.Printf("Error sending PeerInfo: %v", err)
-		return
+		return err
 	}
 
 	// Main communication loop
@@ -120,20 +119,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if err != nil {
 			if err == io.EOF {
 				log.Println("Fuzzer disconnected")
-				return
+				return err
 			}
 			log.Printf("Error receiving message data: %v", err)
-			return
+			return err
 		}
 
 		resp, err := s.HandleMessageData(msgData)
 		if err != nil {
-			log.Printf("Error handling message: %v", err)
+			log.Printf("Error handling message data: %v", err)
+			return err
 		}
 
 		if err := s.sendMessage(conn, resp); err != nil {
 			log.Printf("Error sending response: %v", err)
-			return
+			return err
 		}
 	}
 }
@@ -188,7 +188,7 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 		return s.handleGetState(msgData)
 
 	default:
-		return ResponseMessage{}, fmt.Errorf("unsupported message type")
+		return ResponseMessage{}, fmt.Errorf("unknown message type: %d", msgType)
 	}
 }
 
@@ -215,12 +215,12 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 		}
 	}()
 	if err := setState.State.OverwriteCurrentState(globalBatch); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to overwrite current state: %w", err)
+		return ResponseMessage{}, err
 	}
 
 	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
 	if err != nil {
-		log.Fatalf("Failed to generate reverse diff: %v", err)
+		return ResponseMessage{}, err
 	}
 	defer reverseDiff.Close()
 
@@ -237,12 +237,12 @@ func (s *Server) handleSetState(setStateData []byte) (ResponseMessage, error) {
 	}
 
 	if err := blockWithInfo.Set(globalBatch); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to store block: %w", err)
+		return ResponseMessage{}, err
 	}
 
 	// Commit the transaction
 	if err := globalBatch.Commit(nil); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to commit transaction: %w", err)
+		return ResponseMessage{}, err
 	}
 	txSuccess = true
 
@@ -258,12 +258,18 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 	var importBlock ImportBlock
 	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
-		stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
-		return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
+		return ResponseMessage{}, err
 	}
-	err = statetransition.STF(block.Block(importBlock))
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
-	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, err
+	merklizedState, err := statetransition.STF(block.Block(importBlock))
+	if err != nil {
+		if errors.IsProtocolError(err) {
+			e := []byte(err.Error())
+			return ResponseMessage{Error: &e}, nil
+		} else {
+			return ResponseMessage{}, err
+		}
+	}
+	return ResponseMessage{StateRoot: (*StateRoot)(&merklizedState)}, nil
 }
 
 // handleGetState handles a GetState request

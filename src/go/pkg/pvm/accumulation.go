@@ -2,11 +2,11 @@ package pvm
 
 import (
 	"bytes"
-	"errors"
 	"sort"
 	"sync"
 
 	"jam/pkg/constants"
+	"jam/pkg/errors"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/types"
 	"jam/pkg/workreport"
@@ -210,7 +210,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 	}
 
 	if newServiceIndexCollisionDetected {
-		return AccumulationStateComponents{}, nil, nil, nil, errors.New("new service index collision detected")
+		return AccumulationStateComponents{}, nil, nil, nil, errors.ProtocolErrorf("new service index collision detected")
 	}
 
 	// Now process manager service
