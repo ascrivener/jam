@@ -8,15 +8,24 @@ import (
 	"jam/pkg/types"
 )
 
+type ParsedInstruction struct {
+	PC                    types.Register
+	NextPC                types.Register
+	Opcode                byte
+	SkipLength            int
+	Handler               InstructionHandler
+	IsBeginningBasicBlock bool
+	Ra, Rb, Rd            int
+	Vx, Vy                types.Register
+}
+
 type PVM struct {
-	Instructions               []byte
-	InstructionsLength         int // Cached length to avoid repeated len() calls
-	Opcodes                    bitsequence.BitSequence
-	BasicBlockBeginningOpcodes map[int]struct{} // Precomputed basic block beginning opcodes.
-	SkipLengths                []int            // Precomputed skip lengths for all instruction positions.
-	DynamicJumpTable           []types.Register
-	InstructionCounter         types.Register
-	State                      *State
+	Instructions       []byte
+	InstructionsLength int
+	InstructionCounter types.Register
+	DynamicJumpTable   []types.Register
+	State              *State
+	InstructionSlice   []*ParsedInstruction // For direct instruction lookup
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -25,36 +34,19 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		return nil
 	}
 
-	// Precompute skip lengths for all instruction positions
-	skipLengths := make([]int, len(instructions))
-	for i := range instructions {
-		skipLengths[i] = skip(types.Register(i), opcodes)
-	}
+	instructionSlice := formParsedInstructions(instructions, opcodes)
 
-	basicBlockBeginningOpcodes := map[int]struct{}{0: {}} // Start with index 0 as it's always a basic block beginning
-	for n, instruction := range instructions {
-		if opcodes.BitAt(n) && terminationOpcodes[instruction] {
-			basicBlockBeginningOpcodes[n+1+skipLengths[n]] = struct{}{}
-		}
-	}
-	for basicBlockBeginningOpcode := range basicBlockBeginningOpcodes {
-		if basicBlockBeginningOpcode >= len(instructions) || !opcodes.BitAt(basicBlockBeginningOpcode) || dispatchTable[instructions[basicBlockBeginningOpcode]] == nil {
-			delete(basicBlockBeginningOpcodes, basicBlockBeginningOpcode)
-		}
-	}
 	return &PVM{
-		Instructions:               instructions,
-		InstructionsLength:         len(instructions),
-		Opcodes:                    opcodes,
-		BasicBlockBeginningOpcodes: basicBlockBeginningOpcodes,
-		SkipLengths:                skipLengths,
-		DynamicJumpTable:           dynamicJumpTable,
-		InstructionCounter:         instructionCounter,
+		Instructions:       instructions,
+		InstructionsLength: len(instructions),
+		InstructionCounter: instructionCounter,
+		DynamicJumpTable:   dynamicJumpTable,
 		State: &State{
 			Gas:       types.SignedGasValue(gas),
 			Registers: registers,
 			RAM:       ram,
 		},
+		InstructionSlice: instructionSlice,
 	}
 }
 
@@ -182,23 +174,63 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func (pvm *PVM) Run() ExitReason {
-	for {
-		exitReason := pvm.SingleStep()
-		if exitReason.IsSimple() && *exitReason.SimpleExitReason == ExitGo {
-			// Continue executing if the exit reason is still "go".
-			continue
+func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence) []*ParsedInstruction {
+	// Create sparse slice sized to instruction length
+	instructionSlice := make([]*ParsedInstruction, len(instructions))
+
+	currentOpcode := instructions[0]
+	currentOpcodePC := 0
+	previousWasTerminating := false
+
+	// Helper function to finish current instruction
+	finishInstruction := func(nextPC int) {
+		instructionInfo := dispatchTable[currentOpcode]
+		isBeginning := (currentOpcodePC == 0 || previousWasTerminating) && instructionInfo != nil
+		handler := dispatchTable[0].Handler
+		operandExtractor := dispatchTable[0].ExtractOperands
+		if instructionInfo != nil {
+			handler = instructionInfo.Handler
+			operandExtractor = instructionInfo.ExtractOperands
 		}
-		// Otherwise, adjust for out-of-gas or panic/halt conditions.
-		if pvm.State.Gas < 0 {
-			exitReason = ExitReasonOutOfGas
-		} else if exitReason.IsSimple() &&
-			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
-			// Reset the instruction counter on panic/halt.
-			pvm.InstructionCounter = 0
+		skipLength := nextPC - currentOpcodePC - 1
+
+		ra, rb, rd, vx, vy := operandExtractor(instructions, currentOpcodePC, skipLength)
+
+		instruction := &ParsedInstruction{
+			PC:                    types.Register(currentOpcodePC),
+			NextPC:                types.Register(nextPC),
+			Opcode:                currentOpcode,
+			SkipLength:            skipLength,
+			Handler:               handler,
+			IsBeginningBasicBlock: isBeginning,
+			Ra:                    ra,
+			Rb:                    rb,
+			Rd:                    rd,
+			Vx:                    vx,
+			Vy:                    vy,
 		}
-		return exitReason
+		instructionSlice[currentOpcodePC] = instruction
+
+		// Update for next iteration
+		previousWasTerminating = terminationOpcodes[currentOpcode]
 	}
+
+	for n := 1; n < len(instructions); n++ {
+		// If this is an opcode position
+		if opcodes.BitAt(n) {
+			// Finish the previous instruction
+			finishInstruction(n)
+
+			// Start new instruction
+			currentOpcode = instructions[n]
+			currentOpcodePC = n
+		}
+	}
+
+	// Handle the final instruction
+	finishInstruction(len(instructions))
+
+	return instructionSlice
 }
 
 func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
@@ -251,4 +283,52 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		}
 	}
 	return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), gasUsed, nil
+}
+
+func (pvm *PVM) Run() ExitReason {
+	for {
+		ic := pvm.InstructionCounter
+		if int(ic) >= pvm.InstructionsLength || pvm.InstructionSlice[ic] == nil {
+			ic = 0
+		}
+		instruction := pvm.InstructionSlice[ic]
+
+		// Execute single instruction
+		exitReason := pvm.executeInstruction(instruction)
+		if exitReason == ExitReasonGo {
+			continue
+		}
+		// Otherwise, adjust for out-of-gas or panic/halt conditions.
+		if pvm.State.Gas < 0 {
+			exitReason = ExitReasonOutOfGas
+		} else if exitReason.IsSimple() &&
+			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+			// Reset the instruction counter on panic/halt.
+			pvm.InstructionCounter = 0
+		}
+
+		minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
+		if minRamIndex != nil {
+			if *minRamIndex < ram.MinValidRamIndex {
+				return ExitReasonPanic
+			} else {
+				return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
+			}
+		}
+		return exitReason
+	}
+}
+
+func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
+	// Clear memory access exceptions for each instruction
+	pvm.State.RAM.ClearMemoryAccessExceptions()
+
+	exitReason, nextIC := instruction.Handler(pvm, instruction)
+
+	// Consume gas
+	pvm.State.Gas -= types.SignedGasValue(1)
+
+	// Always update instruction counter and return what the handler gave us
+	pvm.InstructionCounter = nextIC
+	return exitReason
 }

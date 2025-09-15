@@ -5,7 +5,6 @@ import (
 	"math/bits"
 	"os"
 
-	"jam/pkg/bitsequence"
 	"jam/pkg/constants"
 	"jam/pkg/ram"
 	"jam/pkg/types"
@@ -17,9 +16,16 @@ type State struct {
 	RAM       *ram.RAM
 }
 
-type InstructionHandler func(pvm *PVM, instruction byte, skipLength int) (ExitReason, types.Register)
+type InstructionHandler func(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register)
 
-var dispatchTable [256]InstructionHandler
+type OperandExtractor func(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register)
+
+type InstructionInfo struct {
+	ExtractOperands OperandExtractor
+	Handler         InstructionHandler
+}
+
+var dispatchTable [256]*InstructionInfo
 
 var terminationOpcodes [256]bool
 
@@ -33,73 +39,6 @@ func InitFileLogger(filename string) error {
 	}
 	fileLogger = log.New(file, "", log.LstdFlags)
 	return nil
-}
-
-func (pvm *PVM) SingleStep() ExitReason {
-	// Reset the pre-allocated slice without allocating new memory.
-	pvm.State.RAM.ClearMemoryAccessExceptions()
-
-	instruction := pvm.getInstruction(pvm.InstructionCounter)
-	skipLength := pvm.SkipLengths[pvm.InstructionCounter]
-
-	handler := dispatchTable[instruction]
-	if handler == nil || !pvm.Opcodes.BitAt(int(pvm.InstructionCounter)) {
-		handler = dispatchTable[0]
-	}
-
-	exitReason, nextIC := handler(pvm, instruction, skipLength)
-
-	pvm.State.Gas -= types.SignedGasValue(1)
-
-	pvm.InstructionCounter = nextIC
-
-	if fileLogger != nil {
-		fileLogger.Printf("instruction=%d pc=%d g=%d Registers=%v", instruction, pvm.InstructionCounter, pvm.State.Gas, pvm.State.Registers)
-	}
-
-	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
-	if minRamIndex != nil {
-		if *minRamIndex < ram.MinValidRamIndex {
-			return ExitReasonPanic
-		} else {
-			return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
-		}
-	}
-	return exitReason
-}
-
-func (pvm *PVM) getInstruction(instructionCounter types.Register) byte {
-	if int(instructionCounter) >= pvm.InstructionsLength {
-		return 0
-	}
-	return pvm.Instructions[instructionCounter]
-}
-
-func (pvm *PVM) getInstructionRange(instructionCounter types.Register, count int) []byte {
-	start := int(instructionCounter)
-
-	if start >= pvm.InstructionsLength || count <= 0 {
-		return []byte{}
-	}
-
-	end := start + count
-	if end > pvm.InstructionsLength {
-		end = pvm.InstructionsLength
-	}
-
-	return pvm.Instructions[start:end]
-}
-
-func skip(instructionCounter types.Register, opcodes bitsequence.BitSequence) int {
-	j := 0
-	for j < 24 {
-		idx := instructionCounter + types.Register(1+j)
-		if idx >= types.Register(opcodes.Len()) || opcodes.BitAt(int(idx)) {
-			break
-		}
-		j++
-	}
-	return j
 }
 
 func signExtendImmediate(n int, x uint64) types.Register {
@@ -140,13 +79,17 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if !C {
 		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
-	if _, exists := pvm.BasicBlockBeginningOpcodes[int(b)]; !exists {
+	if int(b) >= len(pvm.InstructionSlice) {
+		return ExitReasonPanic, pvm.InstructionCounter
+	}
+	targetInstruction := pvm.InstructionSlice[b]
+	if targetInstruction == nil || !targetInstruction.IsBeginningBasicBlock {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
 }
 
-func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, basicBlockBeginningOpcodes map[int]struct{}) (ExitReason, types.Register) {
+func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, parsedInstructions []*ParsedInstruction) (ExitReason, types.Register) {
 	if fileLogger != nil {
 		fileLogger.Printf("djump: a=%d, defaultNextPC=%d, dynamicJumpTableLen=%d", a, defaultNextInstructionCounter, len(dynamicJumpTable))
 	}
@@ -160,30 +103,35 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 
 	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
 		if fileLogger != nil {
-			fileLogger.Printf("djump: PANIC condition (a=%d, maxAddr=%d, alignment=%d)",
-				a, uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor), constants.DynamicAddressAlignmentFactor)
+			fileLogger.Printf("djump: Invalid jump address a=%d", a)
 		}
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
-	nextInstructionCounter := dynamicJumpTable[a/uint32(constants.DynamicAddressAlignmentFactor)-1]
+	index := (a / uint32(constants.DynamicAddressAlignmentFactor)) - 1
+	target := dynamicJumpTable[index]
+
 	if fileLogger != nil {
-		fileLogger.Printf("djump: calculated nextPC=%d from dynamicJumpTable[%d]",
-			nextInstructionCounter, a/uint32(constants.DynamicAddressAlignmentFactor)-1)
+		fileLogger.Printf("djump: index=%d, target=%d", index, target)
 	}
 
-	_, exists := basicBlockBeginningOpcodes[int(nextInstructionCounter)]
-	if !exists {
+	if int(target) >= len(parsedInstructions) {
 		if fileLogger != nil {
-			fileLogger.Printf("djump: PANIC - nextPC=%d not in basicBlockBeginningOpcodes", nextInstructionCounter)
+			fileLogger.Printf("djump: Target %d is out of range", target)
 		}
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
-	if fileLogger != nil {
-		fileLogger.Printf("djump: SUCCESS - jumping to nextPC=%d", nextInstructionCounter)
+	targetInstruction := parsedInstructions[target]
+
+	if targetInstruction == nil || !targetInstruction.IsBeginningBasicBlock {
+		if fileLogger != nil {
+			fileLogger.Printf("djump: Target %d is not a valid basic block start", target)
+		}
+		return ExitReasonPanic, defaultNextInstructionCounter
 	}
-	return ExitReasonGo, nextInstructionCounter
+
+	return ExitReasonGo, target
 }
 
 func smod(a, b int64) int64 {
