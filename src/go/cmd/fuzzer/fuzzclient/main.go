@@ -428,9 +428,6 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 		if strings.Contains(testDir, "1757063641") {
 			continue
 		}
-		if !strings.Contains(testDir, "1757406516") {
-			continue
-		}
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)

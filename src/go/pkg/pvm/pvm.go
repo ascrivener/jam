@@ -273,9 +273,10 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 			return types.NewExecutionExitReasonError(types.ExecutionErrorOutOfGas), gasUsed, nil
 		}
 		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
-			start := pvm.State.Registers[7]
-			if !pvm.State.RAM.RangeHas(ram.Inaccessible, uint64(start), uint64(pvm.State.Registers[8]), ram.NoWrap) {
-				blob := pvm.State.RAM.InspectRange(uint64(start), 8, ram.NoWrap, false)
+			start := uint64(pvm.State.Registers[7])
+			len := uint64(pvm.State.Registers[8])
+			if !pvm.State.RAM.RangeHas(ram.Inaccessible, start, len, ram.NoWrap) {
+				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap, false)
 				return types.NewExecutionExitReasonBlob(blob), gasUsed, nil
 			} else {
 				return types.NewExecutionExitReasonBlob([]byte{}), gasUsed, nil
@@ -306,15 +307,6 @@ func (pvm *PVM) Run() ExitReason {
 			// Reset the instruction counter on panic/halt.
 			pvm.InstructionCounter = 0
 		}
-
-		minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
-		if minRamIndex != nil {
-			if *minRamIndex < ram.MinValidRamIndex {
-				return ExitReasonPanic
-			} else {
-				return NewComplexExitReason(ExitPageFault, types.Register(ram.PageSize*(*minRamIndex/ram.PageSize)))
-			}
-		}
 		return exitReason
 	}
 }
@@ -330,5 +322,15 @@ func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
 
 	// Always update instruction counter and return what the handler gave us
 	pvm.InstructionCounter = nextIC
+
+	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
+	if minRamIndex != nil {
+		if *minRamIndex < ram.MinValidRamIndex {
+			return ExitReasonPanic
+		} else {
+			parameter := types.Register(ram.PageSize * (*minRamIndex / ram.PageSize))
+			return NewComplexExitReason(ExitPageFault, parameter)
+		}
+	}
 	return exitReason
 }

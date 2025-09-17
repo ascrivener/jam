@@ -39,6 +39,7 @@ var tinyConstants = map[string]map[string]string{
 	"UnreferencePreimageExpungeTimeslots":               {"type": "uint32", "value": "32", "comment": "D"},
 	"AllAccumulationTotalGasAllocation":                 {"type": "uint64", "value": "20000000", "comment": "G_T"},
 	"RefineGasAllocation":                               {"type": "uint64", "value": "1000000000", "comment": "G_R"},
+	"LookupAnchorMaxAgeTimeslots":                       {"type": "uint32", "value": "24", "comment": "L"},
 }
 
 var fullConstants = map[string]map[string]string{
@@ -55,6 +56,7 @@ var fullConstants = map[string]map[string]string{
 	"UnreferencePreimageExpungeTimeslots":               {"type": "uint32", "value": "19200", "comment": "D"},
 	"AllAccumulationTotalGasAllocation":                 {"type": "uint64", "value": "3500000000", "comment": "G_T"},
 	"RefineGasAllocation":                               {"type": "uint64", "value": "5000000000", "comment": "G_R"},
+	"LookupAnchorMaxAgeTimeslots":                       {"type": "uint32", "value": "14400", "comment": "L"},
 }
 
 // Additional constants that might not be in the config file
@@ -77,7 +79,6 @@ var additionalConstants = map[string]map[string]string{
 	"MaxTotalSizeWorkReportBlobs":     {"type": "uint32", "value": "48 << 10", "comment": "W_R"},
 	"TransferMemoSize":                {"type": "uint32", "value": "128", "comment": "W_T"},
 	"MaxExportsInWorkPackage":         {"type": "uint32", "value": "3072", "comment": "W_X"},
-	"LookupAnchorMaxAgeTimeslots":     {"type": "uint32", "value": "14400", "comment": "L"},
 	"JamCommonEraStartUnixTime":       {"type": "int64", "value": "1735732800", "comment": "JCE epoch (2025-01-01 12:00 UTC)"},
 	"AuthorizerQueueLength":           {"type": "uint16", "value": "80", "comment": "Q"},
 	"MaxItemsInAuthorizationsPool":    {"type": "uint16", "value": "8", "comment": "O"},

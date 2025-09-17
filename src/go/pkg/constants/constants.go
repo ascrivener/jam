@@ -9,6 +9,8 @@ const ErasureCodedPiecesInSegment uint32 = 1026 // W_P
 
 const ErasureCodedPiecesSize uint32 = 4 // W_E
 
+const LookupAnchorMaxAgeTimeslots uint32 = 24 // L
+
 const MaxTicketsPerExtrinsic uint16 = 3 // K
 
 const NumCores uint16 = 2 // C
@@ -39,8 +41,6 @@ const IsAuthorizedCodeMaxSizeOctets uint32 = 64000 // W_A
 const IsAuthorizedGasAllocation uint64 = 50000000 // G_I
 
 const JamCommonEraStartUnixTime int64 = 1735732800 // JCE epoch (2025-01-01 12:00 UTC)
-
-const LookupAnchorMaxAgeTimeslots uint32 = 14400 // L
 
 const MaxExportsInWorkPackage uint32 = 3072 // W_X
 
