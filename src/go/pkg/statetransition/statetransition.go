@@ -725,7 +725,7 @@ func accumulateAndIntegrate(
 			}
 			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
 				NumberOfWorkItems: types.GenericNum(len(N)),
-				GasUsed:           types.GenericGasValue(gasUsed),
+				GasUsed:           types.GenericNum(gasUsed),
 			}
 		}
 	}
@@ -746,7 +746,7 @@ func accumulateAndIntegrate(
 			mutex.Lock() // Lock before writing to the map
 			deferredTransferStatistics[serviceIndex] = validatorstatistics.ServiceTransferStatistics{
 				NumberOfTransfers: types.GenericNum(len(selectedTransfers)),
-				GasUsed:           types.GenericGasValue(gasUsed),
+				GasUsed:           types.GenericNum(gasUsed),
 			}
 			mutex.Unlock() // Don't forget to unlock
 		}
@@ -854,7 +854,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 				coreStats.NumExtrinsicsUsed += types.GenericNum(digest.NumExtrinsicsUsed)
 				coreStats.SizeInOctetsOfExtrinsicsUsed += types.GenericNum(digest.SizeInOctetsOfExtrinsicsUsed)
 				coreStats.NumSegmentsExportedInto += types.GenericNum(digest.NumSegmentsExportedInto)
-				coreStats.ActualRefinementGasUsed += types.GenericGasValue(digest.ActualRefinementGasUsed)
+				coreStats.ActualRefinementGasUsed += types.GenericNum(digest.ActualRefinementGasUsed)
 			}
 			coreStats.WorkBundleLength += types.GenericNum(workReport.WorkPackageSpecification.WorkBundleLength)
 		}
@@ -900,7 +900,7 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 					serviceStatistics.SizeInOctetsOfExtrinsicsUsed += types.GenericNum(workDigest.SizeInOctetsOfExtrinsicsUsed)
 					serviceStatistics.NumSegmentsExportedInto += types.GenericNum(workDigest.NumSegmentsExportedInto)
 					serviceStatistics.ActualRefinementGasUsed.WorkReportCount++
-					serviceStatistics.ActualRefinementGasUsed.Amount += types.GenericGasValue(workDigest.ActualRefinementGasUsed)
+					serviceStatistics.ActualRefinementGasUsed.Amount += types.GenericNum(workDigest.ActualRefinementGasUsed)
 				}
 			}
 		}

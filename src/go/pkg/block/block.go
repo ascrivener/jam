@@ -27,7 +27,75 @@ type Block struct {
 	Extrinsics extrinsics.Extrinsics
 }
 
+func (b Block) VerifyInBounds(priorState state.State) error {
+	if b.Header.WinningTicketsMarker != nil {
+		for _, ticket := range b.Header.WinningTicketsMarker {
+			if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+				return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
+			}
+		}
+	}
+	if b.Header.TimeSlot.SlotPhaseIndex() < int(constants.TicketSubmissionEndingSlotPhaseNumber) {
+		if len(b.Extrinsics.Tickets) > int(constants.MaxTicketsPerExtrinsic) {
+			return errors.ProtocolErrorf("extrinsics should have at most %d tickets", constants.MaxTicketsPerExtrinsic)
+		}
+	} else {
+		if len(b.Extrinsics.Tickets) != 0 {
+			return errors.ProtocolErrorf("extrinsics should have no tickets")
+		}
+	}
+	for _, ticket := range b.Extrinsics.Tickets {
+		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+			return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
+		}
+	}
+	if len(b.Extrinsics.Guarantees) > int(constants.NumCores) {
+		return errors.ProtocolErrorf("extrinsics should have at most %d guarantees", constants.NumCores)
+	}
+	for _, guarantee := range b.Extrinsics.Guarantees {
+		if guarantee.WorkReport.CoreIndex >= types.GenericNum(constants.NumCores) {
+			return errors.ProtocolErrorf("guarantee core index is out of bounds: %d", guarantee.WorkReport.CoreIndex)
+		}
+		if len(guarantee.WorkReport.WorkDigests) == 0 {
+			return errors.ProtocolErrorf("guarantee work report has no work digests")
+		}
+		if len(guarantee.WorkReport.WorkDigests) > int(constants.MaxWorkItemsInPackage) {
+			return errors.ProtocolErrorf("guarantee work report has too many work digests")
+		}
+		if len(guarantee.Credentials) != 2 && len(guarantee.Credentials) != 3 {
+			return errors.ProtocolErrorf("guarantee should have either 2 or 3 credentials")
+		}
+	}
+	if len(b.Extrinsics.Assurances) > int(constants.NumValidators) {
+		return errors.ProtocolErrorf("extrinsics should have at most %d assurances", constants.NumValidators)
+	}
+	for _, assurance := range b.Extrinsics.Assurances {
+		if assurance.CoreAvailabilityContributions.Len() != int(constants.NumCores) {
+			return errors.ProtocolErrorf("assurance core availability contributions has wrong length")
+		}
+		if assurance.ValidatorIndex >= types.ValidatorIndex(constants.NumValidators) {
+			return errors.ProtocolErrorf("assurance validator index is out of bounds: %d", assurance.ValidatorIndex)
+		}
+	}
+	priorEpochIndex := priorState.MostRecentBlockTimeslot.EpochIndex()
+	for _, verdict := range b.Extrinsics.Disputes.Verdicts {
+		if verdict.EpochIndex != uint32(priorEpochIndex) && verdict.EpochIndex != uint32(priorEpochIndex-1) {
+			return errors.ProtocolErrorf("verdict epoch index does not match prior state most recent block timeslot epoch index or previous")
+		}
+		for _, judgement := range verdict.Judgements {
+			if judgement.ValidatorIndex >= types.ValidatorIndex(constants.NumValidators) {
+				return errors.ProtocolErrorf("judgement validator index is out of bounds: %d", judgement.ValidatorIndex)
+			}
+		}
+	}
+	return nil
+}
+
 func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
+
+	if err := b.VerifyInBounds(priorState); err != nil {
+		return err
+	}
 
 	// (10.7)
 	for i := 1; i < len(b.Extrinsics.Disputes.Verdicts); i++ {

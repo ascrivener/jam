@@ -101,6 +101,7 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 		encodedMessage = serializer.Serialize(*msg.StateRoot)
 		msgType = ResponseMessageTypeStateRoot
 	case msg.Error != nil:
+		encodedMessage = serializer.Serialize(*msg.Error)
 		msgType = ResponseMessageTypeError
 	default:
 		return nil, fmt.Errorf("unknown message type")

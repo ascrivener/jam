@@ -24,7 +24,6 @@ var (
 	sealingKeySequenceType   = reflect.TypeOf(sealingkeysequence.SealingKeySequence{})
 	coreBitMaskType          = reflect.TypeOf(bitsequence.CoreBitMask{})
 	genericNumType           = reflect.TypeOf(types.GenericNum(0))
-	genericGasValueType      = reflect.TypeOf(types.GenericGasValue(0))
 	emptyStructType          = reflect.TypeOf(struct{}{})
 	ticketArrayType          = reflect.TypeOf([constants.NumTimeslotsPerEpoch]ticket.Ticket{})
 	bandersnatchKeyArrayType = reflect.TypeOf([constants.NumTimeslotsPerEpoch]types.BandersnatchPublicKey{})
@@ -135,7 +134,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if typ == genericNumType || typ == genericGasValueType {
+		if typ == genericNumType {
 			buf.Write(EncodeGeneralNatural(v.Uint()))
 			return
 		}
@@ -298,7 +297,7 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 		return nil
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		if vType == genericNumType || vType == genericGasValueType {
+		if vType == genericNumType {
 			// For regular maps, read length prefix
 			length, n, ok := DecodeGeneralNatural(buf.Bytes())
 			if !ok {

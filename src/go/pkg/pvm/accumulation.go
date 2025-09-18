@@ -31,7 +31,7 @@ func SingleServiceAccumulation(batch *pebble.Batch, accumulationStateComponents 
 					AuthorizerHash:        report.AuthorizerHash,
 					WorkReportOutput:      report.Output,
 					WorkResultPayloadHash: workDigest.PayloadHash,
-					GasLimit:              types.GenericGasValue(workDigest.AccumulateGasLimit),
+					GasLimit:              types.GenericNum(workDigest.AccumulateGasLimit),
 					ExecutionExitReason:   workDigest.WorkResult,
 				})
 			}

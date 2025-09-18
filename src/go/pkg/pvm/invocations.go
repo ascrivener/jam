@@ -206,7 +206,7 @@ type OperandTuple struct { // O
 	SegmentRoot           [32]byte                  // e
 	AuthorizerHash        [32]byte                  // a
 	WorkResultPayloadHash [32]byte                  // y
-	GasLimit              types.GenericGasValue     // g
+	GasLimit              types.GenericNum          // g
 	ExecutionExitReason   types.ExecutionExitReason // l
 	WorkReportOutput      []byte                    // t
 }

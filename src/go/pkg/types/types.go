@@ -167,8 +167,6 @@ type Blob []byte
 
 type GenericNum uint64
 
-type GenericGasValue uint64
-
 type Register uint64
 
 const MaxRegister Register = (1 << 64) - 1

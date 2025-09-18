@@ -63,6 +63,10 @@ type CoreBitMask struct {
 	bs *BitSequence
 }
 
+func (ba *CoreBitMask) Len() int {
+	return ba.bs.Len()
+}
+
 // BitAt returns the bit at position i (0-indexed).
 // It panics if i is out of range.
 func (ba *CoreBitMask) BitAt(i int) bool {

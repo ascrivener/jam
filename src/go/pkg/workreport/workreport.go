@@ -16,7 +16,7 @@ type WorkReport struct {
 	RefinementContext          workpackage.RefinementContext // c
 	CoreIndex                  types.GenericNum              // c
 	AuthorizerHash             [32]byte                      // a
-	IsAuthorizedGasConsumption types.GenericGasValue         // g
+	IsAuthorizedGasConsumption types.GenericNum              // g
 	Output                     []byte                        // t
 	SegmentRootLookup          map[[32]byte][32]byte         // l
 	WorkDigests                []WorkDigest                  // d
@@ -36,7 +36,7 @@ type WorkDigest struct {
 	PayloadHash                  [32]byte                  // y
 	AccumulateGasLimit           types.GasValue            // g
 	WorkResult                   types.ExecutionExitReason // l
-	ActualRefinementGasUsed      types.GenericGasValue     // u
+	ActualRefinementGasUsed      types.GenericNum          // u
 	NumSegmentsImportedFrom      types.GenericNum          // i
 	NumExtrinsicsUsed            types.GenericNum          // x
 	SizeInOctetsOfExtrinsicsUsed types.GenericNum          // z
