@@ -25,8 +25,8 @@ const FEATURE_FORK = 1 << 1
 type PeerInfo struct {
 	FuzzVersion uint8
 	Features    uint32
-	AppVersion  Version
 	JamVersion  Version
+	AppVersion  Version
 	Name        []byte
 }
 
