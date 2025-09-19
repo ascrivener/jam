@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"jam/pkg/constants"
+	"jam/pkg/errors"
 	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
@@ -17,7 +18,7 @@ type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 func (s *ServiceAccounts) IsNewPreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
 	serviceAccount, exists := (*s)[serviceIndex]
 	if !exists {
-		return false, fmt.Errorf("service account %d does not exist", serviceIndex)
+		return false, errors.ProtocolErrorf("service account %d does not exist", serviceIndex)
 	}
 	_, exists, err := serviceAccount.GetPreimageForHash(batch, hash)
 	if err != nil {
