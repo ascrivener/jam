@@ -214,6 +214,8 @@ func decodeResponseMessage(data []byte) (fuzzinterface.ResponseMessage, error) {
 			return fuzzinterface.ResponseMessage{}, err
 		}
 		msg.StateRoot = &stateRoot
+	case fuzzinterface.ResponseMessageTypeError:
+		msg.Error = &data
 	default:
 		return fuzzinterface.ResponseMessage{}, fmt.Errorf("unknown message type: %d", msgType)
 	}
@@ -425,9 +427,6 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		if !strings.Contains(testDir, "1757406441") {
-			continue
-		}
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -437,6 +436,26 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 // testStateTransitions tests state transitions against test vectors
 func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
+	peerInfo := fuzzinterface.PeerInfo{
+		FuzzVersion: 0,
+		Features:    0,
+		JamVersion: fuzzinterface.Version{
+			Major: 0,
+			Minor: 0,
+			Patch: 0,
+		},
+		AppVersion: fuzzinterface.Version{
+			Major: 0,
+			Minor: 0,
+			Patch: 0,
+		},
+		Name: []byte{},
+	}
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{PeerInfo: &peerInfo})
+	if err != nil {
+		t.Fatalf("Failed to send PeerInfo message: %v", err)
+	}
+
 	// Get all .bin files from the directory (excluding report.bin)
 	binFiles, err := filepath.Glob(filepath.Join(vectorsDir, "*.bin"))
 	if err != nil {
@@ -471,7 +490,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 
 	t.Logf("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: warpVector.Block.Header, State: warpVector.PostState.State}})
+	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: warpVector.Block.Header, State: warpVector.PostState.State}})
 	if err != nil {
 		t.Fatalf("Failed to send Initialize message: %v", err)
 	}

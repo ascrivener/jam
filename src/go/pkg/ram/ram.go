@@ -2,6 +2,7 @@ package ram
 
 import (
 	"fmt"
+	"sync"
 
 	"jam/pkg/constants"
 )
@@ -63,19 +64,48 @@ type RAM struct {
 	access                   [NumRamPages]RamAccess // Page number -> access rights
 	BeginningOfHeap          *RamIndex              // nil if no heap
 	minMemoryAccessException *RamIndex              // Track the minimum index that caused an access exception
+	usedPages                map[uint32]struct{}    // Track which pages were allocated/modified (for fast reset)
+}
+
+// Global pool for RAM objects to avoid repeated large allocations
+var ramPool = sync.Pool{
+	New: func() interface{} {
+		return &RAM{
+			pages:                    [NumRamPages]*[]byte{},
+			access:                   [NumRamPages]RamAccess{},
+			minMemoryAccessException: nil,
+			usedPages:                make(map[uint32]struct{}),
+		}
+	},
 }
 
 //
 // RAM Creation & Initialization
 //
 
-// NewEmptyRAM creates an empty RAM with rollback log initialized
 func NewEmptyRAM() *RAM {
-	return &RAM{
-		pages:                    [NumRamPages]*[]byte{},
-		access:                   [NumRamPages]RamAccess{},
-		minMemoryAccessException: nil,
+	ram := ramPool.Get().(*RAM)
+
+	ram.resetToEmpty()
+
+	return ram
+}
+
+func (r *RAM) resetToEmpty() {
+	for pageNum := range r.usedPages {
+		r.pages[pageNum] = nil
+		r.access[pageNum] = Inaccessible
 	}
+
+	r.usedPages = make(map[uint32]struct{})
+
+	r.BeginningOfHeap = nil
+	r.minMemoryAccessException = nil
+}
+
+// trackUsedPage adds a page to the used pages map
+func (r *RAM) trackUsedPage(pageNum uint32) {
+	r.usedPages[pageNum] = struct{}{}
 }
 
 // NewRAM creates a new RAM with the given data segments and access controls
@@ -125,6 +155,7 @@ func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
 	if r.pages[pageNum] == nil {
 		page := make([]byte, PageSize)
 		r.pages[pageNum] = &page
+		r.trackUsedPage(pageNum)
 	}
 	return *r.pages[pageNum]
 }
@@ -357,6 +388,7 @@ func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
 		panic(fmt.Sprintf("Attempted to set permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
 	r.access[pageNum] = access
+	r.trackUsedPage(pageNum)
 }
 
 // ZeroPage removes a page from the pages map, effectively zeroing it out
@@ -435,4 +467,9 @@ func (r *RAM) ClearMemoryAccessExceptions() {
 // GetMinMemoryAccessException returns the minimum memory access exception
 func (r *RAM) GetMinMemoryAccessException() *RamIndex {
 	return r.minMemoryAccessException
+}
+
+// ReturnToPool returns a RAM instance to the pool for reuse
+func (r *RAM) ReturnToPool() {
+	ramPool.Put(r)
 }
