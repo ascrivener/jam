@@ -25,7 +25,7 @@ type PVM struct {
 	InstructionCounter types.Register
 	DynamicJumpTable   []types.Register
 	State              *State
-	InstructionSlice   []*ParsedInstruction // For direct instruction lookup
+	InstructionSlice   []ParsedInstruction
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -174,9 +174,8 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence) []*ParsedInstruction {
-	// Create sparse slice sized to instruction length
-	instructionSlice := make([]*ParsedInstruction, len(instructions))
+func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence) []ParsedInstruction {
+	instructionSlice := make([]ParsedInstruction, len(instructions))
 
 	currentOpcode := instructions[0]
 	currentOpcodePC := 0
@@ -196,7 +195,7 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 
 		ra, rb, rd, vx, vy := operandExtractor(instructions, currentOpcodePC, skipLength)
 
-		instruction := &ParsedInstruction{
+		instructionSlice[currentOpcodePC] = ParsedInstruction{
 			PC:                    types.Register(currentOpcodePC),
 			NextPC:                types.Register(nextPC),
 			Opcode:                currentOpcode,
@@ -209,7 +208,6 @@ func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence
 			Vx:                    vx,
 			Vy:                    vy,
 		}
-		instructionSlice[currentOpcodePC] = instruction
 
 		// Update for next iteration
 		previousWasTerminating = terminationOpcodes[currentOpcode]
@@ -292,7 +290,7 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 func (pvm *PVM) Run() ExitReason {
 	for {
 		ic := pvm.InstructionCounter
-		if int(ic) >= pvm.InstructionsLength || pvm.InstructionSlice[ic] == nil {
+		if int(ic) >= pvm.InstructionsLength || pvm.InstructionSlice[ic].Handler == nil {
 			ic = 0
 		}
 		instruction := pvm.InstructionSlice[ic]
@@ -314,7 +312,7 @@ func (pvm *PVM) Run() ExitReason {
 	}
 }
 
-func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
+func (pvm *PVM) executeInstruction(instruction ParsedInstruction) ExitReason {
 	// Clear memory access exceptions for each instruction
 	pvm.State.RAM.ClearMemoryAccessExceptions()
 

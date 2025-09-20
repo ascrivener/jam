@@ -16,7 +16,7 @@ type State struct {
 	RAM       *ram.RAM
 }
 
-type InstructionHandler func(pvm *PVM, instruction *ParsedInstruction) (ExitReason, types.Register)
+type InstructionHandler func(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register)
 
 type OperandExtractor func(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register)
 
@@ -83,13 +83,13 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	targetInstruction := pvm.InstructionSlice[b]
-	if targetInstruction == nil || !targetInstruction.IsBeginningBasicBlock {
+	if !targetInstruction.IsBeginningBasicBlock {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
 }
 
-func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, parsedInstructions []*ParsedInstruction) (ExitReason, types.Register) {
+func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, parsedInstructions []ParsedInstruction) (ExitReason, types.Register) {
 	if fileLogger != nil {
 		fileLogger.Printf("djump: a=%d, defaultNextPC=%d, dynamicJumpTableLen=%d", a, defaultNextInstructionCounter, len(dynamicJumpTable))
 	}
@@ -124,7 +124,7 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 
 	targetInstruction := parsedInstructions[target]
 
-	if targetInstruction == nil || !targetInstruction.IsBeginningBasicBlock {
+	if !targetInstruction.IsBeginningBasicBlock {
 		if fileLogger != nil {
 			fileLogger.Printf("djump: Target %d is not a valid basic block start", target)
 		}

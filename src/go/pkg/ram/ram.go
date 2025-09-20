@@ -2,7 +2,6 @@ package ram
 
 import (
 	"fmt"
-	"sync"
 
 	"jam/pkg/constants"
 )
@@ -67,27 +66,64 @@ type RAM struct {
 	usedPages                map[uint32]struct{}    // Track which pages were allocated/modified (for fast reset)
 }
 
-// Global pool for RAM objects to avoid repeated large allocations
-var ramPool = sync.Pool{
-	New: func() interface{} {
+// Custom RAM pool with fixed capacity that GC cannot clear
+type FixedRAMPool struct {
+	pool chan *RAM
+	size int
+}
+
+func NewFixedRAMPool(size int) *FixedRAMPool {
+	p := &FixedRAMPool{
+		pool: make(chan *RAM, size),
+		size: size,
+	}
+
+	// Pre-fill the pool with RAM objects
+	for i := 0; i < size; i++ {
+		ram := &RAM{
+			pages:                    [NumRamPages]*[]byte{},
+			access:                   [NumRamPages]RamAccess{},
+			minMemoryAccessException: nil,
+			usedPages:                make(map[uint32]struct{}),
+		}
+		p.pool <- ram
+	}
+
+	return p
+}
+
+func (p *FixedRAMPool) Get() *RAM {
+	select {
+	case ram := <-p.pool:
+		return ram
+	default:
+		// Pool exhausted - create new one (this should be rare)
+		fmt.Printf("POOL EXHAUSTED - creating new RAM (pool size: %d)\n", p.size)
 		return &RAM{
 			pages:                    [NumRamPages]*[]byte{},
 			access:                   [NumRamPages]RamAccess{},
 			minMemoryAccessException: nil,
 			usedPages:                make(map[uint32]struct{}),
 		}
-	},
+	}
 }
 
-//
-// RAM Creation & Initialization
-//
+func (p *FixedRAMPool) Put(ram *RAM) {
+	select {
+	case p.pool <- ram:
+		// Successfully returned to pool
+	default:
+		// Pool full - this means we have more objects than pool size
+		// Just let this one be GC'd (should be rare)
+	}
+}
+
+// Replace sync.Pool with fixed pool
+var fixedRAMPool = NewFixedRAMPool(4)
 
 func NewEmptyRAM() *RAM {
-	ram := ramPool.Get().(*RAM)
-
+	ram := fixedRAMPool.Get()
 	ram.resetToEmpty()
-
 	return ram
 }
 
@@ -469,7 +505,6 @@ func (r *RAM) GetMinMemoryAccessException() *RamIndex {
 	return r.minMemoryAccessException
 }
 
-// ReturnToPool returns a RAM instance to the pool for reuse
 func (r *RAM) ReturnToPool() {
-	ramPool.Put(r)
+	fixedRAMPool.Put(r)
 }
