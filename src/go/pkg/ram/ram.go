@@ -59,11 +59,11 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	pages                    [NumRamPages][]byte    // Page number -> page content (nil = unallocated)
-	access                   [NumRamPages]RamAccess // Page number -> access rights
-	BeginningOfHeap          *RamIndex              // nil if no heap
-	minMemoryAccessException *RamIndex              // Track the minimum index that caused an access exception
-	usedPages                map[uint32]struct{}    // Track which pages were allocated/modified (for fast reset)
+	pages                    [NumRamPages]*[PageSize]byte // Page number -> page content (nil = unallocated)
+	access                   [NumRamPages]RamAccess       // Page number -> access rights
+	BeginningOfHeap          *RamIndex                    // nil if no heap
+	minMemoryAccessException *RamIndex                    // Track the minimum index that caused an access exception
+	usedPages                map[uint32]struct{}          // Track which pages were allocated/modified (for fast reset)
 }
 
 // Channel-based RAM pool for consistency with page pool
@@ -81,7 +81,7 @@ func NewRAMPool(size int) *RAMPool {
 	// Pre-fill the pool with RAM objects
 	for i := 0; i < size; i++ {
 		ram := &RAM{
-			pages:                    [NumRamPages][]byte{},
+			pages:                    [NumRamPages]*[PageSize]byte{},
 			access:                   [NumRamPages]RamAccess{},
 			minMemoryAccessException: nil,
 			usedPages:                make(map[uint32]struct{}),
@@ -99,7 +99,7 @@ func (p *RAMPool) Get() *RAM {
 	default:
 		// Pool exhausted, create new RAM object
 		return &RAM{
-			pages:                    [NumRamPages][]byte{},
+			pages:                    [NumRamPages]*[PageSize]byte{},
 			access:                   [NumRamPages]RamAccess{},
 			minMemoryAccessException: nil,
 			usedPages:                make(map[uint32]struct{}),
@@ -131,7 +131,7 @@ func (r *RAM) resetToEmpty() {
 		r.access[pageNum] = Inaccessible
 	}
 
-	r.usedPages = make(map[uint32]struct{})
+	clear(r.usedPages)
 
 	r.BeginningOfHeap = nil
 	r.minMemoryAccessException = nil
@@ -145,7 +145,7 @@ func (r *RAM) trackUsedPage(pageNum uint32) {
 func (r *RAM) returnPageToPool(pageNum uint32) {
 	if r.pages[pageNum] != nil {
 		page := r.pages[pageNum]
-		// clear(page)
+		clear(page[:])
 		putPageToPool(page)
 		r.pages[pageNum] = nil
 	}
@@ -189,7 +189,7 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 
 // getOrCreatePage returns the page at the given page number for write operations
 // Creates the page if it doesn't exist since we need to mutate it
-func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
+func (r *RAM) getOrCreatePage(pageNum uint32) *[PageSize]byte {
 	// Bounds check
 	if pageNum >= NumRamPages {
 		panic(fmt.Sprintf("Attempted to create page at invalid index %d (max is %d)", pageNum, NumRamPages-1))
@@ -197,8 +197,6 @@ func (r *RAM) getOrCreatePage(pageNum uint32) []byte {
 
 	if r.pages[pageNum] == nil {
 		page := getPageFromPool()
-
-		clear(page)
 		r.pages[pageNum] = page
 		r.trackUsedPage(pageNum)
 	}
@@ -269,11 +267,11 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAcc
 	isSinglePage, pageNum, pageOffset := r.isSinglePageAccess(index, length, mode)
 
 	if isSinglePage {
-		// Fast path: single page access - return direct slice
 		page := r.getOrCreatePage(pageNum)
-		return page[pageOffset : pageOffset+length]
+		result := make([]byte, length)
+		copy(result, page[pageOffset:pageOffset+length])
+		return result
 	} else {
-		// Slow path: multi-page access
 		slices := r.pageIterator(index, length, mode)
 
 		// Combine into contiguous buffer
@@ -437,28 +435,28 @@ func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
 }
 
 // Channel-based page pool for guaranteed memory isolation
-var pagePool = make(chan []byte, 100) // Buffered channel for 1000 pages
+var pagePool = make(chan *[PageSize]byte, 100) // Buffered channel for pages
 
 func init() {
 	// Pre-fill the pool with unique pages
-	for i := 0; i < cap(pagePool); i++ {
-		pagePool <- make([]byte, PageSize)
+	for range cap(pagePool) {
+		pagePool <- &[PageSize]byte{}
 	}
 }
 
 // getPageFromPool gets a page from the channel pool or allocates new if pool is empty
-func getPageFromPool() []byte {
+func getPageFromPool() *[PageSize]byte {
 	select {
 	case page := <-pagePool:
 		return page
 	default:
 		// Pool exhausted, allocate new page
-		return make([]byte, PageSize)
+		return &[PageSize]byte{}
 	}
 }
 
 // putPageToPool returns a page to the channel pool or lets GC handle if pool is full
-func putPageToPool(page []byte) {
+func putPageToPool(page *[PageSize]byte) {
 	select {
 	case pagePool <- page:
 		// Successfully returned to pool

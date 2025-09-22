@@ -248,7 +248,7 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
 		batch,
-		&priorState,
+		priorState,
 		posteriorMostRecentBlockTimeslot,
 		accumulatableWorkReports,
 		queuedExecutionWorkReports,
@@ -296,25 +296,25 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 		return fmt.Errorf("failed to compute safrole basic state: %w", safroleRes.err)
 	}
 
-	postState := state.State{
-		AuthorizersPool:            authorizersPool,
-		RecentActivity:             posteriorRecentActivity,
-		SafroleBasicState:          safroleRes.state,
-		ServiceAccounts:            postAccumulationIntermediateServiceAccounts,
-		EntropyAccumulator:         posteriorEntropyAccumulator,
-		ValidatorKeysetsStaging:    accumulationStateComponents.UpcomingValidatorKeysets,
-		ValidatorKeysetsActive:     posteriorValidatorKeysetsActive,
-		ValidatorKeysetsPriorEpoch: posteriorValidatorKeysetsPriorEpoch,
-		PendingReports:             posteriorPendingReports,
-		MostRecentBlockTimeslot:    posteriorMostRecentBlockTimeslot,
-		AuthorizerQueue:            accumulationStateComponents.AuthorizersQueue,
-		PrivilegedServices:         accumulationStateComponents.PrivilegedServices,
-		Disputes:                   posteriorDisputes,
-		ValidatorStatistics:        validatorStatistics,
-		AccumulationQueue:          posteriorAccumulationQueue,
-		AccumulationHistory:        posteriorAccumulationHistory,
-		AccumulationOutputLog:      accumulationOutputSequence,
-	}
+	// Create post-state using pointer to avoid massive 50-200MB allocation
+	postState := &state.State{}
+	postState.AuthorizersPool = authorizersPool
+	postState.RecentActivity = posteriorRecentActivity
+	postState.SafroleBasicState = safroleRes.state
+	postState.ServiceAccounts = postAccumulationIntermediateServiceAccounts
+	postState.EntropyAccumulator = posteriorEntropyAccumulator
+	postState.ValidatorKeysetsStaging = accumulationStateComponents.UpcomingValidatorKeysets
+	postState.ValidatorKeysetsActive = posteriorValidatorKeysetsActive
+	postState.ValidatorKeysetsPriorEpoch = posteriorValidatorKeysetsPriorEpoch
+	postState.PendingReports = posteriorPendingReports
+	postState.MostRecentBlockTimeslot = posteriorMostRecentBlockTimeslot
+	postState.AuthorizerQueue = accumulationStateComponents.AuthorizersQueue
+	postState.PrivilegedServices = accumulationStateComponents.PrivilegedServices
+	postState.Disputes = posteriorDisputes
+	postState.ValidatorStatistics = validatorStatistics
+	postState.AccumulationQueue = posteriorAccumulationQueue
+	postState.AccumulationHistory = posteriorAccumulationHistory
+	postState.AccumulationOutputLog = accumulationOutputSequence
 
 	// Post-transition validation
 	if err := curBlock.VerifyPostStateTransition(priorState, postState); err != nil {

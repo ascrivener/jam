@@ -69,7 +69,7 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	}
 }
 
-func GetState(batch *pebble.Batch) (State, error) {
+func GetState(batch *pebble.Batch) (*State, error) {
 	// Create a data source that reads from repository
 	dataSource := &repositoryDataSource{batch: batch}
 	return getStateFromDataSource(dataSource)
@@ -77,7 +77,7 @@ func GetState(batch *pebble.Batch) (State, error) {
 
 // GetStateFromKVs reconstructs a State object from a merklizer.State (list of key-value pairs)
 // This is useful for testing and reconstructing states from test vectors
-func GetStateFromKVs(kvs merklizer.State) (State, error) {
+func GetStateFromKVs(kvs merklizer.State) (*State, error) {
 	// Create a data source that reads from KV map
 	dataSource := &kvDataSource{kvMap: createKVMap(kvs)}
 	return getStateFromDataSource(dataSource)
@@ -273,7 +273,7 @@ func (s *State) loadServiceAccounts(ds dataSource) error {
 	return nil
 }
 
-func getStateFromDataSource(ds dataSource) (State, error) {
+func getStateFromDataSource(ds dataSource) (*State, error) {
 	state := State{
 		ServiceAccounts: make(map[types.ServiceIndex]*serviceaccount.ServiceAccount),
 	}
@@ -306,7 +306,7 @@ func getStateFromDataSource(ds dataSource) (State, error) {
 	for _, component := range components {
 		value, err := ds.getValue(component.key)
 		if err != nil {
-			return State{}, err
+			return nil, err
 		}
 
 		// Skip missing components (fine for test vectors)
@@ -315,16 +315,16 @@ func getStateFromDataSource(ds dataSource) (State, error) {
 		}
 
 		if err := serializer.Deserialize(value, component.target); err != nil {
-			return State{}, fmt.Errorf("failed to deserialize component %s: %w", component.name, err)
+			return nil, fmt.Errorf("failed to deserialize component %s: %w", component.name, err)
 		}
 	}
 
 	// Load service accounts using the appropriate method
 	if err := state.loadServiceAccounts(ds); err != nil {
-		return State{}, err
+		return nil, err
 	}
 
-	return state, nil
+	return &state, nil
 }
 
 func createKVMap(kvs merklizer.State) map[[31]byte][]byte {
