@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"reflect"
 	"sort"
+	"unsafe"
 
 	"jam/pkg/bitsequence"
 	"jam/pkg/constants"
@@ -32,11 +33,18 @@ var (
 	emptyStructValue = reflect.ValueOf(struct{}{})
 )
 
-// Serialize accepts an arbitrary value and returns its []byte representation.
+// Serialize accepts an arbitrary value or pointer and returns its []byte representation.
 // For struct fields it recurses; if a field is a byte array/slice, it returns the raw bytes.
 func Serialize(v any) []byte {
-	var buf bytes.Buffer
-	serializeValue(reflect.ValueOf(v), &buf)
+	val := reflect.ValueOf(v)
+
+	if val.Kind() == reflect.Ptr && !val.IsNil() {
+		val = val.Elem()
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, 4096))
+	serializeValue(val, buf)
+
 	return buf.Bytes()
 }
 
@@ -73,10 +81,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 	switch v.Kind() {
 	case reflect.Ptr:
 		if v.IsNil() {
-			buf.WriteByte(0)
+			buf.Write([]byte{0})
 			return
 		}
-		buf.WriteByte(1)
+		buf.Write([]byte{1})
 		serializeValue(v.Elem(), buf)
 		return
 	case reflect.Struct:
@@ -84,10 +92,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		case executionExitReasonType:
 			er := v.Interface().(types.ExecutionExitReason)
 			if !er.IsError() {
-				buf.WriteByte(0)
+				buf.Write([]byte{0})
 				serializeValue(reflect.ValueOf(*er.Blob), buf)
 			} else {
-				buf.WriteByte(byte(*er.ExecutionError))
+				buf.Write([]byte{byte(*er.ExecutionError)})
 			}
 			return
 		case workItemType:
@@ -95,10 +103,10 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		case sealingKeySequenceType:
 			sks := v.Interface().(sealingkeysequence.SealingKeySequence)
 			if sks.IsSealKeyTickets() {
-				buf.WriteByte(0)
+				buf.Write([]byte{0})
 				serializeValue(reflect.ValueOf(*sks.SealKeyTickets), buf)
 			} else {
-				buf.WriteByte(1)
+				buf.Write([]byte{1})
 				serializeValue(reflect.ValueOf(*sks.BandersnatchKeys), buf)
 			}
 			return
@@ -130,7 +138,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		} else {
 			x = uint64(signedVal)
 		}
-		EncodeLittleEndianToBuf(buf, l, x)
+		buf.Write(EncodeLittleEndian(l, x))
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
@@ -140,7 +148,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		}
 		l := int(typ.Size())
 		x := v.Uint()
-		EncodeLittleEndianToBuf(buf, l, x)
+		buf.Write(EncodeLittleEndian(l, x))
 		return
 
 	default:
@@ -282,9 +290,6 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 	// Handle integer types by reading their little-endian representation
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		l := int(vType.Size()) // Use cached type, number of octets to decode
-		if buf.Len() < l {
-			return fmt.Errorf("not enough data to read %d-byte integer", l)
-		}
 
 		// Use a fixed-size buffer to avoid allocation for small integers
 		var bytes [8]byte
@@ -309,9 +314,6 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 			return nil
 		}
 		l := int(vType.Size()) // Use cached type
-		if buf.Len() < l {
-			return fmt.Errorf("not enough data to read %d-byte unsigned integer", l)
-		}
 
 		// Use a fixed-size buffer to avoid allocation for small integers
 		var bytes [8]byte
@@ -458,10 +460,24 @@ func serializeSlice(v reflect.Value, buf *bytes.Buffer) {
 		buf.Write(EncodeLength(v))
 	}
 
-	// Fast path for byte slices - write bulk data instead of element-by-element
-	if vType.Elem().Kind() == reflect.Uint8 && vKind == reflect.Slice {
-		data := v.Bytes()
-		buf.Write(data)
+	// Fast path for byte slices/arrays - write bulk data instead of element-by-element
+	if vType.Elem().Kind() == reflect.Uint8 {
+		if vKind == reflect.Slice {
+			// For slices, use v.Bytes() which is fast
+			data := v.Bytes()
+			buf.Write(data)
+		} else {
+			// Fast path for arrays (any size) - only if addressable
+			if v.CanAddr() {
+				data := unsafe.Slice((*byte)(unsafe.Pointer(v.UnsafeAddr())), vLen)
+				buf.Write(data)
+			} else {
+				// Fallback: copy to a slice and use v.Bytes()
+				slice := reflect.MakeSlice(reflect.SliceOf(vType.Elem()), vLen, vLen)
+				reflect.Copy(slice, v)
+				buf.Write(slice.Bytes())
+			}
+		}
 		return
 	}
 
@@ -495,13 +511,31 @@ func deserializeSlice(v reflect.Value, buf *bytes.Buffer) error {
 		v.Set(reflect.MakeSlice(vType, length, length))
 	}
 
-	// Fast path for byte slices - read bulk data instead of element-by-element
-	if vType.Elem().Kind() == reflect.Uint8 && vKind == reflect.Slice {
-		data := make([]byte, length)
-		if _, err := buf.Read(data); err != nil {
-			return fmt.Errorf("failed to read byte slice data: %w", err)
+	// Fast path for byte slices and arrays - read bulk data instead of element-by-element
+	if vType.Elem().Kind() == reflect.Uint8 {
+		if vKind == reflect.Slice {
+			v.Set(reflect.MakeSlice(vType, length, length))
+			sliceBytes := v.Bytes()
+			if _, err := buf.Read(sliceBytes); err != nil {
+				return fmt.Errorf("failed to read byte slice data: %w", err)
+			}
+			return nil
+		} else if vKind == reflect.Array && v.CanAddr() {
+			data := unsafe.Slice((*byte)(unsafe.Pointer(v.UnsafeAddr())), length)
+			if _, err := buf.Read(data); err != nil {
+				return fmt.Errorf("failed to read byte array data: %w", err)
+			}
+			return nil
 		}
-		v.SetBytes(data)
+
+		// Fallback: element-by-element for non-addressable arrays
+		var singleByte [1]byte
+		for i := 0; i < length; i++ {
+			if _, err := buf.Read(singleByte[:]); err != nil {
+				return fmt.Errorf("failed to read byte data at index %d: %w", i, err)
+			}
+			v.Index(i).SetUint(uint64(singleByte[0]))
+		}
 		return nil
 	}
 
@@ -586,36 +620,6 @@ func EncodeLittleEndian(octets int, x uint64) []byte {
 			x >>= 8
 		}
 		return result
-	}
-}
-
-func EncodeLittleEndianToBuf(buf *bytes.Buffer, octets int, x uint64) {
-	switch octets {
-	case 1:
-		buf.WriteByte(byte(x))
-	case 2:
-		buf.WriteByte(byte(x))
-		buf.WriteByte(byte(x >> 8))
-	case 4:
-		buf.WriteByte(byte(x))
-		buf.WriteByte(byte(x >> 8))
-		buf.WriteByte(byte(x >> 16))
-		buf.WriteByte(byte(x >> 24))
-	case 8:
-		buf.WriteByte(byte(x))
-		buf.WriteByte(byte(x >> 8))
-		buf.WriteByte(byte(x >> 16))
-		buf.WriteByte(byte(x >> 24))
-		buf.WriteByte(byte(x >> 32))
-		buf.WriteByte(byte(x >> 40))
-		buf.WriteByte(byte(x >> 48))
-		buf.WriteByte(byte(x >> 56))
-	default:
-		// Fallback for unusual sizes - write bytes directly to avoid allocation
-		for i := 0; i < octets; i++ {
-			buf.WriteByte(byte(x))
-			x >>= 8
-		}
 	}
 }
 
@@ -825,7 +829,7 @@ type ChainParameters struct {
 }
 
 func SerializeChainParameters() []byte {
-	return Serialize(ChainParameters{
+	return Serialize(&ChainParameters{
 		ServiceMinimumBalancePerItem:                      constants.ServiceMinimumBalancePerItem,
 		ServiceMinimumBalancePerOctet:                     constants.ServiceMinimumBalancePerOctet,
 		ServiceMinimumBalance:                             constants.ServiceMinimumBalance,

@@ -252,7 +252,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState *state.State) error {
 			}
 		}
 		// (11.13)
-		messageHash := blake2b.Sum256(append(b.Header.ParentHash[:], serializer.Serialize(assurance.CoreAvailabilityContributions)...))
+		messageHash := blake2b.Sum256(append(b.Header.ParentHash[:], serializer.Serialize(&assurance.CoreAvailabilityContributions)...))
 		message := append([]byte("jam_available"), messageHash[:]...)
 		key := priorState.ValidatorKeysetsActive[assurance.ValidatorIndex].ToEd25519PublicKey()
 		if !ed25519.Verify(key[:], message, assurance.Signature[:]) {
@@ -456,7 +456,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 			return errors.ProtocolErrorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
 		}
 
-		verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
+		verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
 		if err != nil {
 			return errors.WrapProtocolError(err, "failed to verify block seal")
 		}
@@ -472,7 +472,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 			return errors.ProtocolErrorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
 		}
 
-		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(b.Header.UnsignedHeader), b.Header.BlockSeal)
+		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
 		if err != nil {
 			return errors.WrapProtocolError(err, "failed to verify block seal")
 		}
@@ -632,7 +632,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 	// (11.26)
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		guarantorAssignments := guarantee.GuarantorAssignments(postState.EntropyAccumulator, postState.MostRecentBlockTimeslot, postState.ValidatorKeysetsActive, postState.ValidatorKeysetsPriorEpoch, postState.Disputes)
-		hashedWorkReport := blake2b.Sum256(serializer.Serialize(guarantee.WorkReport))
+		hashedWorkReport := blake2b.Sum256(serializer.Serialize(&guarantee.WorkReport))
 		for _, credential := range guarantee.Credentials {
 			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
 			if !ed25519.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
@@ -727,8 +727,8 @@ func FindLCA(batch *pebble.Batch, block1, block2 *BlockWithInfo) (*BlockWithInfo
 	}
 
 	// If blocks are the same, they are their own LCA
-	block1Hash := blake2b.Sum256(serializer.Serialize(block1.Block.Header))
-	block2Hash := blake2b.Sum256(serializer.Serialize(block2.Block.Header))
+	block1Hash := blake2b.Sum256(serializer.Serialize(&block1.Block.Header))
+	block2Hash := blake2b.Sum256(serializer.Serialize(&block2.Block.Header))
 	if block1Hash == block2Hash {
 		return block1, nil
 	}
@@ -758,8 +758,8 @@ func FindLCA(batch *pebble.Batch, block1, block2 *BlockWithInfo) (*BlockWithInfo
 
 	for {
 		// Check if we found the LCA
-		current1Hash := blake2b.Sum256(serializer.Serialize(current1.Block.Header))
-		current2Hash := blake2b.Sum256(serializer.Serialize(current2.Block.Header))
+		current1Hash := blake2b.Sum256(serializer.Serialize(&current1.Block.Header))
+		current2Hash := blake2b.Sum256(serializer.Serialize(&current2.Block.Header))
 		if current1Hash == current2Hash {
 			return current1, nil
 		}
@@ -791,14 +791,14 @@ func (block *BlockWithInfo) GetPathFromAncestor(batch *pebble.Batch, ancestor *B
 	}
 
 	// If LCA and target are the same, return empty path
-	ancestorHash := blake2b.Sum256(serializer.Serialize(ancestor.Block.Header))
+	ancestorHash := blake2b.Sum256(serializer.Serialize(&ancestor.Block.Header))
 	// Build path from target back to LCA
 	var path []*BlockWithInfo
 	current := block
 
 	for {
 		// Check if we've reached ancestor
-		if blake2b.Sum256(serializer.Serialize(current.Block.Header)) == ancestorHash {
+		if blake2b.Sum256(serializer.Serialize(&current.Block.Header)) == ancestorHash {
 			// Found ancestor
 			break
 		}
@@ -847,10 +847,10 @@ func ReplayPath(globalBatch *pebble.Batch, path []*BlockWithInfo) error {
 	return nil
 }
 
-func (b BlockWithInfo) Set(batch *pebble.Batch) error {
+func (b *BlockWithInfo) Set(batch *pebble.Batch) error {
 
 	// Calculate the header hash
-	headerBytes := serializer.Serialize(b.Block.Header)
+	headerBytes := serializer.Serialize(&b.Block.Header)
 	headerHash := blake2b.Sum256(headerBytes)
 
 	// Create a key with a prefix
@@ -1109,14 +1109,14 @@ func (block *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock
 	}
 
 	// Calculate target hash for comparison
-	targetHash := blake2b.Sum256(serializer.Serialize(targetBlock.Block.Header))
+	targetHash := blake2b.Sum256(serializer.Serialize(&targetBlock.Block.Header))
 
 	// Walk backwards from current block to target block, applying reverse diffs
 	currentBlock := block
 
 	for {
 		// Check if we've reached the target block
-		currentHash := blake2b.Sum256(serializer.Serialize(currentBlock.Block.Header))
+		currentHash := blake2b.Sum256(serializer.Serialize(&currentBlock.Block.Header))
 		if currentHash == targetHash {
 			break
 		}

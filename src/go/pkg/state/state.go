@@ -397,34 +397,33 @@ func (state *State) processServiceAccount(serviceIndex uint64, value []byte) err
 
 func (state *State) Set(batch *pebble.Batch) error {
 	// Store static state components
-	components := []struct {
-		key    [31]byte
-		source interface{}
+	componentData := []struct {
+		key  [31]byte
+		data []byte
 	}{
-		{staterepository.MakeComponentKey(1), state.AuthorizersPool},
-		{staterepository.MakeComponentKey(2), state.AuthorizerQueue},
-		{staterepository.MakeComponentKey(3), state.RecentActivity},
-		{staterepository.MakeComponentKey(4), state.SafroleBasicState},
-		{staterepository.MakeComponentKey(5), state.Disputes},
-		{staterepository.MakeComponentKey(6), state.EntropyAccumulator},
-		{staterepository.MakeComponentKey(7), state.ValidatorKeysetsStaging},
-		{staterepository.MakeComponentKey(8), state.ValidatorKeysetsActive},
-		{staterepository.MakeComponentKey(9), state.ValidatorKeysetsPriorEpoch},
-		{staterepository.MakeComponentKey(10), state.PendingReports},
-		{staterepository.MakeComponentKey(11), state.MostRecentBlockTimeslot},
-		{staterepository.MakeComponentKey(12), state.PrivilegedServices},
-		{staterepository.MakeComponentKey(13), state.ValidatorStatistics},
-		{staterepository.MakeComponentKey(14), state.AccumulationQueue},
-		{staterepository.MakeComponentKey(15), state.AccumulationHistory},
-		{staterepository.MakeComponentKey(16), state.AccumulationOutputLog},
+		{staterepository.MakeComponentKey(1), serializer.Serialize(&state.AuthorizersPool)},
+		{staterepository.MakeComponentKey(2), serializer.Serialize(&state.AuthorizerQueue)},
+		{staterepository.MakeComponentKey(3), serializer.Serialize(&state.RecentActivity)},
+		{staterepository.MakeComponentKey(4), serializer.Serialize(&state.SafroleBasicState)},
+		{staterepository.MakeComponentKey(5), serializer.Serialize(&state.Disputes)},
+		{staterepository.MakeComponentKey(6), serializer.Serialize(&state.EntropyAccumulator)},
+		{staterepository.MakeComponentKey(7), serializer.Serialize(&state.ValidatorKeysetsStaging)},
+		{staterepository.MakeComponentKey(8), serializer.Serialize(&state.ValidatorKeysetsActive)},
+		{staterepository.MakeComponentKey(9), serializer.Serialize(&state.ValidatorKeysetsPriorEpoch)},
+		{staterepository.MakeComponentKey(10), serializer.Serialize(&state.PendingReports)},
+		{staterepository.MakeComponentKey(11), serializer.Serialize(&state.MostRecentBlockTimeslot)},
+		{staterepository.MakeComponentKey(12), serializer.Serialize(&state.PrivilegedServices)},
+		{staterepository.MakeComponentKey(13), serializer.Serialize(&state.ValidatorStatistics)},
+		{staterepository.MakeComponentKey(14), serializer.Serialize(&state.AccumulationQueue)},
+		{staterepository.MakeComponentKey(15), serializer.Serialize(&state.AccumulationHistory)},
+		{staterepository.MakeComponentKey(16), serializer.Serialize(&state.AccumulationOutputLog)},
 	}
 
-	// Serialize and store each basic component
-	for _, component := range components {
-		data := serializer.Serialize(component.source)
+	// Store each component
+	for _, component := range componentData {
 		// Add state: prefix to component key
 		prefixedKey := append([]byte("state:"), component.key[:]...)
-		if err := batch.Set(prefixedKey, data, nil); err != nil {
+		if err := batch.Set(prefixedKey, component.data, nil); err != nil {
 			return fmt.Errorf("failed to store component: %w", err)
 		}
 	}
@@ -460,7 +459,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 			MostRecentAccumulationTimeslot: account.MostRecentAccumulationTimeslot,
 			ParentServiceIndex:             account.ParentServiceIndex,
 		}
-		data := serializer.Serialize(serviceAccountData)
+		data := serializer.Serialize(&serviceAccountData)
 		if err := batch.Set(prefixedKey, data, nil); err != nil {
 			return fmt.Errorf("failed to store service account %d: %w", serviceIndex, err)
 		}

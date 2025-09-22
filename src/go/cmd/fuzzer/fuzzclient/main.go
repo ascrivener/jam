@@ -152,16 +152,16 @@ func encodeRequestMessage(msg fuzzinterface.RequestMessage) ([]byte, error) {
 
 	switch {
 	case msg.PeerInfo != nil:
-		encodedMessage = serializer.Serialize(*msg.PeerInfo)
+		encodedMessage = serializer.Serialize(msg.PeerInfo)
 		msgType = fuzzinterface.RequestMessageTypePeerInfo
 	case msg.ImportBlock != nil:
-		encodedMessage = serializer.Serialize(*msg.ImportBlock)
+		encodedMessage = serializer.Serialize(msg.ImportBlock)
 		msgType = fuzzinterface.RequestMessageTypeImportBlock
 	case msg.Initialize != nil:
-		encodedMessage = serializer.Serialize(*msg.Initialize)
+		encodedMessage = serializer.Serialize(msg.Initialize)
 		msgType = fuzzinterface.RequestMessageTypeInitialize
 	case msg.GetState != nil:
-		encodedMessage = serializer.Serialize(*msg.GetState)
+		encodedMessage = serializer.Serialize(msg.GetState)
 		msgType = fuzzinterface.RequestMessageTypeGetState
 	default:
 		return nil, fmt.Errorf("unknown message type")
@@ -359,7 +359,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 			failedTests = append(failedTests, fileName)
 			t.Errorf("State root mismatch for %s: expected %x, got %x", fileName, testVector.PostState.StateRoot, *resp.StateRoot)
 
-			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
+			headerHash := sha256.Sum256(serializer.Serialize(&testVector.Block.Header))
 			getState := fuzzinterface.GetState(headerHash)
 			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {
@@ -565,7 +565,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 		if *resp.StateRoot != testVector.PostState.StateRoot {
 			t.Errorf("State root mismatch for %s: %x != %x", testFileName, *resp.StateRoot, testVector.PostState.StateRoot)
-			headerHash := sha256.Sum256(serializer.Serialize(testVector.Block.Header))
+			headerHash := sha256.Sum256(serializer.Serialize(&testVector.Block.Header))
 			getState := fuzzinterface.GetState(headerHash)
 			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {

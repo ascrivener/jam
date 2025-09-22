@@ -19,8 +19,10 @@ int verify_ring_signature(const unsigned char *commitment_ptr, size_t commitment
 */
 import "C"
 import (
+	"crypto/sha256"
 	"errors"
 	"log"
+	"sync"
 	"unsafe"
 
 	"jam/pkg/constants"
@@ -67,7 +69,37 @@ func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]b
 	return out, nil
 }
 
+// Cache for BandersnatchRingRoot results
+type ringRootCache struct {
+	mu    sync.RWMutex
+	cache map[[32]byte]types.BandersnatchRingRoot
+}
+
+var ringCache = &ringRootCache{
+	cache: make(map[[32]byte]types.BandersnatchRingRoot),
+}
+
+// hashPublicKeys creates a hash of the public keys slice for cache key
+func hashPublicKeys(pks []types.BandersnatchPublicKey) [32]byte {
+	hasher := sha256.New()
+	for _, pk := range pks {
+		hasher.Write(pk[:])
+	}
+	return sha256.Sum256(hasher.Sum(nil))
+}
+
 func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchRingRoot {
+	// Create cache key from hash of public keys
+	cacheKey := hashPublicKeys(pks)
+
+	// Check cache first
+	ringCache.mu.RLock()
+	if cached, exists := ringCache.cache[cacheKey]; exists {
+		ringCache.mu.RUnlock()
+		return cached
+	}
+	ringCache.mu.RUnlock()
+
 	var out [144]byte
 
 	// There must be at least one public key.
@@ -83,10 +115,22 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
 	if ret != 0 {
-		panic(errors.New("compute_O failed"))
+		panic(errors.New("kzg_commitment failed"))
 	}
 
-	return out
+	result := types.BandersnatchRingRoot(out)
+
+	// Store in cache
+	ringCache.mu.Lock()
+	// Simple cache size limit to prevent unbounded growth
+	if len(ringCache.cache) >= 1000 {
+		// Clear cache when it gets too large (simple eviction)
+		ringCache.cache = make(map[[32]byte]types.BandersnatchRingRoot)
+	}
+	ringCache.cache[cacheKey] = result
+	ringCache.mu.Unlock()
+
+	return result
 }
 
 // VerifySignature verifies a Bandersnatch VRF signature

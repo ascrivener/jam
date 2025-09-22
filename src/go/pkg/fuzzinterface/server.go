@@ -218,7 +218,7 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 			globalBatch.Close()
 		}
 	}()
-	if err := initialize.State.OverwriteCurrentState(globalBatch); err != nil {
+	if err := (&initialize.State).OverwriteCurrentState(globalBatch); err != nil {
 		return ResponseMessage{}, err
 	}
 
@@ -228,12 +228,12 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	}
 	defer reverseDiff.Close()
 
-	blockWithInfo := block.BlockWithInfo{
+	blockWithInfo := &block.BlockWithInfo{
 		Block: block.Block{
 			Header: initialize.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(initialize.State),
+			PosteriorStateRoot: merklizer.MerklizeState(&initialize.State),
 			Height:             0,
 			ForwardStateDiff:   globalBatch.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),
@@ -284,6 +284,6 @@ func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
 	if err != nil {
 		return ResponseMessage{}, err
 	}
-	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(state))
-	return ResponseMessage{State: &state}, nil
+	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(*state))
+	return ResponseMessage{State: state}, nil
 }

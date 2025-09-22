@@ -19,7 +19,7 @@ type StateKV struct {
 	Value       []byte
 }
 
-func GetState(batch *pebble.Batch) State {
+func GetState(batch *pebble.Batch) *State {
 	// Create iterator bounds for keys with "state:" prefix
 	// The upper bound uses semicolon (the next ASCII character after colon)
 	// to ensure we only get keys starting with "state:"
@@ -33,11 +33,11 @@ func GetState(batch *pebble.Batch) State {
 	})
 	if err != nil {
 		// Return empty hash if we can't create the iterator
-		return State{}
+		return nil
 	}
 	defer iter.Close()
 
-	state := State{}
+	state := &State{}
 	// Iterate through all matching keys
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := iter.Key()
@@ -65,7 +65,7 @@ func GetState(batch *pebble.Batch) State {
 		copy(valueBytes, value)
 
 		// Add to the state
-		state = append(state, StateKV{
+		*state = append(*state, StateKV{
 			OriginalKey: keyBytes,
 			Value:       valueBytes,
 		})
@@ -74,7 +74,7 @@ func GetState(batch *pebble.Batch) State {
 	return state
 }
 
-func (s State) OverwriteCurrentState(batch *pebble.Batch) error {
+func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 	// Delete all existing state entries by iterating through all keys with "state:" prefix
 	prefix := []byte("state:")
 	iter, err := staterepository.NewIter(batch, &pebble.IterOptions{
@@ -100,7 +100,7 @@ func (s State) OverwriteCurrentState(batch *pebble.Batch) error {
 	}
 
 	// Insert all state KVs from this state
-	for _, kv := range s {
+	for _, kv := range *s {
 		key := append([]byte("state:"), kv.OriginalKey[:]...)
 		if err := staterepository.Set(batch, key, kv.Value); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
@@ -110,13 +110,13 @@ func (s State) OverwriteCurrentState(batch *pebble.Batch) error {
 	return nil
 }
 
-func MerklizeState(state State) [32]byte {
-	if len(state) == 0 {
+func MerklizeState(state *State) [32]byte {
+	if len(*state) == 0 {
 		return [32]byte{}
 	}
 
 	keyMap := make(map[[31]byte]StateKV)
-	for _, stateKV := range state {
+	for _, stateKV := range *state {
 		keyMap[stateKV.OriginalKey] = stateKV
 	}
 
