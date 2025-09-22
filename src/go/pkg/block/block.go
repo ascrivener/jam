@@ -27,7 +27,7 @@ type Block struct {
 	Extrinsics extrinsics.Extrinsics
 }
 
-func (b Block) VerifyInBounds(priorState state.State) error {
+func (b Block) VerifyInBounds(priorState *state.State) error {
 	if b.Header.WinningTicketsMarker != nil {
 		for _, ticket := range b.Header.WinningTicketsMarker {
 			if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
@@ -91,7 +91,7 @@ func (b Block) VerifyInBounds(priorState state.State) error {
 	return nil
 }
 
-func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
+func (b Block) Verify(batch *pebble.Batch, priorState *state.State) error {
 
 	if err := b.VerifyInBounds(priorState); err != nil {
 		return err
@@ -438,7 +438,7 @@ func (b Block) Verify(batch *pebble.Batch, priorState state.State) error {
 	return nil
 }
 
-func (b Block) VerifyPostStateTransition(priorState state.State, postState state.State) error {
+func (b Block) VerifyPostStateTransition(priorState *state.State, postState *state.State) error {
 	// Calculate time slot position within epoch (shared between both verification paths)
 	slotIndexInEpoch := b.Header.TimeSlot % types.Timeslot(constants.NumTimeslotsPerEpoch)
 	authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()

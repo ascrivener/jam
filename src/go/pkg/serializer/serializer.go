@@ -130,7 +130,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		} else {
 			x = uint64(signedVal)
 		}
-		buf.Write(EncodeLittleEndian(l, x))
+		EncodeLittleEndianToBuf(buf, l, x)
 		return
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
@@ -140,7 +140,7 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		}
 		l := int(typ.Size())
 		x := v.Uint()
-		buf.Write(EncodeLittleEndian(l, x))
+		EncodeLittleEndianToBuf(buf, l, x)
 		return
 
 	default:
@@ -553,13 +553,72 @@ func EncodeGeneralNatural(x uint64) []byte {
 	} else {
 		// Fallback case
 		result = append(result, 0xFF)
-		result = append(result, EncodeLittleEndian(8, x)...)
+		// Directly append 8 bytes in little-endian order
+		result = append(result,
+			byte(x), byte(x>>8), byte(x>>16), byte(x>>24),
+			byte(x>>32), byte(x>>40), byte(x>>48), byte(x>>56))
+
 	}
 	return result
 }
 
-// countLeadingOnes counts the number of consecutive 1 bits
-// starting from the most significant bit in an 8‐bit value.
+func EncodeLittleEndian(octets int, x uint64) []byte {
+	switch octets {
+	case 1:
+		return []byte{byte(x)}
+	case 2:
+		var buf [2]byte
+		binary.LittleEndian.PutUint16(buf[:], uint16(x))
+		return buf[:]
+	case 4:
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], uint32(x))
+		return buf[:]
+	case 8:
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], x)
+		return buf[:]
+	default:
+		// Fallback for unusual sizes
+		result := make([]byte, octets)
+		for i := 0; i < octets; i++ {
+			result[i] = byte(x)
+			x >>= 8
+		}
+		return result
+	}
+}
+
+func EncodeLittleEndianToBuf(buf *bytes.Buffer, octets int, x uint64) {
+	switch octets {
+	case 1:
+		buf.WriteByte(byte(x))
+	case 2:
+		buf.WriteByte(byte(x))
+		buf.WriteByte(byte(x >> 8))
+	case 4:
+		buf.WriteByte(byte(x))
+		buf.WriteByte(byte(x >> 8))
+		buf.WriteByte(byte(x >> 16))
+		buf.WriteByte(byte(x >> 24))
+	case 8:
+		buf.WriteByte(byte(x))
+		buf.WriteByte(byte(x >> 8))
+		buf.WriteByte(byte(x >> 16))
+		buf.WriteByte(byte(x >> 24))
+		buf.WriteByte(byte(x >> 32))
+		buf.WriteByte(byte(x >> 40))
+		buf.WriteByte(byte(x >> 48))
+		buf.WriteByte(byte(x >> 56))
+	default:
+		// Fallback for unusual sizes - write bytes directly to avoid allocation
+		for i := 0; i < octets; i++ {
+			buf.WriteByte(byte(x))
+			x >>= 8
+		}
+	}
+}
+
 func countLeadingOnes(b byte) int {
 	count := 0
 	for i := 7; i >= 0; i-- {
@@ -572,8 +631,6 @@ func countLeadingOnes(b byte) int {
 	return count
 }
 
-// DecodeGeneralNatural decodes a length value encoded by EncodeGeneralNatural from p.
-// It returns the decoded length x, the number of bytes consumed, and ok==true on success.
 func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 	if len(p) == 0 {
 		return 0, 0, false
@@ -609,33 +666,6 @@ func DecodeGeneralNatural(p []byte) (x uint64, n int, ok bool) {
 	// Reconstruct x.
 	x = (high << (8 * l)) | remainder
 	return x, 1 + int(l), true
-}
-
-func EncodeLittleEndian(octets int, x uint64) []byte {
-	switch octets {
-	case 1:
-		return []byte{byte(x)}
-	case 2:
-		var buf [2]byte
-		binary.LittleEndian.PutUint16(buf[:], uint16(x))
-		return buf[:]
-	case 4:
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], uint32(x))
-		return buf[:]
-	case 8:
-		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], x)
-		return buf[:]
-	default:
-		// Fallback for unusual sizes - still needs heap allocation
-		result := make([]byte, octets)
-		for i := range octets {
-			result[i] = byte(x)
-			x >>= 8
-		}
-		return result
-	}
 }
 
 func DecodeLittleEndian(b []byte) uint64 {
