@@ -47,11 +47,26 @@ type GetState [32]byte // HeaderHash
 
 type StateRoot [32]byte
 
+type StartProfiling struct {
+	ProfileName []byte `json:"profile_name,omitempty"` // e.g., "cpu_test_run_1"
+}
+
+type StopProfiling struct{}
+
+type ProfilingStatus struct {
+	Success byte   `json:"success"` // 0 = false, 1 = true
+	Message []byte `json:"message,omitempty"`
+}
+
 type RequestMessage struct {
 	PeerInfo    *PeerInfo    `json:"peer_info,omitempty"`
 	ImportBlock *ImportBlock `json:"import_block,omitempty"`
 	Initialize  *Initialize  `json:"initialize,omitempty"`
 	GetState    *GetState    `json:"get_state,omitempty"`
+
+	// Profiling controls
+	StartProfiling *StartProfiling `json:"start_profiling,omitempty"`
+	StopProfiling  *StopProfiling  `json:"stop_profiling,omitempty"`
 }
 
 type ResponseMessage struct {
@@ -59,6 +74,9 @@ type ResponseMessage struct {
 	State     *merklizer.State `json:"state,omitempty"`
 	StateRoot *StateRoot       `json:"state_root,omitempty"`
 	Error     *[]byte          `json:"error,omitempty"`
+
+	// Profiling response
+	ProfilingStatus *ProfilingStatus `json:"profiling_status,omitempty"`
 }
 
 // RequestMessageType identifies the type of a request message
@@ -66,10 +84,12 @@ type RequestMessageType byte
 
 const (
 	// Request message types
-	RequestMessageTypePeerInfo    RequestMessageType = 0
-	RequestMessageTypeInitialize  RequestMessageType = 1
-	RequestMessageTypeImportBlock RequestMessageType = 3
-	RequestMessageTypeGetState    RequestMessageType = 4
+	RequestMessageTypePeerInfo       RequestMessageType = 0
+	RequestMessageTypeInitialize     RequestMessageType = 1
+	RequestMessageTypeImportBlock    RequestMessageType = 3
+	RequestMessageTypeGetState       RequestMessageType = 4
+	RequestMessageTypeStartProfiling RequestMessageType = 6
+	RequestMessageTypeStopProfiling  RequestMessageType = 7
 )
 
 // ResponseMessageType identifies the type of a response message
@@ -77,10 +97,11 @@ type ResponseMessageType byte
 
 const (
 	// Response message types
-	ResponseMessageTypePeerInfo  ResponseMessageType = 0
-	ResponseMessageTypeStateRoot ResponseMessageType = 2
-	ResponseMessageTypeState     ResponseMessageType = 5
-	ResponseMessageTypeError     ResponseMessageType = 255
+	ResponseMessageTypePeerInfo        ResponseMessageType = 0
+	ResponseMessageTypeStateRoot       ResponseMessageType = 2
+	ResponseMessageTypeState           ResponseMessageType = 5
+	ResponseMessageTypeProfilingStatus ResponseMessageType = 8
+	ResponseMessageTypeError           ResponseMessageType = 255
 )
 
 // EncodeMessage encodes a Message according to the JAM codec format
@@ -103,6 +124,9 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 	case msg.Error != nil:
 		encodedMessage = serializer.Serialize(*msg.Error)
 		msgType = ResponseMessageTypeError
+	case msg.ProfilingStatus != nil:
+		encodedMessage = serializer.Serialize(*msg.ProfilingStatus)
+		msgType = ResponseMessageTypeProfilingStatus
 	default:
 		return nil, fmt.Errorf("unknown message type")
 	}

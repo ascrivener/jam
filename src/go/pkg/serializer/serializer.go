@@ -42,8 +42,8 @@ func Serialize(v any) []byte {
 		val = val.Elem()
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, 4096))
-	serializeValue(val, buf)
+	var buf bytes.Buffer
+	serializeValue(val, &buf)
 
 	return buf.Bytes()
 }

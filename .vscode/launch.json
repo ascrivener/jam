@@ -200,7 +200,6 @@
             "args": [
                 "-test.v",
                 "-test.run=TestStateTransitions",
-                "-test.cpuprofile=cpu.prof"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
@@ -219,7 +218,6 @@
             "args": [
                 "-test.v",
                 "-test.run=TestConformanceVectors",
-                "-test.cpuprofile=cpu.prof"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",

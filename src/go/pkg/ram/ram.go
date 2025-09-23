@@ -2,6 +2,7 @@ package ram
 
 import (
 	"fmt"
+	"sync"
 
 	"jam/pkg/constants"
 )
@@ -66,61 +67,20 @@ type RAM struct {
 	usedPages                map[uint32]struct{}          // Track which pages were allocated/modified (for fast reset)
 }
 
-// Channel-based RAM pool for consistency with page pool
-type RAMPool struct {
-	ramPool chan *RAM
-	size    int
-}
-
-func NewRAMPool(size int) *RAMPool {
-	p := &RAMPool{
-		ramPool: make(chan *RAM, size),
-		size:    size,
-	}
-
-	// Pre-fill the pool with RAM objects
-	for i := 0; i < size; i++ {
-		ram := &RAM{
-			pages:                    [NumRamPages]*[PageSize]byte{},
-			access:                   [NumRamPages]RamAccess{},
-			minMemoryAccessException: nil,
-			usedPages:                make(map[uint32]struct{}),
-		}
-		p.ramPool <- ram
-	}
-
-	return p
-}
-
-func (p *RAMPool) Get() *RAM {
-	select {
-	case ram := <-p.ramPool:
-		return ram
-	default:
-		// Pool exhausted, create new RAM object
+// Use sync.Pool for better GC integration
+var globalRAMPool = &sync.Pool{
+	New: func() interface{} {
 		return &RAM{
 			pages:                    [NumRamPages]*[PageSize]byte{},
 			access:                   [NumRamPages]RamAccess{},
 			minMemoryAccessException: nil,
 			usedPages:                make(map[uint32]struct{}),
 		}
-	}
+	},
 }
-
-func (p *RAMPool) Put(ram *RAM) {
-	select {
-	case p.ramPool <- ram:
-		// Successfully returned to pool
-	default:
-		// Pool is full, let GC handle this RAM object
-	}
-}
-
-// Replace sync.Pool with hybrid pool
-var globalRAMPool = NewRAMPool(7)
 
 func NewEmptyRAM() *RAM {
-	ram := globalRAMPool.Get()
+	ram := globalRAMPool.Get().(*RAM)
 	return ram
 }
 
@@ -146,7 +106,7 @@ func (r *RAM) returnPageToPool(pageNum uint32) {
 	if r.pages[pageNum] != nil {
 		page := r.pages[pageNum]
 		clear(page[:])
-		putPageToPool(page)
+		pagePool.Put(page)
 		r.pages[pageNum] = nil
 	}
 }
@@ -196,7 +156,7 @@ func (r *RAM) getOrCreatePage(pageNum uint32) *[PageSize]byte {
 	}
 
 	if r.pages[pageNum] == nil {
-		page := getPageFromPool()
+		page := pagePool.Get().(*[PageSize]byte)
 		r.pages[pageNum] = page
 		r.trackUsedPage(pageNum)
 	}
@@ -434,35 +394,11 @@ func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
 	r.trackUsedPage(pageNum)
 }
 
-// Channel-based page pool for guaranteed memory isolation
-var pagePool = make(chan *[PageSize]byte, 100) // Buffered channel for pages
-
-func init() {
-	// Pre-fill the pool with unique pages
-	for range cap(pagePool) {
-		pagePool <- &[PageSize]byte{}
-	}
-}
-
-// getPageFromPool gets a page from the channel pool or allocates new if pool is empty
-func getPageFromPool() *[PageSize]byte {
-	select {
-	case page := <-pagePool:
-		return page
-	default:
-		// Pool exhausted, allocate new page
+// Use sync.Pool for page management too
+var pagePool = &sync.Pool{
+	New: func() interface{} {
 		return &[PageSize]byte{}
-	}
-}
-
-// putPageToPool returns a page to the channel pool or lets GC handle if pool is full
-func putPageToPool(page *[PageSize]byte) {
-	select {
-	case pagePool <- page:
-		// Successfully returned to pool
-	default:
-		// Pool is full, let GC handle this page
-	}
+	},
 }
 
 // ZeroPage removes a page from the pages map, effectively zeroing it out

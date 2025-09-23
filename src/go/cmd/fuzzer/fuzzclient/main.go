@@ -163,6 +163,12 @@ func encodeRequestMessage(msg fuzzinterface.RequestMessage) ([]byte, error) {
 	case msg.GetState != nil:
 		encodedMessage = serializer.Serialize(msg.GetState)
 		msgType = fuzzinterface.RequestMessageTypeGetState
+	case msg.StartProfiling != nil:
+		encodedMessage = serializer.Serialize(msg.StartProfiling)
+		msgType = fuzzinterface.RequestMessageTypeStartProfiling
+	case msg.StopProfiling != nil:
+		encodedMessage = serializer.Serialize(msg.StopProfiling)
+		msgType = fuzzinterface.RequestMessageTypeStopProfiling
 	default:
 		return nil, fmt.Errorf("unknown message type")
 	}
@@ -216,6 +222,13 @@ func decodeResponseMessage(data []byte) (fuzzinterface.ResponseMessage, error) {
 		msg.StateRoot = &stateRoot
 	case fuzzinterface.ResponseMessageTypeError:
 		msg.Error = &data
+	case fuzzinterface.ResponseMessageTypeProfilingStatus:
+		var profilingStatus fuzzinterface.ProfilingStatus
+		err = serializer.Deserialize(data, &profilingStatus)
+		if err != nil {
+			return fuzzinterface.ResponseMessage{}, err
+		}
+		msg.ProfilingStatus = &profilingStatus
 	default:
 		return fuzzinterface.ResponseMessage{}, fmt.Errorf("unknown message type: %d", msgType)
 	}
@@ -265,6 +278,29 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	t.Log("Testing state transitions using test vectors...")
 
+	// Start CPU profiling on the server
+	profileName := fmt.Sprintf("cpu_test_run_%d.prof", time.Now().Unix())
+	startProf := fuzzinterface.StartProfiling{ProfileName: []byte(profileName)}
+	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StartProfiling: &startProf})
+	if err != nil {
+		t.Fatalf("Failed to start profiling: %v", err)
+	}
+	if resp.ProfilingStatus != nil && resp.ProfilingStatus.Success != 1 {
+		t.Fatalf("Failed to start profiling: %s", resp.ProfilingStatus.Message)
+	}
+	t.Logf("Started profiling: %s", profileName)
+
+	// Ensure we stop profiling when done
+	defer func() {
+		stopProf := fuzzinterface.StopProfiling{}
+		resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StopProfiling: &stopProf})
+		if err != nil {
+			t.Errorf("Failed to stop profiling: %v", err)
+		} else if resp.ProfilingStatus != nil {
+			t.Logf("Profiling stopped: %s", resp.ProfilingStatus.Message)
+		}
+	}()
+
 	// Get all test vectors from the reports-l0 directory
 	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
 	genesisVectorData, err := os.ReadFile(genesisVectorPath)
@@ -278,7 +314,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	}
 
 	t.Log("Setting initial genesis state...")
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
+	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
 	if err != nil {
 		t.Fatalf("Failed to send Initialize message: %v", err)
 	}
@@ -403,6 +439,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 	} else {
 		t.Log("All test vectors processed successfully!")
 	}
+	t.Logf("Profile saved as: %s", profileName)
 }
 
 func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
@@ -462,7 +499,6 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		t.Logf("Failed to list bin files: %v", err)
 		return
 	}
-
 	// Filter out report.bin and sort the remaining files
 	var testBinFiles []string
 	for _, file := range binFiles {

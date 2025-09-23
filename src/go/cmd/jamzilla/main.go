@@ -73,7 +73,7 @@ func main() {
 	}
 	defer staterepository.CloseGlobalRepository()
 
-	merklizerState := merklizer.State{}
+	merklizerState := &merklizer.State{}
 	for stateKey, stateValue := range config.GenesisState {
 		// Convert state key from hex to [31]byte
 		keyBytes, err := hex.DecodeString(stateKey)
@@ -95,7 +95,7 @@ func main() {
 		copy(key[:], keyBytes)
 
 		// Add to state
-		merklizerState = append(merklizerState, merklizer.StateKV{
+		*merklizerState = append(*merklizerState, merklizer.StateKV{
 			OriginalKey: key,
 			Value:       valueBytes,
 		})
@@ -140,8 +140,8 @@ func main() {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
 			Height:             0,
-			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			// ForwardStateDiff:   globalBatch.Repr(),
+			// ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

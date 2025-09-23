@@ -7,6 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
+	"runtime/pprof"
+	"runtime/trace"
 
 	"jam/pkg/block"
 	"jam/pkg/errors"
@@ -18,7 +21,10 @@ import (
 
 // Server represents a fuzzer interface server
 type Server struct {
-	peerInfo PeerInfo
+	peerInfo   PeerInfo
+	listener   net.Listener
+	cpuProfile *os.File
+	traceFile  *os.File
 }
 
 // NewServer creates a new fuzzer interface server
@@ -57,6 +63,8 @@ func (s *Server) Start(socketPath string) error {
 	log.Printf("Fuzzer interface listening on %s", socketPath)
 
 	defer listener.Close()
+
+	s.listener = listener
 
 	for {
 		conn, err := listener.Accept()
@@ -173,7 +181,10 @@ func (s *Server) sendMessage(conn net.Conn, msg ResponseMessage) error {
 
 // HandleMessage processes an incoming message and returns the appropriate response
 func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
-	// Get the message type
+	if len(msgData) < 1 {
+		return ResponseMessage{}, fmt.Errorf("message data too short")
+	}
+
 	msgType := RequestMessageType(msgData[0])
 	// Skip the type byte
 	msgData = msgData[1:]
@@ -190,6 +201,12 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 
 	case RequestMessageTypeGetState:
 		return s.handleGetState(msgData)
+
+	case RequestMessageTypeStartProfiling:
+		return s.handleStartProfiling(msgData)
+
+	case RequestMessageTypeStopProfiling:
+		return s.handleStopProfiling()
 
 	default:
 		return ResponseMessage{}, fmt.Errorf("unknown message type: %d", msgType)
@@ -235,8 +252,8 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(&initialize.State),
 			Height:             0,
-			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			// ForwardStateDiff:   globalBatch.Repr(),
+			// ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 
@@ -286,4 +303,129 @@ func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
 	}
 	log.Printf("Returning state for header hash %x with %d key-value pairs", getState, len(*state))
 	return ResponseMessage{State: state}, nil
+}
+
+// handleStartProfiling starts CPU profiling
+func (s *Server) handleStartProfiling(data []byte) (ResponseMessage, error) {
+	var startProf StartProfiling
+	if err := serializer.Deserialize(data, &startProf); err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to deserialize StartProfiling: %w", err)
+	}
+
+	// Stop any existing profiling
+	if s.cpuProfile != nil {
+		pprof.StopCPUProfile()
+		s.cpuProfile.Close()
+		s.cpuProfile = nil
+	}
+
+	// Start new profiling
+	profileName := "cpu.prof"
+
+	var err error
+	s.cpuProfile, err = os.Create(profileName)
+	if err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to create profile file: %w", err)
+	}
+
+	if err := pprof.StartCPUProfile(s.cpuProfile); err != nil {
+		s.cpuProfile.Close()
+		s.cpuProfile = nil
+		return ResponseMessage{}, fmt.Errorf("failed to start CPU profile: %w", err)
+	}
+
+	// Start execution tracing
+	traceName := "trace.out"
+	s.traceFile, err = os.Create(traceName)
+	if err != nil {
+		pprof.StopCPUProfile()
+		s.cpuProfile.Close()
+		s.cpuProfile = nil
+		return ResponseMessage{}, fmt.Errorf("failed to create trace file: %w", err)
+	}
+
+	if err := trace.Start(s.traceFile); err != nil {
+		pprof.StopCPUProfile()
+		s.cpuProfile.Close()
+		s.cpuProfile = nil
+		s.traceFile.Close()
+		s.traceFile = nil
+		return ResponseMessage{}, fmt.Errorf("failed to start trace: %w", err)
+	}
+
+	var m1 runtime.MemStats
+	runtime.ReadMemStats(&m1)
+	log.Printf("Memory before profiling: Alloc=%d KB, Sys=%d KB, NumGC=%d",
+		m1.Alloc/1024, m1.Sys/1024, m1.NumGC)
+
+	log.Printf("Started CPU profiling: %s", profileName)
+	log.Printf("Started tracing: %s", traceName)
+	return ResponseMessage{
+		ProfilingStatus: &ProfilingStatus{
+			Success: 1,
+			Message: []byte(fmt.Sprintf("Started profiling: %s", profileName)),
+		},
+	}, nil
+}
+
+// handleStopProfiling stops CPU profiling
+func (s *Server) handleStopProfiling() (ResponseMessage, error) {
+	if s.cpuProfile == nil {
+		return ResponseMessage{
+			ProfilingStatus: &ProfilingStatus{
+				Success: 0,
+				Message: []byte("No profiling session active"),
+			},
+		}, nil
+	}
+
+	pprof.StopCPUProfile()
+	s.cpuProfile.Close()
+	s.cpuProfile = nil
+
+	if s.traceFile != nil {
+		trace.Stop()
+		s.traceFile.Close()
+		s.traceFile = nil
+	}
+
+	var m2 runtime.MemStats
+	runtime.ReadMemStats(&m2)
+	log.Printf("Memory after profiling: Alloc=%d KB, Sys=%d KB, NumGC=%d",
+		m2.Alloc/1024, m2.Sys/1024, m2.NumGC)
+
+	heapProfileName := "heap.prof"
+	heapProfile, err := os.Create(heapProfileName)
+	if err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to create heap profile file: %w", err)
+	}
+	defer heapProfile.Close()
+
+	if err := pprof.WriteHeapProfile(heapProfile); err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to write heap profile: %w", err)
+	}
+
+	log.Printf("Heap profile saved to %s", heapProfileName)
+
+	// Capture goroutine profile to see what's coordinating
+	goroutineProfileName := "goroutine.prof"
+	goroutineProfile, err := os.Create(goroutineProfileName)
+	if err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to create goroutine profile file: %w", err)
+	}
+	defer goroutineProfile.Close()
+
+	if err := pprof.Lookup("goroutine").WriteTo(goroutineProfile, 0); err != nil {
+		return ResponseMessage{}, fmt.Errorf("failed to write goroutine profile: %w", err)
+	}
+
+	log.Printf("Goroutine profile saved to %s", goroutineProfileName)
+
+	log.Println("Stopped CPU profiling")
+	return ResponseMessage{
+		ProfilingStatus: &ProfilingStatus{
+			Success: 1,
+			Message: []byte("Profiling stopped"),
+		},
+	}, nil
 }

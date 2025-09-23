@@ -158,8 +158,8 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizedState,
 			Height:             parentBlock.Info.Height + 1,
-			ForwardStateDiff:   stfOperations.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			// ForwardStateDiff:   stfOperations.Repr(),
+			// ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 
@@ -224,16 +224,22 @@ func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
 
 	posteriorDisputes := computeDisputes(curBlock.Extrinsics.Disputes, priorState.Disputes)
 
-	// Start Safrole computation in parallel - it's only used in final state assembly
-	type safroleResult struct {
-		state state.SafroleBasicState
-		err   error
-	}
+	// Start Safrole computation using reusable worker (eliminates goroutine creation overhead)
+	safroleWorkerOnce.Do(initSafroleWorker)
 	safroleResultChan := make(chan safroleResult, 1)
-	go func() {
-		result, err := computeSafroleBasicState(curBlock.Header, priorState.MostRecentBlockTimeslot, curBlock.Extrinsics.Tickets, priorState.SafroleBasicState, priorState.ValidatorKeysetsStaging, posteriorValidatorKeysetsActive, posteriorDisputes, posteriorEntropyAccumulator)
-		safroleResultChan <- safroleResult{result, err}
-	}()
+
+	task := safroleTask{
+		header:                          curBlock.Header,
+		mostRecentBlockTimeslot:         priorState.MostRecentBlockTimeslot,
+		tickets:                         curBlock.Extrinsics.Tickets,
+		safroleBasicState:               priorState.SafroleBasicState,
+		validatorKeysetsStaging:         priorState.ValidatorKeysetsStaging,
+		posteriorValidatorKeysetsActive: posteriorValidatorKeysetsActive,
+		posteriorDisputes:               posteriorDisputes,
+		posteriorEntropyAccumulator:     posteriorEntropyAccumulator,
+		resultChan:                      safroleResultChan,
+	}
+	safroleTaskChan <- task
 
 	posteriorValidatorKeysetsPriorEpoch := computeValidatorKeysetsPriorEpoch(curBlock.Header, priorState.MostRecentBlockTimeslot, priorState.ValidatorKeysetsPriorEpoch, priorState.ValidatorKeysetsActive)
 
@@ -350,8 +356,6 @@ func computeAvailableReports(pendingReports [constants.NumCores]*state.PendingRe
 	}
 	return availableReports, nil
 }
-
-// Now, update each compute function to return (result, error).
 
 func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarantees, posteriorAuthorizerQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte, priorAuthorizersPool [constants.NumCores][][32]byte) [constants.NumCores][][32]byte {
 	posteriorAuthorizersPool := [constants.NumCores][][32]byte{}
@@ -920,4 +924,46 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 	}
 
 	return posteriorValidatorStatistics
+}
+
+// Single reusable Safrole worker - eliminates goroutine creation overhead
+var (
+	safroleTaskChan   chan safroleTask
+	safroleWorkerOnce sync.Once
+)
+
+type safroleTask struct {
+	header                          header.Header
+	mostRecentBlockTimeslot         types.Timeslot
+	tickets                         []extrinsics.Ticket
+	safroleBasicState               state.SafroleBasicState
+	validatorKeysetsStaging         types.ValidatorKeysets
+	posteriorValidatorKeysetsActive types.ValidatorKeysets
+	posteriorDisputes               types.Disputes
+	posteriorEntropyAccumulator     [4][32]byte
+	resultChan                      chan safroleResult
+}
+
+type safroleResult struct {
+	state state.SafroleBasicState
+	err   error
+}
+
+func initSafroleWorker() {
+	safroleTaskChan = make(chan safroleTask)
+	go func() {
+		for task := range safroleTaskChan {
+			result, err := computeSafroleBasicState(
+				task.header,
+				task.mostRecentBlockTimeslot,
+				task.tickets,
+				task.safroleBasicState,
+				task.validatorKeysetsStaging,
+				task.posteriorValidatorKeysetsActive,
+				task.posteriorDisputes,
+				task.posteriorEntropyAccumulator,
+			)
+			task.resultChan <- safroleResult{result, err}
+		}
+	}()
 }

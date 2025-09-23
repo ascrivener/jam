@@ -38,7 +38,7 @@ func TestStateTransitions(t *testing.T) {
 	}
 
 	// Create fuzzer client in in-process mode
-	fuzzer := NewFuzzerClient("", true) // empty socket path, in-process mode
+	fuzzer := NewFuzzerClient("/tmp/jam_target.sock", false) // empty socket path, in-process mode
 	if err := fuzzer.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}

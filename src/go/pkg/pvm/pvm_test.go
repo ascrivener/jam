@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"jam/pkg/ram"
@@ -277,9 +276,6 @@ func TestPVMWithDirectoryTestVectors(t *testing.T) {
 			pvm.State.RAM = nil
 			pvm.State = nil
 			pvm = nil
-
-			// Force garbage collection after each test
-			runtime.GC()
 		})
 	}
 }
