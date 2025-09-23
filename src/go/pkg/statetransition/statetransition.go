@@ -158,8 +158,8 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizedState,
 			Height:             parentBlock.Info.Height + 1,
-			// ForwardStateDiff:   stfOperations.Repr(),
-			// ReverseStateDiff:   reverseDiff.Repr(),
+			ForwardStateDiff:   stfOperations.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

@@ -667,8 +667,8 @@ type BlockWithInfo struct {
 type BlockInfo struct {
 	PosteriorStateRoot [32]byte
 	Height             uint64
-	// ForwardStateDiff   []byte
-	// ReverseStateDiff   []byte
+	ForwardStateDiff   []byte
+	ReverseStateDiff   []byte
 }
 
 func Get(batch *pebble.Batch, headerHash [32]byte) (*BlockWithInfo, error) {
@@ -823,27 +823,27 @@ func (block *BlockWithInfo) GetPathFromAncestor(batch *pebble.Batch, ancestor *B
 }
 
 func ReplayPath(globalBatch *pebble.Batch, path []*BlockWithInfo) error {
-	// for _, blockToReplay := range path {
-	// 	// Apply the forward diff for this block
-	// 	if len(blockToReplay.Info.ForwardStateDiff) > 0 {
-	// 		// Create a batch from the forward diff representation
-	// 		forwardBatch := staterepository.NewBatch()
-	// 		if forwardBatch == nil {
-	// 			return fmt.Errorf("failed to create forward batch")
-	// 		}
-	// 		defer forwardBatch.Close()
+	for _, blockToReplay := range path {
+		// Apply the forward diff for this block
+		if len(blockToReplay.Info.ForwardStateDiff) > 0 {
+			// Create a batch from the forward diff representation
+			forwardBatch := staterepository.NewBatch()
+			if forwardBatch == nil {
+				return fmt.Errorf("failed to create forward batch")
+			}
+			defer forwardBatch.Close()
 
-	// 		// Set the batch representation to the stored forward diff
-	// 		if err := forwardBatch.SetRepr(blockToReplay.Info.ForwardStateDiff); err != nil {
-	// 			return fmt.Errorf("failed to set forward batch repr: %w", err)
-	// 		}
+			// Set the batch representation to the stored forward diff
+			if err := forwardBatch.SetRepr(blockToReplay.Info.ForwardStateDiff); err != nil {
+				return fmt.Errorf("failed to set forward batch repr: %w", err)
+			}
 
-	// 		// Apply the forward batch to the global batch
-	// 		if err := globalBatch.Apply(forwardBatch, nil); err != nil {
-	// 			return fmt.Errorf("failed to apply forward batch: %w", err)
-	// 		}
-	// 	}
-	// }
+			// Apply the forward batch to the global batch
+			if err := globalBatch.Apply(forwardBatch, nil); err != nil {
+				return fmt.Errorf("failed to apply forward batch: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -1127,33 +1127,33 @@ func (block *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock
 			return fmt.Errorf("reached genesis block without finding target block")
 		}
 
-		// // Apply the reverse diff for this block to undo its changes
-		// if len(currentBlock.Info.ReverseStateDiff) > 0 {
-		// 	// Create a batch from the reverse diff representation
-		// 	reverseBatch := staterepository.NewBatch()
-		// 	if reverseBatch == nil {
-		// 		return fmt.Errorf("failed to create reverse batch")
-		// 	}
-		// 	defer reverseBatch.Close()
+		// Apply the reverse diff for this block to undo its changes
+		if len(currentBlock.Info.ReverseStateDiff) > 0 {
+			// Create a batch from the reverse diff representation
+			reverseBatch := staterepository.NewBatch()
+			if reverseBatch == nil {
+				return fmt.Errorf("failed to create reverse batch")
+			}
+			defer reverseBatch.Close()
 
-		// 	// Set the batch representation to the stored reverse diff
-		// 	if err := reverseBatch.SetRepr(currentBlock.Info.ReverseStateDiff); err != nil {
-		// 		return fmt.Errorf("failed to set reverse batch repr: %w", err)
-		// 	}
+			// Set the batch representation to the stored reverse diff
+			if err := reverseBatch.SetRepr(currentBlock.Info.ReverseStateDiff); err != nil {
+				return fmt.Errorf("failed to set reverse batch repr: %w", err)
+			}
 
-		// 	// Apply the reverse batch to the global batch
-		// 	if err := globalBatch.Apply(reverseBatch, nil); err != nil {
-		// 		return fmt.Errorf("failed to apply reverse batch: %w", err)
-		// 	}
-		// }
+			// Apply the reverse batch to the global batch
+			if err := globalBatch.Apply(reverseBatch, nil); err != nil {
+				return fmt.Errorf("failed to apply reverse batch: %w", err)
+			}
+		}
 
-		// // Get the parent block
-		// parentBlock, err := Get(globalBatch, currentBlock.Block.Header.ParentHash)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to get parent block %x: %w", currentBlock.Block.Header.ParentHash, err)
-		// }
+		// Get the parent block
+		parentBlock, err := Get(globalBatch, currentBlock.Block.Header.ParentHash)
+		if err != nil {
+			return fmt.Errorf("failed to get parent block %x: %w", currentBlock.Block.Header.ParentHash, err)
+		}
 
-		// currentBlock = parentBlock
+		currentBlock = parentBlock
 	}
 
 	return nil
