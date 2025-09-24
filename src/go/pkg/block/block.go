@@ -672,11 +672,8 @@ type BlockInfo struct {
 }
 
 func Get(batch *pebble.Batch, headerHash [32]byte) (*BlockWithInfo, error) {
-	// Create a key with a prefix to separate block data from state data
-	key := makeBlockKey(headerHash)
-
 	// Retrieve the serialized block from the repository
-	data, closer, err := staterepository.Get(batch, key)
+	data, closer, err := staterepository.GetBlock(batch, headerHash[:])
 	if err != nil {
 		return nil, err
 	}
@@ -877,8 +874,7 @@ func GetTip(batch *pebble.Batch) (*BlockWithInfo, error) {
 	var block *BlockWithInfo
 
 	// Get the chain tip header hash
-	key := []byte("meta:chaintip")
-	value, closer, err := staterepository.Get(batch, key)
+	value, closer, err := staterepository.GetTip(batch)
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return block, fmt.Errorf("chain tip not found")
@@ -1043,7 +1039,7 @@ func GenerateReverseBatch(view, batch *pebble.Batch) (*pebble.Batch, error) {
 			// 1. Get the original value from the view (current state before this batch)
 			// 2. Create a reverse Set operation (key, originalValue) or Delete if key didn't exist
 
-			originalValue, closer, err := staterepository.Get(view, key) // Use view to get current state
+			originalValue, closer, err := staterepository.GetRaw(view, key) // Use view to get current state
 			if err == pebble.ErrNotFound {
 				// Key didn't exist before, so reverse operation is Delete
 				if err := reverseBatch.Delete(key, nil); err != nil {
@@ -1071,7 +1067,7 @@ func GenerateReverseBatch(view, batch *pebble.Batch) (*pebble.Batch, error) {
 			// 1. Get the original value from the view (current state before this batch)
 			// 2. Create a reverse Set operation (key, originalValue)
 
-			originalValue, closer, err := staterepository.Get(view, key) // Use view to get current state
+			originalValue, closer, err := staterepository.GetRaw(view, key) // Use view to get current state
 			if err == pebble.ErrNotFound {
 				// Key didn't exist, so deleting it has no effect - no reverse operation needed
 				continue

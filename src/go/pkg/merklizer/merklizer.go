@@ -89,7 +89,7 @@ func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 	// Delete all existing state entries
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := append([]byte{}, iter.Key()...) // Make a copy of the key
-		if err := staterepository.Delete(batch, key); err != nil {
+		if err := staterepository.DeleteRaw(batch, key); err != nil {
 			return fmt.Errorf("failed to delete existing state key: %w", err)
 		}
 	}
@@ -101,8 +101,7 @@ func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 
 	// Insert all state KVs from this state
 	for _, kv := range *s {
-		key := append([]byte("state:"), kv.OriginalKey[:]...)
-		if err := staterepository.Set(batch, key, kv.Value); err != nil {
+		if err := staterepository.SetStateKV(batch, kv.OriginalKey[:], kv.Value); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
 		}
 	}

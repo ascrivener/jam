@@ -57,14 +57,12 @@ func (workReport WorkReport) Set(batch *pebble.Batch) error {
 	serialized := serializer.Serialize(workReport)
 
 	// Store the primary record by segment root
-	primaryKey := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	if err := staterepository.Set(batch, primaryKey, serialized); err != nil {
+	if err := staterepository.SetWorkReportBySegmentRoot(batch, segmentRoot, serialized); err != nil {
 		return fmt.Errorf("failed to store work report by segment root: %w", err)
 	}
 
 	// Store a reference from work package hash to segment root
-	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	if err := staterepository.Set(batch, indexKey, segmentRoot[:]); err != nil {
+	if err := staterepository.SetWorkReportIndex(batch, workPackageHash, segmentRoot); err != nil {
 		return fmt.Errorf("failed to store work package hash index: %w", err)
 	}
 
@@ -79,43 +77,44 @@ func GetWorkReportBySegmentRoot(batch *pebble.Batch, segmentRoot [32]byte) (Work
 
 // Get a work report by work package hash (index lookup + main lookup)
 func GetWorkReportByWorkPackageHash(batch *pebble.Batch, workPackageHash [32]byte) (WorkReport, error) {
-	segmentRoot, err := GetSegmentRootByWorkPackageHash(batch, workPackageHash)
+	segmentRoot, exists, err := GetSegmentRootByWorkPackageHash(batch, workPackageHash)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to find segment root for work package hash %x: %w", workPackageHash, err)
+	}
+	if !exists {
+		return WorkReport{}, fmt.Errorf("segment root not found for work package hash %x", workPackageHash)
 	}
 
 	// Then do the main lookup
 	return GetWorkReportBySegmentRoot(batch, segmentRoot)
 }
 
-// Get segment root directly from work package hash without loading full work report
-func GetSegmentRootByWorkPackageHash(batch *pebble.Batch, workPackageHash [32]byte) ([32]byte, error) {
-	// Look up the segment root from the index
-	indexKey := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	value, closer, err := staterepository.Get(batch, indexKey)
+// GetSegmentRootByWorkPackageHash retrieves segment root by work package hash, returning [32]byte directly
+func GetSegmentRootByWorkPackageHash(batch *pebble.Batch, workPackageHash [32]byte) ([32]byte, bool, error) {
+	segmentRootBytes, exists, err := staterepository.GetWorkReportIndex(batch, workPackageHash)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to find segment root for work package hash %x: %w", workPackageHash, err)
+		return [32]byte{}, false, err
+	}
+	if !exists {
+		return [32]byte{}, false, nil
 	}
 
-	// Copy the segment root value before closing
 	var segmentRoot [32]byte
-	copy(segmentRoot[:], value)
-	closer.Close()
-
-	return segmentRoot, nil
+	copy(segmentRoot[:], segmentRootBytes)
+	return segmentRoot, true, nil
 }
 
 // Helper function for the actual deserialization
 func getWorkReportByKey(batch *pebble.Batch, key []byte) (WorkReport, error) {
-	value, closer, err := staterepository.Get(batch, key)
+	value, closer, err := staterepository.GetRaw(batch, key)
 	if err != nil {
 		return WorkReport{}, fmt.Errorf("failed to get work report: %w", err)
 	}
+	defer closer.Close()
 
 	// Copy the value before closing
 	dataCopy := make([]byte, len(value))
 	copy(dataCopy, value)
-	closer.Close()
 
 	var workReport WorkReport
 	if err := serializer.Deserialize(dataCopy, &workReport); err != nil {

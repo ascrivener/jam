@@ -53,9 +53,12 @@ func WorkPackageToWorkReport(wp workpackage.WorkPackage, core types.CoreIndex) (
 				segmentRoot = hash.Identifier
 			} else {
 				workPackageHash := hash.Identifier
-				segmentRoot, err := workreport.GetSegmentRootByWorkPackageHash(nil, workPackageHash)
+				segmentRoot, exists, err := workreport.GetSegmentRootByWorkPackageHash(nil, workPackageHash)
 				if err != nil {
 					return workreport.WorkReport{}, err
+				}
+				if !exists {
+					return workreport.WorkReport{}, fmt.Errorf("segment root not found for work package hash %x", workPackageHash)
 				}
 				segmentRootLookup[workPackageHash] = segmentRoot
 			}

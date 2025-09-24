@@ -111,8 +111,7 @@ type repositoryDataSource struct {
 }
 
 func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
-	prefixedKey := append([]byte("state:"), key[:]...)
-	value, closer, err := staterepository.Get(ds.batch, prefixedKey)
+	value, closer, err := staterepository.GetStateKV(ds.batch, key[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to get component: %w", err)
 	}
@@ -421,21 +420,13 @@ func (state *State) Set(batch *pebble.Batch) error {
 
 	// Store each component
 	for _, component := range componentData {
-		// Add state: prefix to component key
-		prefixedKey := append([]byte("state:"), component.key[:]...)
-		if err := batch.Set(prefixedKey, component.data, nil); err != nil {
+		if err := staterepository.SetStateKV(batch, component.key[:], component.data); err != nil {
 			return fmt.Errorf("failed to store component: %w", err)
 		}
 	}
 
 	// Store service accounts
 	for serviceIndex, account := range state.ServiceAccounts {
-		// Create the raw key
-		rawKey := staterepository.StateKeyConstructorFromServiceIndex(serviceIndex)
-
-		// Add state: prefix
-		prefixedKey := append([]byte("state:"), rawKey[:]...)
-
 		var serviceAccountData = struct {
 			CodeHash                       [32]byte           // c
 			Balance                        types.Balance      // b
@@ -460,7 +451,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 			ParentServiceIndex:             account.ParentServiceIndex,
 		}
 		data := serializer.Serialize(&serviceAccountData)
-		if err := batch.Set(prefixedKey, data, nil); err != nil {
+		if err := staterepository.SetServiceAccount(batch, serviceIndex, data); err != nil {
 			return fmt.Errorf("failed to store service account %d: %w", serviceIndex, err)
 		}
 	}

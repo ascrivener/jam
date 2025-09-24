@@ -61,7 +61,7 @@ func SetGlobalRepository(repo *PebbleStateRepository) {
 }
 
 // Get retrieves a value using batch if provided, otherwise direct database access
-func Get(batch *pebble.Batch, key []byte) ([]byte, io.Closer, error) {
+func get(batch *pebble.Batch, key []byte) ([]byte, io.Closer, error) {
 	repo := GetGlobalRepository()
 	if repo == nil {
 		return nil, nil, fmt.Errorf("global repository not initialized")
@@ -89,7 +89,7 @@ func NewIter(batch *pebble.Batch, opts *pebble.IterOptions) (*pebble.Iterator, e
 }
 
 // Set writes a key-value pair using batch if provided, otherwise creates a temporary batch
-func Set(batch *pebble.Batch, key, value []byte) error {
+func set(batch *pebble.Batch, key, value []byte) error {
 	if batch != nil {
 		return batch.Set(key, value, nil)
 	} else {
@@ -108,7 +108,7 @@ func Set(batch *pebble.Batch, key, value []byte) error {
 }
 
 // Delete removes a key using batch if provided, otherwise creates a temporary batch
-func Delete(batch *pebble.Batch, key []byte) error {
+func delete(batch *pebble.Batch, key []byte) error {
 	if batch != nil {
 		return batch.Delete(key, nil)
 	} else {

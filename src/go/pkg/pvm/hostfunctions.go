@@ -720,9 +720,15 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], batch *pebble.
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
 				// IMPORTANT: actually delete the service account and preimage from state as well
-				serviceaccount.DeleteServiceAccountByServiceIndex(batch, destServiceIndex)
-				destinationAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(length), hash)
-				destinationAccount.DeletePreimageForHash(batch, hash)
+				if err := serviceaccount.DeleteServiceAccountByServiceIndex(batch, destServiceIndex); err != nil {
+					return ExitReason{}, err
+				}
+				if err := destinationAccount.DeletePreimageLookupHistoricalStatus(batch, uint32(length), hash); err != nil {
+					return ExitReason{}, err
+				}
+				if err := destinationAccount.DeletePreimageForHash(batch, hash); err != nil {
+					return ExitReason{}, err
+				}
 
 				// Remove the entry from destination account
 				delete(serviceAccounts, destServiceIndex)

@@ -39,14 +39,14 @@ func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
 }
 
 func MakeComponentKey(i uint8) [31]byte {
-	return StateKeyConstructor(i, types.ServiceIndex(0))
+	return stateKeyConstructor(i, types.ServiceIndex(0))
 }
 
-func StateKeyConstructorFromServiceIndex(s types.ServiceIndex) [31]byte {
-	return StateKeyConstructor(255, s)
+func stateKeyConstructorFromServiceIndex(s types.ServiceIndex) [31]byte {
+	return stateKeyConstructor(255, s)
 }
 
-func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
+func stateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	var key [31]byte
 
 	key[0] = i             // First byte is i.
@@ -59,7 +59,7 @@ func StateKeyConstructor(i uint8, s types.ServiceIndex) [31]byte {
 	return key
 }
 
-func StateKeyConstructorFromData(s types.ServiceIndex, data []byte) [31]byte {
+func stateKeyConstructorFromData(s types.ServiceIndex, data []byte) [31]byte {
 	var key [31]byte
 
 	h := blake2b.Sum256(data)
@@ -88,28 +88,28 @@ func StateKeyConstructorFromData(s types.ServiceIndex, data []byte) [31]byte {
 
 // Helper to create a storage key for service account's storage dictionary
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-1) + key[0...28])
-func MakeServiceStorageKey(serviceIndex types.ServiceIndex, key []byte) [31]byte {
+func makeServiceStorageKey(serviceIndex types.ServiceIndex, key []byte) [31]byte {
 	// E4(2^32-1)
 	maxUint32Minus1 := uint32(0xFFFFFFFF)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus1))
-	return StateKeyConstructorFromData(serviceIndex, append(le, key...))
+	return stateKeyConstructorFromData(serviceIndex, append(le, key...))
 }
 
 // Helper to create a preimage lookup key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(2^32-2) + hash[1...29])
-func MakePreimageKey(serviceIndex types.ServiceIndex, hash [32]byte) [31]byte {
+func makePreimageKey(serviceIndex types.ServiceIndex, hash [32]byte) [31]byte {
 	// E4(2^32-2)
 	maxUint32Minus2 := uint32(0xFFFFFFFF - 1)
 	le := serializer.EncodeLittleEndian(4, uint64(maxUint32Minus2))
-	return StateKeyConstructorFromData(serviceIndex, append(le, hash[:]...))
+	return stateKeyConstructorFromData(serviceIndex, append(le, hash[:]...))
 }
 
 // Helper to create a preimage lookup historical status key
 // Format: stateKeyConstructorFromHash(serviceIndex, E4(blobLength) + hashedPreimage[2...30])
-func MakeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) [31]byte {
+func makeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) [31]byte {
 	// E4(blobLength)
 	le := serializer.EncodeLittleEndian(4, uint64(blobLength))
-	return StateKeyConstructorFromData(serviceIndex, append(le, hashedPreimage[:]...))
+	return stateKeyConstructorFromData(serviceIndex, append(le, hashedPreimage[:]...))
 }
 
 // Close closes the database
