@@ -12,9 +12,10 @@ import (
 
 // Node represents both leaf and internal nodes in the Merkle tree
 type Node struct {
-	Hash        [32]byte
-	Value       []byte   // Non-empty for leaf nodes, empty for internal nodes
-	OriginalKey [31]byte // Only used for leaf nodes
+	Hash           [32]byte
+	Value          []byte   // Non-empty for leaf nodes, empty for internal nodes
+	OriginalKey    [31]byte // Only used for leaf nodes
+	CompressedPath []byte
 }
 
 func GetTreeNode(batch *pebble.Batch, path []byte) (*Node, error) {
@@ -39,25 +40,26 @@ func GetTreeNode(batch *pebble.Batch, path []byte) (*Node, error) {
 	return &node, nil
 }
 
-// createLeafNode creates a new leaf node
-func createLeafNode(originalKey [31]byte, value []byte) *Node {
-	hash := calculateLeafHash(originalKey, value)
-	return &Node{
-		Hash:        hash,
-		Value:       value, // Can be empty slice []byte{}
-		OriginalKey: originalKey,
-	}
-}
+// // createLeafNode creates a new leaf node
+// func createLeafNode(originalKey [31]byte, value []byte) *Node {
+// 	hash := calculateLeafHash(originalKey, value)
+// 	return &Node{
+// 		Hash:           hash,
+// 		Value:          value, // Can be empty slice []byte{}
+// 		OriginalKey:    originalKey,
+// 		CompressedPath: []byte{},
+// 	}
+// }
 
 // createInternalNode creates a new internal node
-func createInternalNode(leftHash, rightHash [32]byte) *Node {
-	hash := calculateInternalNodeHash(leftHash, rightHash)
-	return &Node{
-		Hash:        hash,
-		Value:       []byte{},
-		OriginalKey: [31]byte{},
-	}
-}
+// func createInternalNode(leftHash, rightHash [32]byte) *Node {
+// 	hash := calculateInternalNodeHash(leftHash, rightHash)
+// 	return &Node{
+// 		Hash:        hash,
+// 		Value:       []byte{},
+// 		OriginalKey: [31]byte{},
+// 	}
+// }
 
 // Get retrieves a value for the given key with automatic "state:" prefixing
 func GetStateKV(batch *pebble.Batch, key [31]byte) ([]byte, io.Closer, error) {
@@ -375,16 +377,12 @@ func GetStateRoot(batch *pebble.Batch) ([32]byte, error) {
 
 // updateMerkleTreeForSet updates the Merkle tree for a set operation
 func updateMerkleTreeForSet(batch *pebble.Batch, key [31]byte, value []byte) error {
-	return upsertLeaf(batch, createLeafNode(key, value))
+	return upsertLeaf(batch, key, value)
 }
 
 // upsertLeaf inserts or updates a leaf node and returns the new root hash
-func upsertLeaf(batch *pebble.Batch, leafNode *Node) error {
-	rootNode, err := GetTreeNode(batch, []byte{})
-	if err != nil {
-		return fmt.Errorf("failed to get tree root node: %w", err)
-	}
-	_, err = upsertLeafHelper(batch, rootNode, leafNode, []byte{})
+func upsertLeaf(batch *pebble.Batch, key [31]byte, value []byte) error {
+	_, err := upsertLeafHelper(batch, key, value, []byte{})
 	if err != nil {
 		return fmt.Errorf("failed to upsert leaf: %w", err)
 	}
@@ -392,100 +390,187 @@ func upsertLeaf(batch *pebble.Batch, leafNode *Node) error {
 }
 
 // upsertLeafHelper recursively inserts a leaf node starting from curNode at given depth
-func upsertLeafHelper(batch *pebble.Batch, curNode, leafNode *Node, path []byte) (*Node, error) {
+func upsertLeafHelper(batch *pebble.Batch, key [31]byte, value []byte, path []byte) (*Node, error) {
 	fmt.Printf("=== HELPER at depth %d: leafKey=%x ===\n",
-		len(path), leafNode.OriginalKey[:8])
+		len(path), key[:8])
 
-	// Base case: empty tree or reached max depth
+	curNode, err := GetTreeNode(batch, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tree node: %w", err)
+	}
+
 	if curNode == nil {
-		// Empty tree - just place our leaf
-		fmt.Printf("EMPTY TREE: placing leaf at depth %d\n", len(path))
-
-		if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(leafNode)); err != nil {
-			return nil, fmt.Errorf("failed to store leaf node: %w", err)
+		keyBits := keyToBits(key)
+		newLeafPath := keyBits[len(path):]
+		newLeaf := &Node{
+			Hash:           calculateLeafHash(key, value),
+			Value:          value,
+			OriginalKey:    key,
+			CompressedPath: newLeafPath,
 		}
-
-		return leafNode, nil
+		if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(newLeaf)); err != nil {
+			return nil, fmt.Errorf("failed to store new leaf: %w", err)
+		}
+		return newLeaf, nil
 	}
 
-	leftNode, err := GetTreeNode(batch, append(path, 0))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get left node: %w", err)
+	matchLength := 0
+	for i, bit := range curNode.CompressedPath {
+		idx := len(path) + i
+		byteIndex := idx / 8
+		bitPos := 7 - (idx % 8)
+		if (key[byteIndex]>>bitPos)&1 != bit {
+			break
+		}
+		matchLength++
 	}
 
-	rightNode, err := GetTreeNode(batch, append(path, 1))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get right node: %w", err)
-	}
+	if matchLength == len(curNode.CompressedPath) {
 
-	if leftNode == nil && rightNode == nil {
-		if curNode.OriginalKey == leafNode.OriginalKey {
-			fmt.Printf("SAME KEY: updating value\n")
-			// Same key - just update the value
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(leafNode)); err != nil {
-				return nil, fmt.Errorf("failed to store updated leaf: %w", err)
+		childPath := append(path, curNode.CompressedPath...)
+
+		if len(childPath) == 248 {
+			// Case 1: This is a leaf node - update the value
+			if curNode.OriginalKey == key {
+				fmt.Printf("SAME KEY: updating value\n")
+				updatedLeaf := &Node{
+					Hash:           calculateLeafHash(key, value),
+					Value:          value,
+					OriginalKey:    key,
+					CompressedPath: curNode.CompressedPath,
+				}
+				if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(updatedLeaf)); err != nil {
+					return nil, fmt.Errorf("failed to store updated leaf: %w", err)
+				}
+				return updatedLeaf, nil
+			} else {
+				// Different key but same compressed path - this shouldn't happen in a proper Patricia tree
+				return nil, fmt.Errorf("key mismatch in leaf node")
+			}
+		} else {
+			// Case 2: This is an internal node - continue navigation
+			// Calculate the next bit in the key after the compressed path
+			nextBitIndex := len(path) + len(curNode.CompressedPath)
+			if nextBitIndex >= 248 { // 31 bytes * 8 bits
+				return nil, fmt.Errorf("key too long")
 			}
 
-			return leafNode, nil
+			byteIndex := nextBitIndex / 8
+			bitPos := 7 - (nextBitIndex % 8)
+			nextBit := (key[byteIndex] >> bitPos) & 1
+
+			// Recursively insert into the child
+			newChild, err := upsertLeafHelper(batch, key, value, append(childPath, nextBit))
+			if err != nil {
+				return nil, err
+			}
+
+			// Update this internal node's hash (child changed)
+			var leftHash, rightHash [32]byte
+			if nextBit == 0 {
+				leftHash = newChild.Hash
+				// Get right child hash
+				rightChildPath := append(path, curNode.CompressedPath...)
+				rightChildPath = append(rightChildPath, 1)
+				rightChild, err := GetTreeNode(batch, rightChildPath)
+				if err == nil && rightChild != nil {
+					rightHash = rightChild.Hash
+				}
+			} else {
+				rightHash = newChild.Hash
+				// Get left child hash
+				leftChildPath := append(path, curNode.CompressedPath...)
+				leftChildPath = append(leftChildPath, 0)
+				leftChild, err := GetTreeNode(batch, leftChildPath)
+				if err == nil && leftChild != nil {
+					leftHash = leftChild.Hash
+				}
+			}
+
+			updatedInternal := &Node{
+				Hash:           calculateInternalNodeHash(leftHash, rightHash),
+				Value:          []byte{},
+				OriginalKey:    [31]byte{},
+				CompressedPath: curNode.CompressedPath,
+			}
+
+			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(updatedInternal)); err != nil {
+				return nil, fmt.Errorf("failed to store updated internal node: %w", err)
+			}
+
+			return updatedInternal, nil
+		}
+	} else {
+		// PARTIAL MATCH - need to split the compressed path
+		fmt.Printf("SPLITTING: matchLength=%d, compressedPath=%v\n", matchLength, curNode.CompressedPath)
+
+		// Modify current node to have the remaining compressed path
+		splitBitIndex := len(path) + matchLength
+		existingNodeBit := curNode.CompressedPath[matchLength]
+
+		modifiedExistingNode := &Node{
+			Hash:           curNode.Hash, // Keep original hash for now
+			Value:          curNode.Value,
+			OriginalKey:    curNode.OriginalKey,
+			CompressedPath: curNode.CompressedPath[matchLength+1:], // Skip the split bit
 		}
 
-		byteIndex := len(path) / 8
-		bitPos := 7 - (len(path) % 8)
-		bit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
+		// Store the cur node at its new position
+		existingChildPath := append(path, curNode.CompressedPath[:matchLength]...)
+		existingChildPath = append(existingChildPath, existingNodeBit)
 
-		if err := set(batch, addTreeNodePrefix(append(path, bit)), serializer.Serialize(curNode)); err != nil {
+		if err := set(batch, addTreeNodePrefix(existingChildPath), serializer.Serialize(modifiedExistingNode)); err != nil {
+			return nil, fmt.Errorf("failed to store modified existing node: %w", err)
+		}
+
+		// Create new leaf node with remaining key bits
+		keyBits := keyToBits(key)
+		newLeafPath := keyBits[splitBitIndex+1:] // Skip the split bit
+
+		newLeaf := &Node{
+			Hash:           calculateLeafHash(key, value),
+			Value:          value,
+			OriginalKey:    key,
+			CompressedPath: newLeafPath,
+		}
+
+		newLeafChildPath := append(path, curNode.CompressedPath[:matchLength]...)
+		newLeafChildPath = append(newLeafChildPath, 1-existingNodeBit)
+
+		if err := set(batch, addTreeNodePrefix(newLeafChildPath), serializer.Serialize(newLeaf)); err != nil {
 			return nil, fmt.Errorf("failed to store new leaf: %w", err)
 		}
 
-		if bit == 0 {
-			leftNode = curNode
+		// Calculate internal node hash
+		var leftHash, rightHash [32]byte
+		if existingNodeBit == 0 {
+			leftHash = modifiedExistingNode.Hash
+			rightHash = newLeaf.Hash
 		} else {
-			rightNode = curNode
+			leftHash = newLeaf.Hash
+			rightHash = modifiedExistingNode.Hash
 		}
+
+		// Create new internal node with the matching prefix
+		newInternal := &Node{
+			Hash:           calculateInternalNodeHash(leftHash, rightHash),
+			Value:          []byte{},
+			OriginalKey:    [31]byte{},
+			CompressedPath: curNode.CompressedPath[:matchLength],
+		}
+
+		// Store the new internal node
+		if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(newInternal)); err != nil {
+			return nil, fmt.Errorf("failed to store new internal node: %w", err)
+		}
+
+		return newInternal, nil
 	}
-
-	// Get the bit at current depth for the new leaf
-	byteIndex := len(path) / 8
-	bitPos := 7 - (len(path) % 8)
-	bit := (leafNode.OriginalKey[byteIndex] >> bitPos) & 1
-
-	var newLeftHash, newRightHash [32]byte
-	if bit == 0 {
-		// Go left
-		newLeft, err := upsertLeafHelper(batch, leftNode, leafNode, append(path, 0))
-		if err != nil {
-			return nil, err
-		}
-		newLeftHash = newLeft.Hash
-		if rightNode != nil {
-			newRightHash = rightNode.Hash
-		}
-	} else {
-		// Go right
-		newRight, err := upsertLeafHelper(batch, rightNode, leafNode, append(path, 1))
-		if err != nil {
-			return nil, err
-		}
-		newRightHash = newRight.Hash
-		if leftNode != nil {
-			newLeftHash = leftNode.Hash
-		}
-	}
-
-	// Create new internal node with updated child
-	newInternalNode := createInternalNode(newLeftHash, newRightHash)
-
-	if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(newInternalNode)); err != nil {
-		return nil, fmt.Errorf("failed to store new internal node: %w", err)
-	}
-
-	return newInternalNode, nil
 }
 
 // updateMerkleTreeForDelete updates the Merkle tree for a delete operation
 func updateMerkleTreeForDelete(batch *pebble.Batch, key [31]byte) error {
-	// For deletion, we need to recalculate the path without this leaf
-	return updateTreePath(batch, key, [32]byte{}, 247) // Start at deepest bit
+	return nil
 }
 
 // calculateLeafHash computes hash for a leaf node
@@ -512,4 +597,21 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 	copy(nodeData[:32], leftHash[:])
 	copy(nodeData[32:], rightHash[:])
 	return blake2b.Sum256(nodeData[:])
+}
+
+// keyToBits converts a [31]byte key to a slice of bytes where each byte represents a single bit (0 or 1)
+// This creates a 248-bit representation (31 bytes * 8 bits per byte)
+func keyToBits(key [31]byte) []byte {
+	bits := make([]byte, 248) // 31 bytes * 8 bits per byte
+
+	for byteIndex := 0; byteIndex < 31; byteIndex++ {
+		for bitPos := 0; bitPos < 8; bitPos++ {
+			bitIndex := byteIndex*8 + bitPos
+			// Extract bit at position (7-bitPos) from the byte
+			bit := (key[byteIndex] >> (7 - bitPos)) & 1
+			bits[bitIndex] = bit
+		}
+	}
+
+	return bits
 }
