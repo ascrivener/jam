@@ -252,8 +252,8 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(&initialize.State),
 			Height:             0,
-			// ForwardStateDiff:   globalBatch.Repr(),
-			// ReverseStateDiff:   reverseDiff.Repr(),
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

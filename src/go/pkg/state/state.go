@@ -111,7 +111,7 @@ type repositoryDataSource struct {
 }
 
 func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
-	value, closer, err := staterepository.GetStateKV(ds.batch, key[:])
+	value, closer, err := staterepository.GetStateKV(ds.batch, key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get component: %w", err)
 	}
@@ -420,7 +420,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 
 	// Store each component
 	for _, component := range componentData {
-		if err := staterepository.SetStateKV(batch, component.key[:], component.data); err != nil {
+		if err := staterepository.SetStateKV(batch, component.key, component.data); err != nil {
 			return fmt.Errorf("failed to store component: %w", err)
 		}
 	}

@@ -101,7 +101,7 @@ func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 
 	// Insert all state KVs from this state
 	for _, kv := range *s {
-		if err := staterepository.SetStateKV(batch, kv.OriginalKey[:], kv.Value); err != nil {
+		if err := staterepository.SetStateKV(batch, kv.OriginalKey, kv.Value); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
 		}
 	}

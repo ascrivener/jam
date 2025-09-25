@@ -152,6 +152,12 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	defer reverseDiff.Close()
 
 	merklizedState := merklizer.MerklizeState(merklizer.GetState(stfBatch))
+	test, err := staterepository.GetStateRoot(stfBatch)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to get state root: %w", err)
+	}
+	fmt.Println(merklizedState)
+	fmt.Println(test)
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,

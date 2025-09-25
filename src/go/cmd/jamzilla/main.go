@@ -140,8 +140,8 @@ func main() {
 		Info: block.BlockInfo{
 			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
 			Height:             0,
-			// ForwardStateDiff:   globalBatch.Repr(),
-			// ReverseStateDiff:   reverseDiff.Repr(),
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

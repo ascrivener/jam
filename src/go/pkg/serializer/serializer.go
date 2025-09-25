@@ -151,6 +151,14 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 		buf.Write(EncodeLittleEndian(l, x))
 		return
 
+	case reflect.Bool:
+		if v.Bool() {
+			buf.Write([]byte{1})
+		} else {
+			buf.Write([]byte{0})
+		}
+		return
+
 	default:
 		panic(fmt.Sprintf("unsupported kind: %s", v.Kind()))
 	}
@@ -323,6 +331,14 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 
 		x := DecodeLittleEndian(bytes[:l])
 		v.SetUint(x)
+		return nil
+
+	case reflect.Bool:
+		b, err := buf.ReadByte()
+		if err != nil {
+			return fmt.Errorf("failed to read bool value: %w", err)
+		}
+		v.SetBool(b == 1)
 		return nil
 
 	default:
