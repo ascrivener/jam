@@ -151,18 +151,15 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	}
 	defer reverseDiff.Close()
 
-	merklizedState := merklizer.MerklizeState(merklizer.GetState(stfBatch))
-	test, err := staterepository.GetStateRoot(stfBatch)
+	root, err := staterepository.GetStateRoot(stfBatch)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to get state root: %w", err)
 	}
-	fmt.Println(merklizedState)
-	fmt.Println(test)
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizedState,
+			PosteriorStateRoot: root,
 			Height:             parentBlock.Info.Height + 1,
 			ForwardStateDiff:   stfOperations.Repr(),
 			ReverseStateDiff:   reverseDiff.Repr(),
@@ -178,7 +175,7 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 
-	return merklizedState, nil
+	return root, nil
 }
 
 // StateTransitionFunction computes the new state given a state state and a valid block.

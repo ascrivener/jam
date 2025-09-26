@@ -99,6 +99,29 @@ func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 		return fmt.Errorf("iterator error: %w", err)
 	}
 
+	// delete tree too
+	treeIter, err := staterepository.NewIter(batch, &pebble.IterOptions{
+		LowerBound: []byte("tree:"),
+		UpperBound: []byte("tree;"), // Next ASCII character after ':'
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create tree iterator: %w", err)
+	}
+	defer treeIter.Close()
+
+	// Delete all existing tree entries
+	for treeIter.First(); treeIter.Valid(); treeIter.Next() {
+		key := append([]byte{}, treeIter.Key()...) // Make a copy of the key
+		if err := staterepository.DeleteRaw(batch, key); err != nil {
+			return fmt.Errorf("failed to delete existing tree key: %w", err)
+		}
+	}
+
+	// Check for tree iterator error
+	if err := treeIter.Error(); err != nil {
+		return fmt.Errorf("tree iterator error: %w", err)
+	}
+
 	// Insert all state KVs from this state
 	for _, kv := range *s {
 		if err := staterepository.SetStateKV(batch, kv.OriginalKey, kv.Value); err != nil {
