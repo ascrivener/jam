@@ -425,12 +425,33 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 				t.Errorf("State comparison failed for %s:", fileName)
 				t.Errorf("State mismatch (-expected +actual):\n%s", diff)
 			} else {
-				t.Logf("✓ State comparison passed for %s: states are identical", fileName)
+				t.Logf("State comparison passed for %s: states are identical", fileName)
 			}
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
+			// Also compare tree KVs to verify tree structure
+			treeKVs, err := staterepository.GetAllKVsFromTree(nil)
+			if err != nil {
+				t.Errorf("Failed to get tree KVs: %v", err)
+			} else {
+				t.Logf("Tree contains %d KV pairs", len(treeKVs))
+				// Convert expected state to comparable format
+				expectedKVs := make([]staterepository.StateKV, len(testVector.PostState.State))
+				for i, kv := range testVector.PostState.State {
+					expectedKVs[i] = staterepository.StateKV{
+						Key:   kv.OriginalKey,
+						Value: kv.Value,
+					}
+				}
+				compareTreeKVs(t, expectedKVs, treeKVs)
+				// Print tree structure for debugging
+				fmt.Println("=== DEBUGGING TREE STRUCTURE ===")
+				if err := staterepository.PrintTreeStructure(nil); err != nil {
+					t.Errorf("Failed to print tree structure: %v", err)
+				}
+			}
 		} else {
-			t.Logf("✓ State root verified for %s: %x", fileName, *resp.StateRoot)
+			t.Logf("State root verified for %s: %x", fileName, *resp.StateRoot)
 		}
 	}
 
@@ -464,6 +485,11 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
+		//"1756548459"
+		// "1757421101"
+		// if !strings.Contains(testDir, "1757421101") {
+		// 	continue
+		// }
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -595,7 +621,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 			if testVector.PostState.StateRoot != testVector.PreState.StateRoot {
 				t.Fatalf("ImportBlock failed for %s: %s", testFileName, string(*resp.Error))
 			}
-			t.Logf("✓ Test passed for %s! Error: %s", testFileName, string(*resp.Error))
+			t.Logf("Test passed for %s! Error: %s", testFileName, string(*resp.Error))
 			continue
 		}
 
@@ -628,15 +654,31 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 			// compare expectedState with actualState
 			if diff := cmp.Diff(expectedState, actualState); diff != "" {
-				t.Errorf("✗ State comparison failed for %s:", testFileName)
+				t.Errorf("State comparison failed for %s:", testFileName)
 				t.Errorf("State mismatch (-expected +actual):\n%s", diff)
 			} else {
-				t.Logf("✓ State comparison passed for %s: states are identical", testFileName)
+				t.Logf("State comparison passed for %s: states are identical", testFileName)
 			}
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
+			// Also compare tree KVs to verify tree structure
+			treeKVs, err := staterepository.GetAllKVsFromTree(nil)
+			if err != nil {
+				t.Errorf("Failed to get tree KVs: %v", err)
+			} else {
+				t.Logf("Tree contains %d KV pairs", len(treeKVs))
+				// Convert expected state to comparable format
+				expectedKVs := make([]staterepository.StateKV, len(testVector.PostState.State))
+				for i, kv := range testVector.PostState.State {
+					expectedKVs[i] = staterepository.StateKV{
+						Key:   kv.OriginalKey,
+						Value: kv.Value,
+					}
+				}
+				compareTreeKVs(t, expectedKVs, treeKVs)
+			}
 		} else {
-			t.Logf("✓ Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
+			t.Logf("Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
 		}
 	}
 }
@@ -780,6 +822,73 @@ func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 		t.Logf("KV comparison passed: KVs are identical")
 	} else {
 		t.Errorf("KV comparison failed")
+	}
+}
+
+func compareTreeKVs(t *testing.T, expectedKVs, actualKVs []staterepository.StateKV) {
+	// Compare the underlying KVs to show any differences
+	expectedKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range expectedKVs {
+		expectedKVsMap[kv.Key] = kv.Value
+	}
+
+	actualKVsMap := make(map[[31]byte][]byte)
+	for _, kv := range actualKVs {
+		actualKVsMap[kv.Key] = kv.Value
+	}
+
+	missingKVs := make([][31]byte, 0)
+	extraKVs := make([][31]byte, 0)
+	differentValues := make([][31]byte, 0)
+
+	for key := range expectedKVsMap {
+		if _, ok := actualKVsMap[key]; !ok {
+			missingKVs = append(missingKVs, key)
+		}
+	}
+
+	for key := range actualKVsMap {
+		if _, ok := expectedKVsMap[key]; !ok {
+			extraKVs = append(extraKVs, key)
+		}
+	}
+
+	// Check for keys with different values
+	for key, expectedValue := range expectedKVsMap {
+		if actualValue, exists := actualKVsMap[key]; exists {
+			if !bytes.Equal(expectedValue, actualValue) {
+				differentValues = append(differentValues, key)
+			}
+		}
+	}
+
+	if len(missingKVs) > 0 {
+		t.Errorf("Missing KVs:")
+		for _, key := range missingKVs {
+			t.Errorf("- %x: %x", key, expectedKVsMap[key])
+		}
+	}
+
+	if len(extraKVs) > 0 {
+		t.Errorf("Extra KVs:")
+		for _, key := range extraKVs {
+			t.Errorf("+ %x: %x", key, actualKVsMap[key])
+		}
+	}
+
+	if len(differentValues) > 0 {
+		t.Errorf("Keys with different values:")
+		for _, key := range differentValues {
+			t.Errorf("~ %x:", key)
+			t.Errorf("  Expected: %x", expectedKVsMap[key])
+			t.Errorf("  Actual:   %x", actualKVsMap[key])
+		}
+	}
+
+	if len(missingKVs) == 0 && len(extraKVs) == 0 && len(differentValues) == 0 {
+		t.Logf("Tree KV comparison passed: KVs are identical")
+	} else {
+		t.Errorf("Tree KV comparison failed")
 	}
 }
 

@@ -133,15 +133,20 @@ func main() {
 	}
 	defer reverseDiff.Close()
 
+	root, err := staterepository.GetStateRoot(globalBatch)
+	if err != nil {
+		log.Fatalf("Failed to get state root: %v", err)
+	}
+
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
 			Header: header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(merklizerState),
+			PosteriorStateRoot: root,
 			Height:             0,
-			// ForwardStateDiff:   globalBatch.Repr(),
-			// ReverseStateDiff:   reverseDiff.Repr(),
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 

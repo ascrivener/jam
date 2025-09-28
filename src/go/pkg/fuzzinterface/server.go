@@ -245,15 +245,20 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	}
 	defer reverseDiff.Close()
 
+	root, err := staterepository.GetStateRoot(globalBatch)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
+
 	blockWithInfo := &block.BlockWithInfo{
 		Block: block.Block{
 			Header: initialize.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: merklizer.MerklizeState(&initialize.State),
+			PosteriorStateRoot: root,
 			Height:             0,
-			// ForwardStateDiff:   globalBatch.Repr(),
-			// ReverseStateDiff:   reverseDiff.Repr(),
+			ForwardStateDiff:   globalBatch.Repr(),
+			ReverseStateDiff:   reverseDiff.Repr(),
 		},
 	}
 
@@ -268,7 +273,10 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	txSuccess = true
 
 	// Compute state root
-	stateRoot := merklizer.MerklizeState(merklizer.GetState(nil))
+	stateRoot, err := staterepository.GetStateRoot(nil)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
