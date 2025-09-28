@@ -3,8 +3,6 @@ package merklizer
 import (
 	"bytes"
 
-	"golang.org/x/crypto/blake2b"
-
 	"fmt"
 
 	"jam/pkg/staterepository"
@@ -129,78 +127,9 @@ func (s *State) OverwriteCurrentState(batch *pebble.Batch) error {
 		}
 	}
 
+	if err := staterepository.ApplyMerkleTreeUpdates(batch); err != nil {
+		return fmt.Errorf("failed to apply Merkle tree updates: %w", err)
+	}
+
 	return nil
-}
-
-func MerklizeState(state *State) [32]byte {
-	if len(*state) == 0 {
-		return [32]byte{}
-	}
-
-	keyMap := make(map[[31]byte]StateKV)
-	for _, stateKV := range *state {
-		keyMap[stateKV.OriginalKey] = stateKV
-	}
-
-	return merklizeStateRecurserBytes(keyMap, 0)
-}
-
-func merklizeStateRecurserBytes(keyMap map[[31]byte]StateKV, bitDepth int) [32]byte {
-	if len(keyMap) == 0 {
-		return [32]byte{}
-	}
-
-	if len(keyMap) == 1 {
-		// Leaf node - only use BitSequence here for formatting
-		for _, stateKV := range keyMap {
-			return hashLeafBytes(stateKV)
-		}
-	}
-
-	leftMap := make(map[[31]byte]StateKV)
-	rightMap := make(map[[31]byte]StateKV)
-
-	// Split based on bit at current depth
-	for key, stateKV := range keyMap {
-		// Direct bit extraction: (key[bitDepth/8] >> (7-bitDepth%8)) & 1
-		byteIndex := bitDepth / 8
-		bitPos := 7 - (bitDepth % 8)
-
-		if byteIndex < len(key) {
-			bit := (key[byteIndex] >> bitPos) & 1
-
-			if bit == 0 {
-				leftMap[key] = stateKV
-			} else {
-				rightMap[key] = stateKV
-			}
-		}
-	}
-
-	leftHash := merklizeStateRecurserBytes(leftMap, bitDepth+1)
-	rightHash := merklizeStateRecurserBytes(rightMap, bitDepth+1)
-
-	// Internal node hash - flip first bit of leftHash to 0, then concat
-	var nodeData [64]byte
-	leftHash[0] &= 0x7F // Clear first bit (set to 0)
-	copy(nodeData[:32], leftHash[:])
-	copy(nodeData[32:], rightHash[:])
-
-	return blake2b.Sum256(nodeData[:])
-}
-
-func hashLeafBytes(stateKV StateKV) [32]byte {
-	buf := make([]byte, 64)
-	if len(stateKV.Value) <= 32 {
-		maskedSize := uint8(len(stateKV.Value)) & 0x3F // Keep only lower 6 bits (skip upper 2)
-		buf[0] = 0x80 | maskedSize
-		copy(buf[1:32], stateKV.OriginalKey[:])
-		copy(buf[32:], stateKV.Value)
-	} else {
-		buf[0] = 0xC0
-		copy(buf[1:32], stateKV.OriginalKey[:])
-		valueHash := blake2b.Sum256(stateKV.Value)
-		copy(buf[32:], valueHash[:])
-	}
-	return blake2b.Sum256(buf)
 }

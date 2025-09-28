@@ -151,6 +151,11 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	}
 	defer reverseDiff.Close()
 
+	// update merkle tree (for each set, call UpdateMerkleTreeForSet, for each delete, call UpdateMerkleTreeForDelete)
+	if err := staterepository.ApplyMerkleTreeUpdates(stfBatch); err != nil {
+		return [32]byte{}, fmt.Errorf("failed to apply Merkle tree updates: %w", err)
+	}
+
 	root, err := staterepository.GetStateRoot(stfBatch)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to get state root: %w", err)

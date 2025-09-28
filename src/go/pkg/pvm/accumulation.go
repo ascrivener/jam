@@ -123,9 +123,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
-			mu.Lock()
 			defer wg.Done()
-			defer mu.Unlock()
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
 				batch,
 				accumulationStateComponents,
@@ -136,9 +134,12 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 				posteriorEntropyAccumulator,
 			)
 			if err != nil {
+				mu.Lock()
 				accumulationErrors = append(accumulationErrors, err)
+				mu.Unlock()
 				return
 			}
+			mu.Lock()
 
 			resultsByServiceIndex[sIndex] = components
 			if _, exists := originalServiceIndicesMap[sIndex]; exists {
@@ -184,6 +185,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 				}
 			}
 
+			mu.Unlock()
 		}(sIndex)
 	}
 	wg.Wait()
@@ -322,9 +324,7 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 			}
 			wg.Add(1)
 			go func(sIndex types.ServiceIndex) {
-				mu.Lock()
 				defer wg.Done()
-				defer mu.Unlock()
 				result, _, _, _, _, err := SingleServiceAccumulation(
 					batch,
 					accumulationStateComponents,
@@ -335,10 +335,14 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 					posteriorEntropyAccumulator,
 				)
 				if err != nil {
+					mu.Lock()
 					accumulationErrors = append(accumulationErrors, err)
+					mu.Unlock()
 					return
 				}
+				mu.Lock()
 				resultsByServiceIndex[sIndex] = result
+				mu.Unlock()
 			}(serviceIndex)
 		}
 	}

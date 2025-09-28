@@ -133,6 +133,83 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 	return result
 }
 
+// Cache for ring signature verification results
+type ringSignatureCache struct {
+	mu    sync.RWMutex
+	cache map[string]bool
+}
+
+var globalRingSignatureCache = &ringSignatureCache{
+	cache: make(map[string]bool),
+}
+
+// generateCacheKey creates a unique key for the signature verification inputs
+func generateRingSignatureCacheKey(
+	ringCommitment types.BandersnatchRingRoot,
+	message []byte,
+	context []byte,
+	signature types.BandersnatchRingVRFProof,
+) string {
+	hasher := sha256.New()
+	hasher.Write(ringCommitment[:])
+	hasher.Write(message)
+	hasher.Write(context)
+	hasher.Write(signature[:])
+	return string(hasher.Sum(nil))
+}
+
+// VerifyRingSignature verifies a ring signature with caching
+// Returns:
+//   - true if the signature is valid
+//   - false if the signature is invalid
+//   - error if there was a problem processing the inputs
+func VerifyRingSignature(
+	ringCommitment types.BandersnatchRingRoot,
+	message []byte,
+	context []byte,
+	signature types.BandersnatchRingVRFProof,
+) (bool, error) {
+	// Generate cache key
+	cacheKey := generateRingSignatureCacheKey(ringCommitment, message, context, signature)
+
+	// Check cache first
+	globalRingSignatureCache.mu.RLock()
+	if result, exists := globalRingSignatureCache.cache[cacheKey]; exists {
+		globalRingSignatureCache.mu.RUnlock()
+		return result, nil
+	}
+	globalRingSignatureCache.mu.RUnlock()
+
+	// Not in cache - perform actual verification
+	var contextPtr *C.uchar
+	var contextLen C.size_t
+
+	if len(context) > 0 {
+		contextPtr = (*C.uchar)(unsafe.Pointer(&context[0]))
+		contextLen = C.size_t(len(context))
+	}
+
+	ret := C.verify_ring_signature(
+		(*C.uchar)(unsafe.Pointer(&ringCommitment[0])),
+		C.size_t(len(ringCommitment)),
+		(*C.uchar)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		contextPtr,
+		contextLen,
+		(*C.uchar)(unsafe.Pointer(&signature[0])),
+		C.size_t(len(signature)),
+	)
+
+	result := ret == 1
+
+	// Cache the result
+	globalRingSignatureCache.mu.Lock()
+	globalRingSignatureCache.cache[cacheKey] = result
+	globalRingSignatureCache.mu.Unlock()
+
+	return result, nil
+}
+
 // VerifySignature verifies a Bandersnatch VRF signature
 // Returns:
 //   - true if the signature is valid
@@ -171,46 +248,5 @@ func VerifySignature(
 		return false, nil // Signature invalid
 	default:
 		return false, errors.New("error processing signature verification")
-	}
-}
-
-// VerifyRingSignature verifies a Bandersnatch ring VRF signature
-// Returns:
-//   - true if the signature is valid
-//   - false if the signature is invalid
-//   - error if there was a problem processing the inputs
-func VerifyRingSignature(
-	ringCommitment types.BandersnatchRingRoot,
-	message []byte,
-	context []byte,
-	signature types.BandersnatchRingVRFProof,
-) (bool, error) {
-	// Call the Rust FFI function
-	var contextPtr *C.uchar
-	var contextLen C.size_t
-
-	if len(context) > 0 {
-		contextPtr = (*C.uchar)(unsafe.Pointer(&context[0]))
-		contextLen = C.size_t(len(context))
-	}
-
-	ret := C.verify_ring_signature(
-		(*C.uchar)(unsafe.Pointer(&ringCommitment[0])),
-		C.size_t(len(ringCommitment)),
-		(*C.uchar)(unsafe.Pointer(&message[0])),
-		C.size_t(len(message)),
-		contextPtr,
-		contextLen,
-		(*C.uchar)(unsafe.Pointer(&signature[0])),
-		C.size_t(len(signature)),
-	)
-
-	switch ret {
-	case 1:
-		return true, nil // Signature valid
-	case 0:
-		return false, nil // Signature invalid
-	default:
-		return false, errors.New("error processing ring signature verification")
 	}
 }
