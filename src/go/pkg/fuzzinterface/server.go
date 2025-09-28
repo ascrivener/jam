@@ -327,6 +327,9 @@ func (s *Server) handleStartProfiling(data []byte) (ResponseMessage, error) {
 		s.cpuProfile = nil
 	}
 
+	// Enable blocking profile collection
+	runtime.SetBlockProfileRate(1) // Capture all blocking events
+
 	// Start new profiling
 	profileName := "cpu.prof"
 
@@ -368,6 +371,7 @@ func (s *Server) handleStartProfiling(data []byte) (ResponseMessage, error) {
 
 	log.Printf("Started CPU profiling: %s", profileName)
 	log.Printf("Started tracing: %s", traceName)
+	log.Printf("Enabled blocking profile collection")
 	return ResponseMessage{
 		ProfilingStatus: &ProfilingStatus{
 			Success: 1,
@@ -387,53 +391,43 @@ func (s *Server) handleStopProfiling() (ResponseMessage, error) {
 		}, nil
 	}
 
+	// Stop CPU profiling
 	pprof.StopCPUProfile()
 	s.cpuProfile.Close()
 	s.cpuProfile = nil
 
+	// Stop tracing
 	if s.traceFile != nil {
 		trace.Stop()
 		s.traceFile.Close()
 		s.traceFile = nil
 	}
 
+	// Save blocking profile
+	blockFile, err := os.Create("block.prof")
+	if err != nil {
+		log.Printf("Failed to create blocking profile: %v", err)
+	} else {
+		if err := pprof.Lookup("block").WriteTo(blockFile, 0); err != nil {
+			log.Printf("Failed to write blocking profile: %v", err)
+		}
+		blockFile.Close()
+		log.Printf("Blocking profile saved to block.prof")
+	}
+
+	// Reset blocking profile rate
+	runtime.SetBlockProfileRate(0)
+
 	var m2 runtime.MemStats
 	runtime.ReadMemStats(&m2)
 	log.Printf("Memory after profiling: Alloc=%d KB, Sys=%d KB, NumGC=%d",
 		m2.Alloc/1024, m2.Sys/1024, m2.NumGC)
 
-	heapProfileName := "heap.prof"
-	heapProfile, err := os.Create(heapProfileName)
-	if err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to create heap profile file: %w", err)
-	}
-	defer heapProfile.Close()
-
-	if err := pprof.WriteHeapProfile(heapProfile); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to write heap profile: %w", err)
-	}
-
-	log.Printf("Heap profile saved to %s", heapProfileName)
-
-	// Capture goroutine profile to see what's coordinating
-	goroutineProfileName := "goroutine.prof"
-	goroutineProfile, err := os.Create(goroutineProfileName)
-	if err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to create goroutine profile file: %w", err)
-	}
-	defer goroutineProfile.Close()
-
-	if err := pprof.Lookup("goroutine").WriteTo(goroutineProfile, 0); err != nil {
-		return ResponseMessage{}, fmt.Errorf("failed to write goroutine profile: %w", err)
-	}
-
-	log.Printf("Goroutine profile saved to %s", goroutineProfileName)
-
-	log.Println("Stopped CPU profiling")
+	log.Printf("Stopped CPU profiling")
 	return ResponseMessage{
 		ProfilingStatus: &ProfilingStatus{
 			Success: 1,
-			Message: []byte("Profiling stopped"),
+			Message: []byte("Profiling stopped successfully"),
 		},
 	}, nil
 }

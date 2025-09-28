@@ -958,7 +958,7 @@ type safroleResult struct {
 }
 
 func initSafroleWorker() {
-	safroleTaskChan = make(chan safroleTask)
+	safroleTaskChan = make(chan safroleTask, 1)
 	go func() {
 		for task := range safroleTaskChan {
 			result, err := computeSafroleBasicState(

@@ -206,7 +206,7 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/preimages"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/fallback"
             }
         },
         {
@@ -218,6 +218,7 @@
             "args": [
                 "-test.v",
                 "-test.run=TestConformanceVectors",
+                "-test.cpuprofile=cpu.prof"
             ],
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",

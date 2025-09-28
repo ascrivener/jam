@@ -210,7 +210,32 @@ func VerifyRingSignature(
 	return result, nil
 }
 
-// VerifySignature verifies a Bandersnatch VRF signature
+// Cache for signature verification results
+type signatureCache struct {
+	mu    sync.RWMutex
+	cache map[string]bool
+}
+
+var globalSignatureCache = &signatureCache{
+	cache: make(map[string]bool),
+}
+
+// generateSignatureCacheKey creates a unique key for the signature verification inputs
+func generateSignatureCacheKey(
+	publicKey types.BandersnatchPublicKey,
+	message []byte,
+	context []byte,
+	signature types.BandersnatchVRFSignature,
+) string {
+	hasher := sha256.New()
+	hasher.Write(publicKey[:])
+	hasher.Write(message)
+	hasher.Write(context)
+	hasher.Write(signature[:])
+	return string(hasher.Sum(nil))
+}
+
+// VerifySignature verifies a Bandersnatch VRF signature with caching
 // Returns:
 //   - true if the signature is valid
 //   - false if the signature is invalid
@@ -221,7 +246,18 @@ func VerifySignature(
 	context []byte,
 	signature types.BandersnatchVRFSignature,
 ) (bool, error) {
-	// Call the Rust FFI function
+	// Generate cache key
+	cacheKey := generateSignatureCacheKey(publicKey, message, context, signature)
+
+	// Check cache first
+	globalSignatureCache.mu.RLock()
+	if result, exists := globalSignatureCache.cache[cacheKey]; exists {
+		globalSignatureCache.mu.RUnlock()
+		return result, nil
+	}
+	globalSignatureCache.mu.RUnlock()
+
+	// Not in cache - perform actual verification
 	var contextPtr *C.uchar
 	var contextLen C.size_t
 
@@ -243,9 +279,19 @@ func VerifySignature(
 
 	switch ret {
 	case 1:
-		return true, nil // Signature valid
+		result := true
+		// Cache the result
+		globalSignatureCache.mu.Lock()
+		globalSignatureCache.cache[cacheKey] = result
+		globalSignatureCache.mu.Unlock()
+		return result, nil // Signature valid
 	case 0:
-		return false, nil // Signature invalid
+		result := false
+		// Cache the result
+		globalSignatureCache.mu.Lock()
+		globalSignatureCache.cache[cacheKey] = result
+		globalSignatureCache.mu.Unlock()
+		return result, nil // Signature invalid
 	default:
 		return false, errors.New("error processing signature verification")
 	}

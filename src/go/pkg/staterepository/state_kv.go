@@ -34,12 +34,8 @@ func GetTreeNode(batch *pebble.Batch, path []byte) (*Node, error) {
 	}
 	defer closer.Close()
 
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-
 	var node Node
-	if err := serializer.Deserialize(result, &node); err != nil {
+	if err := serializer.Deserialize(value, &node); err != nil {
 		return nil, err
 	}
 	return &node, nil
@@ -622,8 +618,13 @@ func addWorkReportPrefix(key []byte) []byte {
 	return append([]byte("workreport:"), key...)
 }
 
+var treePrefix = []byte("tree:")
+
 func addTreeNodePrefix(key []byte) []byte {
-	return append([]byte("tree:"), key...)
+	result := make([]byte, len(treePrefix)+len(key))
+	copy(result, treePrefix)
+	copy(result[len(treePrefix):], key)
+	return result
 }
 
 // GetStateRoot retrieves the current Merkle root

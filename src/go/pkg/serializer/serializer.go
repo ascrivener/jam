@@ -43,6 +43,7 @@ func Serialize(v any) []byte {
 	}
 
 	var buf bytes.Buffer
+	buf.Grow(256)
 	serializeValue(val, &buf)
 
 	return buf.Bytes()
