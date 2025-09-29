@@ -665,43 +665,36 @@ type BlockWithInfo struct {
 }
 
 type BlockInfo struct {
-	PosteriorStateRoot [32]byte
-	Height             uint64
-	ForwardStateDiff   []byte
-	ReverseStateDiff   []byte
+	PosteriorStateRoot  [32]byte
+	Height              uint64
+	ForwardStateChanges map[[31]byte][]byte
 }
 
-func Get(batch *pebble.Batch, headerHash [32]byte) (*BlockWithInfo, error) {
+func Get(tx *staterepository.TrackedTx, headerHash [32]byte) (*BlockWithInfo, error) {
 	// Retrieve the serialized block from the repository
-	data, closer, err := staterepository.GetBlock(batch, headerHash[:])
+	data, exists, err := staterepository.GetBlockKV(tx, headerHash)
 	if err != nil {
 		return nil, err
 	}
-	defer closer.Close()
-
-	// Make a copy of the data since it's only valid until closer.Close()
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
+	if !exists {
+		return nil, errors.ProtocolErrorf("block %x not found", headerHash)
+	}
 
 	var blockWithInfo BlockWithInfo
-	if err := serializer.Deserialize(dataCopy, &blockWithInfo); err != nil {
+	if err := serializer.Deserialize(data, &blockWithInfo); err != nil {
 		return nil, fmt.Errorf("failed to deserialize block %x: %w", headerHash, err)
 	}
 
 	return &blockWithInfo, nil
 }
 
-func GetAnchorBlock(batch *pebble.Batch, header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
+func GetAnchorBlock(tx *staterepository.TrackedTx, header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
 	currentHeaderHash := header.ParentHash
 	for {
 		// Get the current block
-		blockWithInfo, err := Get(batch, currentHeaderHash)
+		blockWithInfo, err := Get(tx, currentHeaderHash)
 		if err != nil {
-			if err == pebble.ErrNotIndexed {
-				return nil, errors.ProtocolErrorf("ancestor chain ended without finding anchor block %x", targetAnchorHeaderHash)
-			} else {
-				return nil, fmt.Errorf("failed to get block %x: %w", currentHeaderHash, err)
-			}
+			return nil, fmt.Errorf("failed to get block %x: %w", currentHeaderHash, err)
 		}
 
 		// Check if the block is too old (more than 24 hours)
@@ -717,85 +710,20 @@ func GetAnchorBlock(batch *pebble.Batch, header header.Header, targetAnchorHeade
 	}
 }
 
-func FindLCA(batch *pebble.Batch, block1, block2 *BlockWithInfo) (*BlockWithInfo, error) {
-	// Handle nil cases
-	if block1 == nil || block2 == nil {
-		return nil, fmt.Errorf("cannot find LCA with nil blocks")
-	}
-
-	// If blocks are the same, they are their own LCA
-	block1Hash := blake2b.Sum256(serializer.Serialize(&block1.Block.Header))
-	block2Hash := blake2b.Sum256(serializer.Serialize(&block2.Block.Header))
-	if block1Hash == block2Hash {
-		return block1, nil
-	}
-
-	// Make sure block1 is the higher block (swap if needed)
-	if block2.Info.Height > block1.Info.Height {
-		block1, block2 = block2, block1
-	}
-
-	// Walk block1 back to the same height as block2
-	current1 := block1
-
-	for current1.Info.Height > block2.Info.Height {
-		if current1.Block.Header.ParentHash == [32]byte{} {
-			return nil, fmt.Errorf("reached genesis without finding common height")
-		}
-
-		parent, err := Get(batch, current1.Block.Header.ParentHash)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get parent block: %w", err)
-		}
-		current1 = parent
-	}
-
-	// Now walk both blocks back together until they meet
-	current2 := block2
-
-	for {
-		// Check if we found the LCA
-		current1Hash := blake2b.Sum256(serializer.Serialize(&current1.Block.Header))
-		current2Hash := blake2b.Sum256(serializer.Serialize(&current2.Block.Header))
-		if current1Hash == current2Hash {
-			return current1, nil
-		}
-
-		// Check if we've reached genesis
-		if current1.Block.Header.ParentHash == [32]byte{} || current2.Block.Header.ParentHash == [32]byte{} {
-			return nil, fmt.Errorf("reached genesis without finding common ancestor")
-		}
-
-		// Move both blocks to their parents
-		parent1, err := Get(batch, current1.Block.Header.ParentHash)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get parent block for block1: %w", err)
-		}
-
-		parent2, err := Get(batch, current2.Block.Header.ParentHash)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get parent block for block2: %w", err)
-		}
-
-		current1 = parent1
-		current2 = parent2
-	}
-}
-
-func (block *BlockWithInfo) GetPathFromAncestor(batch *pebble.Batch, ancestor *BlockWithInfo) ([]*BlockWithInfo, error) {
+func (block *BlockWithInfo) GetPathFromAncestor(tx *staterepository.TrackedTx, ancestor *BlockWithInfo) ([]*BlockWithInfo, error) {
 	if block == nil || ancestor == nil {
 		return nil, fmt.Errorf("block and ancestor cannot be nil")
 	}
 
 	// If LCA and target are the same, return empty path
-	ancestorHash := blake2b.Sum256(serializer.Serialize(&ancestor.Block.Header))
+	ancestorHash := ancestor.Block.Header.Hash()
 	// Build path from target back to LCA
 	var path []*BlockWithInfo
 	current := block
 
 	for {
 		// Check if we've reached ancestor
-		if blake2b.Sum256(serializer.Serialize(&current.Block.Header)) == ancestorHash {
+		if current.Block.Header.Hash() == ancestorHash {
 			// Found ancestor
 			break
 		}
@@ -809,7 +737,7 @@ func (block *BlockWithInfo) GetPathFromAncestor(batch *pebble.Batch, ancestor *B
 		path = append([]*BlockWithInfo{current}, path...)
 
 		// Move to parent
-		parent, err := Get(batch, current.Block.Header.ParentHash)
+		parent, err := Get(tx, current.Block.Header.ParentHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get parent block: %w", err)
 		}
@@ -819,50 +747,39 @@ func (block *BlockWithInfo) GetPathFromAncestor(batch *pebble.Batch, ancestor *B
 	return path, nil
 }
 
-func ReplayPath(globalBatch *pebble.Batch, path []*BlockWithInfo) error {
+func ReplayPath(tx *staterepository.TrackedTx, path []*BlockWithInfo) error {
 	for _, blockToReplay := range path {
-		// Apply the forward diff for this block
-		if len(blockToReplay.Info.ForwardStateDiff) > 0 {
-			// Create a batch from the forward diff representation
-			forwardBatch := staterepository.NewBatch()
-			if forwardBatch == nil {
-				return fmt.Errorf("failed to create forward batch")
-			}
-			defer forwardBatch.Close()
-
-			// Set the batch representation to the stored forward diff
-			if err := forwardBatch.SetRepr(blockToReplay.Info.ForwardStateDiff); err != nil {
-				return fmt.Errorf("failed to set forward batch repr: %w", err)
-			}
-
-			// Apply the forward batch to the global batch
-			if err := globalBatch.Apply(forwardBatch, nil); err != nil {
-				return fmt.Errorf("failed to apply forward batch: %w", err)
+		// Apply each forward state change to replay this block's changes
+		for key, value := range blockToReplay.Info.ForwardStateChanges {
+			if value != nil {
+				if err := staterepository.SetStateKV(tx, key, value); err != nil {
+					return fmt.Errorf("failed to apply forward set operation: %w", err)
+				}
+			} else {
+				if err := staterepository.DeleteStateKV(tx, key); err != nil {
+					return fmt.Errorf("failed to apply forward delete operation: %w", err)
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func (b *BlockWithInfo) Set(batch *pebble.Batch) error {
+func (block *BlockWithInfo) Set(tx *staterepository.TrackedTx) error {
 
 	// Calculate the header hash
-	headerBytes := serializer.Serialize(&b.Block.Header)
-	headerHash := blake2b.Sum256(headerBytes)
-
-	// Create a key with a prefix
-	key := makeBlockKey(headerHash)
+	headerHash := block.Block.Header.Hash()
 
 	// Serialize the block
-	data := serializer.Serialize(b)
+	data := serializer.Serialize(block)
 
 	// Store the serialized block in the repository
-	if err := batch.Set(key, data, nil); err != nil { // Use batch instead of repo
+	if err := staterepository.SetBlockKV(tx, headerHash, data); err != nil { // Use batch instead of repo
 		return fmt.Errorf("failed to store block %x: %w", headerHash, err)
 	}
 
 	// Automatically update the chain tip when storing a new block
-	if err := setTip(batch, headerHash); err != nil {
+	if err := staterepository.SetTip(tx, headerHash); err != nil {
 		return fmt.Errorf("failed to update chain tip: %w", err)
 	}
 
@@ -870,287 +787,18 @@ func (b *BlockWithInfo) Set(batch *pebble.Batch) error {
 }
 
 // GetTip retrieves the current chain tip block from the database
-func GetTip(batch *pebble.Batch) (*BlockWithInfo, error) {
-	var block *BlockWithInfo
-
+func GetTip(tx *staterepository.TrackedTx) (*BlockWithInfo, error) {
 	// Get the chain tip header hash
-	value, closer, err := staterepository.GetTip(batch)
+	headerHash, err := staterepository.GetTip(tx)
 	if err != nil {
-		if err == pebble.ErrNotFound {
-			return block, fmt.Errorf("chain tip not found")
-		}
-		return block, fmt.Errorf("failed to get chain tip: %w", err)
+		return nil, fmt.Errorf("failed to get chain tip: %w", err)
 	}
-	defer closer.Close()
-
-	if len(value) != 32 {
-		return block, fmt.Errorf("invalid chain tip hash length: expected 32 bytes, got %d", len(value))
-	}
-
-	var headerHash [32]byte
-	copy(headerHash[:], value)
 
 	// Get the actual block using the header hash
-	return Get(batch, headerHash)
-}
-
-// setTip sets the current chain tip header hash in the database (internal function)
-func setTip(batch *pebble.Batch, headerHash [32]byte) error {
-	key := []byte("meta:chaintip")
-
-	if err := batch.Set(key, headerHash[:], nil); err != nil {
-		return fmt.Errorf("failed to set chain tip %x: %w", headerHash, err)
-	}
-
-	return nil
+	return Get(tx, headerHash)
 }
 
 // Helper functions for key construction
 func makeBlockKey(headerHash [32]byte) []byte {
 	return append([]byte("block:"), headerHash[:]...)
-}
-
-func ComputeBatchDelta(view *pebble.Batch, viewWithBatch *pebble.Batch) (*pebble.Batch, error) {
-	deltaBatch := staterepository.NewIndexedBatch()
-
-	// Build a map of view operations for quick lookup
-	viewOps := make(map[string]struct {
-		kind  pebble.InternalKeyKind
-		value []byte
-	})
-
-	// Read view batch operations using pebble.ReadBatch
-	viewRepr := view.Repr()
-	if len(viewRepr) > 0 {
-		viewReader, _ := pebble.ReadBatch(viewRepr)
-		for {
-			kind, key, value, ok, err := viewReader.Next()
-			if err != nil {
-				return nil, fmt.Errorf("failed to read view batch operation: %w", err)
-			}
-			if !ok {
-				break
-			}
-
-			keyStr := string(key)
-			valueCopy := make([]byte, len(value))
-			copy(valueCopy, value)
-
-			viewOps[keyStr] = struct {
-				kind  pebble.InternalKeyKind
-				value []byte
-			}{
-				kind:  kind,
-				value: valueCopy,
-			}
-		}
-	}
-
-	// Read combined batch operations and extract delta
-	combinedRepr := viewWithBatch.Repr()
-	if len(combinedRepr) > 0 {
-		combinedReader, _ := pebble.ReadBatch(combinedRepr)
-		for {
-			kind, key, value, ok, err := combinedReader.Next()
-			if err != nil {
-				return nil, fmt.Errorf("failed to read combined batch operation: %w", err)
-			}
-			if !ok {
-				break
-			}
-
-			keyStr := string(key)
-			if viewOp, exists := viewOps[keyStr]; exists {
-				// Key exists in view - check if it's different
-				if viewOp.kind != kind || !bytes.Equal(viewOp.value, value) {
-					// Different operation - this is from the delta
-					switch kind {
-					case pebble.InternalKeyKindSet:
-						deltaBatch.Set(key, value, nil)
-					case pebble.InternalKeyKindDelete:
-						deltaBatch.Delete(key, nil)
-					}
-				}
-				// Same operation - skip (it's from view)
-			} else {
-				// Key doesn't exist in view - this is definitely from the delta
-				switch kind {
-				case pebble.InternalKeyKindSet:
-					deltaBatch.Set(key, value, nil)
-				case pebble.InternalKeyKindDelete:
-					deltaBatch.Delete(key, nil)
-				}
-			}
-		}
-	}
-
-	return deltaBatch, nil
-}
-
-func GenerateReverseBatch(view, batch *pebble.Batch) (*pebble.Batch, error) {
-	if batch == nil {
-		return nil, fmt.Errorf("batch cannot be nil")
-	}
-
-	// Create a new batch for the reverse operations
-	reverseBatch := staterepository.NewBatch()
-	if reverseBatch == nil {
-		return nil, fmt.Errorf("failed to create reverse batch")
-	}
-
-	// Get the batch representation to iterate through operations
-	repr := batch.Repr()
-	if len(repr) == 0 {
-		return reverseBatch, nil // Empty batch, return empty reverse batch
-	}
-
-	// Track processed keys to handle multiple operations on the same key
-	// Only the FIRST operation on each key matters for generating the reverse diff
-	processedKeys := make(map[string]struct{})
-
-	// Create a batch reader to iterate through operations
-	reader, count := pebble.ReadBatch(repr)
-	if count == 0 {
-		return reverseBatch, nil // No operations to reverse
-	}
-
-	// Iterate through each operation in the batch
-	for {
-		kind, key, _, ok, err := reader.Next()
-		if err != nil {
-			reverseBatch.Close()
-			return nil, fmt.Errorf("failed to read batch operation: %w", err)
-		}
-		if !ok {
-			break // No more operations
-		}
-
-		keyStr := string(key)
-
-		// Skip if we've already processed this key
-		if _, exists := processedKeys[keyStr]; exists {
-			continue
-		}
-		processedKeys[keyStr] = struct{}{}
-
-		switch kind {
-		case pebble.InternalKeyKindSet:
-			// For a Set operation (key, newValue), we need to:
-			// 1. Get the original value from the view (current state before this batch)
-			// 2. Create a reverse Set operation (key, originalValue) or Delete if key didn't exist
-
-			originalValue, closer, err := staterepository.GetRaw(view, key) // Use view to get current state
-			if err == pebble.ErrNotFound {
-				// Key didn't exist before, so reverse operation is Delete
-				if err := reverseBatch.Delete(key, nil); err != nil {
-					reverseBatch.Close()
-					return nil, fmt.Errorf("failed to add reverse delete for key %x: %w", key, err)
-				}
-			} else if err != nil {
-				reverseBatch.Close()
-				return nil, fmt.Errorf("failed to get original value for key %x: %w", key, err)
-			} else {
-				// Key existed, so reverse operation is Set with original value
-				// Copy the value before closing
-				originalValueCopy := make([]byte, len(originalValue))
-				copy(originalValueCopy, originalValue)
-				closer.Close()
-
-				if err := reverseBatch.Set(key, originalValueCopy, nil); err != nil {
-					reverseBatch.Close()
-					return nil, fmt.Errorf("failed to add reverse set for key %x: %w", key, err)
-				}
-			}
-
-		case pebble.InternalKeyKindDelete:
-			// For a Delete operation, we need to:
-			// 1. Get the original value from the view (current state before this batch)
-			// 2. Create a reverse Set operation (key, originalValue)
-
-			originalValue, closer, err := staterepository.GetRaw(view, key) // Use view to get current state
-			if err == pebble.ErrNotFound {
-				// Key didn't exist, so deleting it has no effect - no reverse operation needed
-				continue
-			} else if err != nil {
-				reverseBatch.Close()
-				return nil, fmt.Errorf("failed to get original value for deleted key %x: %w", key, err)
-			} else {
-				// Key existed, so reverse operation is Set with original value
-				// Copy the value before closing
-				originalValueCopy := make([]byte, len(originalValue))
-				copy(originalValueCopy, originalValue)
-				closer.Close()
-
-				if err := reverseBatch.Set(key, originalValueCopy, nil); err != nil {
-					reverseBatch.Close()
-					return nil, fmt.Errorf("failed to add reverse set for deleted key %x: %w", key, err)
-				}
-			}
-
-		case pebble.InternalKeyKindMerge:
-			reverseBatch.Close()
-			return nil, fmt.Errorf("merge operation not supported")
-		default:
-			reverseBatch.Close()
-			return nil, fmt.Errorf("unknown operation type: %d", kind)
-		}
-	}
-
-	return reverseBatch, nil
-}
-
-func (block *BlockWithInfo) RewindToBlock(globalBatch *pebble.Batch, targetBlock *BlockWithInfo) error {
-	if block == nil || targetBlock == nil {
-		return fmt.Errorf("blocks cannot be nil")
-	}
-
-	// Calculate target hash for comparison
-	targetHash := blake2b.Sum256(serializer.Serialize(&targetBlock.Block.Header))
-
-	// Walk backwards from current block to target block, applying reverse diffs
-	currentBlock := block
-
-	for {
-		// Check if we've reached the target block
-		currentHash := blake2b.Sum256(serializer.Serialize(&currentBlock.Block.Header))
-		if currentHash == targetHash {
-			break
-		}
-
-		// Move to parent block
-		if currentBlock.Block.Header.ParentHash == [32]byte{} {
-			// Reached genesis block, error
-			return fmt.Errorf("reached genesis block without finding target block")
-		}
-
-		// Apply the reverse diff for this block to undo its changes
-		if len(currentBlock.Info.ReverseStateDiff) > 0 {
-			// Create a batch from the reverse diff representation
-			reverseBatch := staterepository.NewBatch()
-			if reverseBatch == nil {
-				return fmt.Errorf("failed to create reverse batch")
-			}
-			defer reverseBatch.Close()
-
-			// Set the batch representation to the stored reverse diff
-			if err := reverseBatch.SetRepr(currentBlock.Info.ReverseStateDiff); err != nil {
-				return fmt.Errorf("failed to set reverse batch repr: %w", err)
-			}
-
-			// Apply the reverse batch to the global batch
-			if err := globalBatch.Apply(reverseBatch, nil); err != nil {
-				return fmt.Errorf("failed to apply reverse batch: %w", err)
-			}
-		}
-
-		// Get the parent block
-		parentBlock, err := Get(globalBatch, currentBlock.Block.Header.ParentHash)
-		if err != nil {
-			return fmt.Errorf("failed to get parent block %x: %w", currentBlock.Block.Header.ParentHash, err)
-		}
-
-		currentBlock = parentBlock
-	}
-
-	return nil
 }

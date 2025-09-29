@@ -67,11 +67,7 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	parentBlock, err := block.Get(nil, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
-		if err == pebble.ErrNotIndexed {
-			return [32]byte{}, errors.ProtocolErrorf("parent block not found")
-		} else {
-			return [32]byte{}, fmt.Errorf("failed to get parent block: %w", err)
-		}
+		return [32]byte{}, err
 	}
 
 	// (5.4)
@@ -88,36 +84,41 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
 	// }
 
-	// Always find LCA and apply necessary state transitions
-	currentTip, err := block.GetTip(nil)
+	// 1. Begin a transaction for reorganization
+	tx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
+	}
+	// Use a separate txErr variable to track transaction errors
+	defer tx.Rollback()
+
+	priorStateRoot, err := staterepository.GetStateRoot(tx)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to get current tip: %w", err)
 	}
-	// Find LCA using the efficient height-based algorithm
-	lca, err := block.FindLCA(nil, currentTip, parentBlock)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to find LCA: %w", err)
-	}
 
-	// 1. Begin a transaction for reorganization
-	reorgBatch := staterepository.NewIndexedBatch()
-	// Use a separate txErr variable to track transaction errors
-	defer reorgBatch.Close()
+	// If current tip is not the parent block, we need to reorganize
+	if priorStateRoot != parentBlock.Info.PosteriorStateRoot {
+		// 1. Find latest snapshot before parent block
+		latestSnapshot, err := block.FindLatestSnapshotBefore(parentBlock)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("failed to find latest snapshot: %w", err)
+		}
 
-	// Rewind from current tip to LCA
-	if err := currentTip.RewindToBlock(reorgBatch, lca); err != nil {
-		return [32]byte{}, err
-	}
+		// 2. Load snapshot state
+		if err := staterepository.LoadSnapshot(tx, latestSnapshot.StateRoot); err != nil {
+			return [32]byte{}, fmt.Errorf("failed to load snapshot: %w", err)
+		}
 
-	// Get the specific path from LCA to parent block
-	pathFromLCAToParent, err := parentBlock.GetPathFromAncestor(reorgBatch, lca)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to get path from LCA to parent: %w", err)
-	}
+		// 3. Replay forward changes from snapshot to parent
+		pathFromSnapshot, err := parentBlock.GetPathFromAncestor(tx, latestSnapshot)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("failed to get path from snapshot: %w", err)
+		}
 
-	// Replay the specific path
-	if err := block.ReplayPath(reorgBatch, pathFromLCAToParent); err != nil {
-		return [32]byte{}, err
+		if err := block.ReplayPath(tx, pathFromSnapshot); err != nil {
+			return [32]byte{}, err
+		}
 	}
 
 	// 5.8
@@ -125,38 +126,19 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("parent block state root does not match merklized state")
 	}
 
-	// 2. Begin a transaction for the STF
-	stfBatch := staterepository.NewIndexedBatch()
-	defer stfBatch.Close()
-
-	if err := stfBatch.Apply(reorgBatch, nil); err != nil {
-		return [32]byte{}, fmt.Errorf("failed to apply reorgBatch: %w", err)
-	}
+	tx.SetMemoryMode(true)
 
 	// Run state transition function on globalBatch (so it sees the parentBlock state)
-	if err := stfHelper(stfBatch, curBlock); err != nil {
+	if err := stfHelper(tx, curBlock); err != nil {
 		return [32]byte{}, err
 	}
 
-	stfOperations, err := block.ComputeBatchDelta(reorgBatch, stfBatch)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to compute batch delta: %w", err)
-	}
-	defer stfOperations.Close()
-
-	//  Generate reverse diff: operations to go from current block state back to parentBlock state
-	reverseDiff, err := block.GenerateReverseBatch(reorgBatch, stfOperations)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to generate reverse diff: %w", err)
-	}
-	defer reverseDiff.Close()
-
 	// update merkle tree (for each set, call UpdateMerkleTreeForSet, for each delete, call UpdateMerkleTreeForDelete)
-	if err := staterepository.ApplyMerkleTreeUpdates(stfBatch); err != nil {
+	if err := staterepository.ApplyMerkleTreeUpdates(tx); err != nil {
 		return [32]byte{}, fmt.Errorf("failed to apply Merkle tree updates: %w", err)
 	}
 
-	root, err := staterepository.GetStateRoot(stfBatch)
+	root, err := staterepository.GetStateRoot(tx)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to get state root: %w", err)
 	}
@@ -164,19 +146,18 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot: root,
-			Height:             parentBlock.Info.Height + 1,
-			ForwardStateDiff:   stfOperations.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			PosteriorStateRoot:  root,
+			Height:              parentBlock.Info.Height + 1,
+			ForwardStateChanges: tx.GetStateChanges(),
 		},
 	}
 
-	if err := blockWithInfo.Set(stfBatch); err != nil {
+	if err := blockWithInfo.Set(tx); err != nil {
 		return [32]byte{}, fmt.Errorf("failed to save block with info: %w", err)
 	}
 
 	// Commit the transaction
-	if err := stfBatch.Commit(nil); err != nil {
+	if err := tx.Commit(); err != nil {
 		return [32]byte{}, err
 	}
 
@@ -186,10 +167,10 @@ func STF(curBlock block.Block) ([32]byte, error) {
 // StateTransitionFunction computes the new state given a state state and a valid block.
 // Each field in the new state is computed concurrently. Each compute function returns the
 // "posterior" value (the new field) and an optional error.
-func stfHelper(batch *pebble.Batch, curBlock block.Block) error {
+func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 
 	// Load state
-	priorState, err := state.GetState(batch)
+	priorState, err := state.GetState(tx)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}

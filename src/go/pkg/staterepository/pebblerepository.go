@@ -4,36 +4,54 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
 
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/blake2b"
 )
 
-// PebbleStateRepository implements StateRepository using PebbleDB
-type PebbleStateRepository struct {
-	db *pebble.DB
+// BoltStateRepository implements StateRepository using BoltDB
+type BoltStateRepository struct {
+	db *bolt.DB
 }
 
-// newPebbleStateRepository creates a new PebbleDB-backed repository
-func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
-	var opts *pebble.Options
+// newBoltStateRepository creates a new BoltDB-backed repository
+func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
+	var db *bolt.DB
+	var err error
 
 	if dbPath == "" {
-		// Use in-memory filesystem for empty path
-		opts = &pebble.Options{
-			FS: vfs.NewMem(),
-		}
-		dbPath = "/tmp" // Use any path with memory FS
+		// Use in-memory database for empty path
+		db, err = bolt.Open(":memory:", 0600, nil)
 	} else {
-		opts = &pebble.Options{}
+		db, err = bolt.Open(dbPath, 0600, nil)
 	}
 
-	db, err := pebble.Open(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	return &PebbleStateRepository{
+	// Create required buckets
+	err = db.Update(func(tx *bolt.Tx) error {
+		// Create state bucket for key-value storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("state")); err != nil {
+			return err
+		}
+		// Create tree bucket for Merkle tree nodes
+		if _, err := tx.CreateBucketIfNotExists([]byte("tree")); err != nil {
+			return err
+		}
+		// Create blocks bucket for block storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("blocks")); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &BoltStateRepository{
 		db: db,
 	}, nil
 }
@@ -113,7 +131,7 @@ func makeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32,
 }
 
 // Close closes the database
-func (r *PebbleStateRepository) Close() error {
+func (r *BoltStateRepository) Close() error {
 	if r.db != nil {
 		return r.db.Close()
 	}
