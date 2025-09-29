@@ -15,15 +15,13 @@ import (
 
 type Node struct {
 	Hash        [32]byte
-	Value       []byte
 	OriginalKey [31]byte
 	LeftHash    [32]byte // For internal nodes
 	RightHash   [32]byte // For internal nodes
 }
 
-type StateKV struct {
-	Key   [31]byte
-	Value []byte
+func (n *Node) IsLeaf() bool {
+	return n.LeftHash == [32]byte{} && n.RightHash == [32]byte{}
 }
 
 func GetTreeNode(batch *pebble.Batch, path []byte) (*Node, error) {
@@ -52,7 +50,6 @@ func createInternalNodeWithBit(batch *pebble.Batch, curNode *Node, key [31]byte,
 	// Create internal node
 	internalNode := &Node{
 		Hash:        calculateInternalNodeHash(leftHash, rightHash),
-		Value:       []byte{},
 		OriginalKey: [31]byte{},
 		LeftHash:    leftHash,
 		RightHash:   rightHash,
@@ -76,7 +73,6 @@ func upsertLeafHelper(batch *pebble.Batch, key [31]byte, value []byte, path []by
 	if curNode == nil {
 		newLeaf := &Node{
 			Hash:        calculateLeafHash(key, value),
-			Value:       value,
 			OriginalKey: key,
 			LeftHash:    [32]byte{},
 			RightHash:   [32]byte{},
@@ -88,13 +84,12 @@ func upsertLeafHelper(batch *pebble.Batch, key [31]byte, value []byte, path []by
 	}
 
 	// Check if current node is a leaf (has value) or internal (no value)
-	if curNode.RightHash == [32]byte{} && curNode.LeftHash == [32]byte{} {
+	if curNode.IsLeaf() {
 		// Current node is a LEAF
 		if curNode.OriginalKey == key {
 			// Case A: Key matches - update value
 			updatedLeaf := &Node{
 				Hash:        calculateLeafHash(key, value),
-				Value:       value,
 				OriginalKey: key,
 				LeftHash:    [32]byte{},
 				RightHash:   [32]byte{},
@@ -144,7 +139,7 @@ func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
 	}
 
 	// Check if current node is a leaf (has value) or internal (no value)
-	if curNode.RightHash == [32]byte{} && curNode.LeftHash == [32]byte{} {
+	if curNode.IsLeaf() {
 		// Current node is a LEAF
 		if curNode.OriginalKey == key {
 			// Found the key to delete - remove this node
@@ -193,7 +188,7 @@ func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
 				return fmt.Errorf("failed to delete empty internal node: %w", err)
 			}
 			return nil
-		} else if leftChild == nil && rightChild != nil && len(rightChild.Value) > 0 {
+		} else if leftChild == nil && rightChild != nil && rightChild.IsLeaf() {
 			// Only right child exists AND it's a leaf - collapse
 			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(rightChild)); err != nil {
 				return fmt.Errorf("failed to move right leaf up: %w", err)
@@ -203,7 +198,7 @@ func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
 				return fmt.Errorf("failed to delete old right child: %w", err)
 			}
 			return nil
-		} else if rightChild == nil && leftChild != nil && len(leftChild.Value) > 0 {
+		} else if rightChild == nil && leftChild != nil && leftChild.IsLeaf() {
 			// Only left child exists AND it's a leaf - collapse
 			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(leftChild)); err != nil {
 				return fmt.Errorf("failed to move left leaf up: %w", err)
@@ -225,7 +220,6 @@ func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
 
 			updatedInternal := &Node{
 				Hash:        calculateInternalNodeHash(leftHash, rightHash),
-				Value:       []byte{},
 				OriginalKey: [31]byte{},
 				LeftHash:    leftHash,
 				RightHash:   rightHash,
@@ -302,7 +296,7 @@ func recursiveInsertAndGetHashes(batch *pebble.Batch, curNode *Node, key [31]byt
 	var leftHash, rightHash [32]byte
 
 	// Check if curNode was originally a leaf (being split) or internal node (being updated)
-	if curNode.RightHash == [32]byte{} && curNode.LeftHash == [32]byte{} {
+	if curNode.IsLeaf() {
 		// curNode was a leaf that's being split
 		// Get the existing leaf's bit at this position
 		existingBit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
@@ -636,9 +630,9 @@ func GetStateRoot(batch *pebble.Batch) ([32]byte, error) {
 	return root.Hash, nil
 }
 
-// GetAllKVsFromTree extracts all key-value pairs from the tree by traversing leaf nodes
-func GetAllKVsFromTree(batch *pebble.Batch) ([]StateKV, error) {
-	var kvs []StateKV
+// GetAllKeysFromTree extracts all keys from the tree by traversing leaf nodes
+func GetAllKeysFromTree(batch *pebble.Batch) ([][31]byte, error) {
+	var keys [][31]byte
 
 	// Create iterator for all tree nodes
 	iter, err := NewIter(batch, &pebble.IterOptions{
@@ -665,11 +659,8 @@ func GetAllKVsFromTree(batch *pebble.Batch) ([]StateKV, error) {
 		}
 
 		// Only collect leaf nodes (nodes with values)
-		if len(node.Value) > 0 {
-			kvs = append(kvs, StateKV{
-				Key:   node.OriginalKey,
-				Value: node.Value,
-			})
+		if node.IsLeaf() {
+			keys = append(keys, node.OriginalKey)
 		}
 	}
 
@@ -677,7 +668,7 @@ func GetAllKVsFromTree(batch *pebble.Batch) ([]StateKV, error) {
 		return nil, fmt.Errorf("iterator error: %w", err)
 	}
 
-	return kvs, nil
+	return keys, nil
 }
 
 // PrintTreeStructure prints the entire tree structure for debugging
@@ -749,10 +740,10 @@ func PrintTreeStructure(batch *pebble.Batch) error {
 			}
 		}
 
-		if len(node.Value) > 0 {
+		if node.IsLeaf() {
 			// Leaf node
-			fmt.Printf("%s%s: LEAF hash=%x key=%x value=%x\n",
-				indent, pathStr, node.Hash[:8], node.OriginalKey[:8], node.Value[:min(8, len(node.Value))])
+			fmt.Printf("%s%s: LEAF hash=%x key=%x\n",
+				indent, pathStr, node.Hash[:8], node.OriginalKey[:8])
 		} else {
 			// Internal node
 			fmt.Printf("%s%s: INTERNAL hash=%x\n",
