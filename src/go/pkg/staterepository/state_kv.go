@@ -87,17 +87,11 @@ func upsertLeafHelper(batch *pebble.Batch, key [31]byte, value []byte, path []by
 	if curNode.IsLeaf() {
 		// Current node is a LEAF
 		if curNode.OriginalKey == key {
-			// Case A: Key matches - update value
-			updatedLeaf := &Node{
-				Hash:        calculateLeafHash(key, value),
-				OriginalKey: key,
-				LeftHash:    [32]byte{},
-				RightHash:   [32]byte{},
-			}
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(updatedLeaf)); err != nil {
+			curNode.Hash = calculateLeafHash(key, value)
+			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(curNode)); err != nil {
 				return nil, fmt.Errorf("failed to store updated leaf: %w", err)
 			}
-			return updatedLeaf, nil
+			return curNode, nil
 		}
 		// Case B: Key doesn't match - need to create internal node and split
 		// This happens when two different keys end up at the same path
@@ -218,14 +212,11 @@ func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
 				rightHash = rightChild.Hash
 			}
 
-			updatedInternal := &Node{
-				Hash:        calculateInternalNodeHash(leftHash, rightHash),
-				OriginalKey: [31]byte{},
-				LeftHash:    leftHash,
-				RightHash:   rightHash,
-			}
+			curNode.Hash = calculateInternalNodeHash(leftHash, rightHash)
+			curNode.LeftHash = leftHash
+			curNode.RightHash = rightHash
 
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(updatedInternal)); err != nil {
+			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(curNode)); err != nil {
 				return fmt.Errorf("failed to update internal node: %w", err)
 			}
 
