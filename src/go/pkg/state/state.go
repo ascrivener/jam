@@ -13,8 +13,6 @@ import (
 	"jam/pkg/types"
 	"jam/pkg/validatorstatistics"
 	"jam/pkg/workreport"
-
-	"github.com/cockroachdb/pebble"
 )
 
 type State struct {
@@ -69,9 +67,9 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 	}
 }
 
-func GetState(batch *pebble.Batch) (*State, error) {
+func GetState(tx *staterepository.TrackedTx) (*State, error) {
 	// Create a data source that reads from repository
-	dataSource := &repositoryDataSource{batch: batch}
+	dataSource := &repositoryDataSource{tx: tx}
 	return getStateFromDataSource(dataSource)
 }
 
@@ -85,82 +83,27 @@ func GetStateFromKVs(kvs merklizer.State) (*State, error) {
 
 // dataSource interface abstracts where we get state data from
 type dataSource interface {
-	getValue(key [31]byte) ([]byte, error)
-	iterateServiceAccounts() (serviceAccountIterator, error)
-}
-
-// serviceAccountIterator abstracts iteration over service account keys
-type serviceAccountIterator interface {
-	// First positions the iterator at the first key
-	First() bool
-	// Valid returns true if the iterator is positioned at a valid key
-	Valid() bool
-	// Next advances the iterator to the next key
-	Next() bool
-	// Key returns the current key
-	Key() []byte
-	// Value returns the current value
-	Value() []byte
-	// Close releases iterator resources
-	Close() error
+	getValue(key [31]byte) ([]byte, bool, error)
+	iterateServiceAccounts() (staterepository.Iterator, error)
 }
 
 // repositoryDataSource reads from the repository or batch
 type repositoryDataSource struct {
-	batch *pebble.Batch // nil means read from repository directly
+	tx *staterepository.TrackedTx // nil means read from repository directly
 }
 
-func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, error) {
-	value, err := staterepository.GetStateKV(ds.batch, key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get component: %w", err)
-	}
-
-	return value, nil
+func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, bool, error) {
+	return staterepository.GetStateKV(ds.tx, key)
 }
 
-func (ds *repositoryDataSource) iterateServiceAccounts() (serviceAccountIterator, error) {
-	serviceAccountPrefix := append([]byte("state:"), 255)
-	iter, err := staterepository.NewIter(ds.batch, &pebble.IterOptions{
-		LowerBound: serviceAccountPrefix,
-		UpperBound: append(append([]byte{}, serviceAccountPrefix...), 0xFF),
+func (ds *repositoryDataSource) iterateServiceAccounts() (staterepository.Iterator, error) {
+	iter, err := staterepository.NewIter(ds.tx, "state", &staterepository.IterOptions{
+		LowerBound: []byte{255},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &repositoryIterator{iter: iter}, nil
-}
-
-// repositoryIterator wraps pebble iterator
-type repositoryIterator struct {
-	iter *pebble.Iterator
-}
-
-func (ri *repositoryIterator) First() bool {
-	return ri.iter.First()
-}
-
-func (ri *repositoryIterator) Valid() bool {
-	return ri.iter.Valid()
-}
-
-func (ri *repositoryIterator) Next() bool {
-	return ri.iter.Next()
-}
-
-func (ri *repositoryIterator) Key() []byte {
-	return ri.iter.Key()
-}
-
-func (ri *repositoryIterator) Value() []byte {
-	// Copy the value since it's only valid until iter is closed
-	value := make([]byte, len(ri.iter.Value()))
-	copy(value, ri.iter.Value())
-	return value
-}
-
-func (ri *repositoryIterator) Close() error {
-	return ri.iter.Close()
+	return iter, nil
 }
 
 // kvDataSource reads from a key-value map
@@ -168,15 +111,15 @@ type kvDataSource struct {
 	kvMap map[[31]byte][]byte
 }
 
-func (ds *kvDataSource) getValue(key [31]byte) ([]byte, error) {
+func (ds *kvDataSource) getValue(key [31]byte) ([]byte, bool, error) {
 	if value, exists := ds.kvMap[key]; exists {
-		return value, nil
+		return value, true, nil
 	}
 	// Return nil for missing keys (this is fine for test vectors)
-	return nil, nil
+	return nil, false, nil
 }
 
-func (ds *kvDataSource) iterateServiceAccounts() (serviceAccountIterator, error) {
+func (ds *kvDataSource) iterateServiceAccounts() (staterepository.Iterator, error) {
 	return &kvIterator{
 		kvMap: ds.kvMap,
 		keys:  nil, // will be populated on first call
@@ -191,7 +134,7 @@ type kvIterator struct {
 	index int
 }
 
-func (ki *kvIterator) First() bool {
+func (ki *kvIterator) First() ([]byte, []byte) {
 	if ki.keys == nil {
 		// Build all keys list on first access
 		ki.keys = make([][31]byte, 0)
@@ -201,31 +144,22 @@ func (ki *kvIterator) First() bool {
 	}
 
 	ki.index = 0
-	return len(ki.keys) > 0
+	if len(ki.keys) == 0 {
+		return nil, nil
+	}
+	return ki.keys[ki.index][:], ki.kvMap[ki.keys[ki.index]]
 }
 
 func (ki *kvIterator) Valid() bool {
 	return ki.index >= 0 && ki.index < len(ki.keys)
 }
 
-func (ki *kvIterator) Next() bool {
+func (ki *kvIterator) Next() ([]byte, []byte) {
 	ki.index++
-	return ki.Valid()
-}
-
-func (ki *kvIterator) Key() []byte {
 	if !ki.Valid() {
-		return nil
+		return nil, nil
 	}
-	// Add "state:" prefix to match repository format
-	return append([]byte("state:"), ki.keys[ki.index][:]...)
-}
-
-func (ki *kvIterator) Value() []byte {
-	if !ki.Valid() {
-		return nil
-	}
-	return ki.kvMap[ki.keys[ki.index]]
+	return ki.keys[ki.index][:], ki.kvMap[ki.keys[ki.index]]
 }
 
 func (ki *kvIterator) Close() error {
@@ -241,9 +175,7 @@ func (s *State) loadServiceAccounts(ds dataSource) error {
 	defer iter.Close()
 	serviceAccountPrefix := append([]byte("state:"), 255)
 
-	for iter.First(); iter.Valid(); iter.Next() {
-		key := iter.Key()
-
+	for key, value := iter.First(); iter.Valid(); key, value = iter.Next() {
 		// Make sure key starts with our prefix
 		if len(key) < 7 || !bytes.HasPrefix(key, serviceAccountPrefix) {
 			continue
@@ -259,7 +191,7 @@ func (s *State) loadServiceAccounts(ds dataSource) error {
 		}
 
 		// Process the service account
-		if err := s.processServiceAccount(serviceIndex, iter.Value()); err != nil {
+		if err := s.processServiceAccount(serviceIndex, value); err != nil {
 			return err
 		}
 	}
@@ -298,13 +230,13 @@ func getStateFromDataSource(ds dataSource) (*State, error) {
 
 	// Deserialize each basic component
 	for _, component := range components {
-		value, err := ds.getValue(component.key)
+		value, exists, err := ds.getValue(component.key)
 		if err != nil {
 			return nil, err
 		}
 
 		// Skip missing components (fine for test vectors)
-		if value == nil {
+		if !exists {
 			continue
 		}
 
@@ -389,7 +321,7 @@ func (state *State) processServiceAccount(serviceIndex uint64, value []byte) err
 	return nil
 }
 
-func (state *State) Set(batch *pebble.Batch) error {
+func (state *State) Set(tx *staterepository.TrackedTx) error {
 	// Store static state components
 	componentData := []struct {
 		key  [31]byte
@@ -415,7 +347,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 
 	// Store each component
 	for _, component := range componentData {
-		if err := staterepository.SetStateKV(batch, component.key, component.data); err != nil {
+		if err := staterepository.SetStateKV(tx, component.key, component.data); err != nil {
 			return fmt.Errorf("failed to store component: %w", err)
 		}
 	}
@@ -446,7 +378,7 @@ func (state *State) Set(batch *pebble.Batch) error {
 			ParentServiceIndex:             account.ParentServiceIndex,
 		}
 		data := serializer.Serialize(&serviceAccountData)
-		if err := staterepository.SetServiceAccount(batch, serviceIndex, data); err != nil {
+		if err := staterepository.SetServiceAccount(tx, serviceIndex, data); err != nil {
 			return fmt.Errorf("failed to store service account %d: %w", serviceIndex, err)
 		}
 	}

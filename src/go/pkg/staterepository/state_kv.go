@@ -667,6 +667,77 @@ func GetAllKeysFromTree(tx *TrackedTx) ([][31]byte, error) {
 	return keys, nil
 }
 
+// IterOptions represents iteration options (simplified from Pebble)
+type IterOptions struct {
+	LowerBound []byte
+	UpperBound []byte
+}
+
+type Iterator interface {
+	First() ([]byte, []byte)
+	Next() ([]byte, []byte)
+	Valid() bool
+	Close() error
+}
+
+// BoltIterator wraps bolt cursor for iteration
+type BoltIterator struct {
+	cursor     *bolt.Cursor
+	bucket     *bolt.Bucket
+	lowerBound []byte
+	upperBound []byte
+	valid      bool
+}
+
+func (iter *BoltIterator) First() ([]byte, []byte) {
+	var k, v []byte
+	if iter.lowerBound != nil {
+		k, v = iter.cursor.Seek(iter.lowerBound)
+		iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
+	} else {
+		k, v = iter.cursor.First()
+		iter.valid = k != nil
+	}
+	return k, v
+}
+
+func (iter *BoltIterator) Next() ([]byte, []byte) {
+	k, v := iter.cursor.Next()
+	iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
+	return k, v
+}
+
+func (iter *BoltIterator) Valid() bool {
+	return iter.valid
+}
+
+func (iter *BoltIterator) Close() error {
+	return nil // Bolt cursors don't need explicit closing
+}
+
+// NewIter creates a new iterator for the given bucket
+func NewIter(tx *TrackedTx, bucketName string, opts *IterOptions) (Iterator, error) {
+	bucket := tx.Bucket([]byte(bucketName))
+	if bucket == nil {
+		return nil, fmt.Errorf("%s bucket not found", bucketName)
+	}
+
+	cursor := bucket.Cursor()
+
+	iter := &BoltIterator{
+		cursor: cursor,
+		bucket: bucket,
+		valid:  false,
+	}
+
+	if opts != nil {
+		iter.lowerBound = opts.LowerBound
+		iter.upperBound = opts.UpperBound
+	}
+
+	return iter, nil
+}
+
 // PrintTreeStructure prints the entire tree structure for debugging
 func PrintTreeStructure(tx *TrackedTx) error {
 	fmt.Println("=== TREE STRUCTURE ===")
@@ -751,96 +822,18 @@ func PrintTreeStructure(tx *TrackedTx) error {
 }
 
 func ApplyMerkleTreeUpdates(trackedTx *TrackedTx) error {
-	// Get compacted state changes (last-writer-wins)
-	changes := trackedTx.CompactChanges()
-
-	if len(changes) == 0 {
-		return nil // No changes to apply
-	}
-
 	// Apply changes to Merkle tree in sequence
-	for _, change := range changes {
-		if change.IsSet {
-			if err := updateMerkleTreeForSet(trackedTx, change.Key, change.Value); err != nil {
-				return fmt.Errorf("failed to update merkle tree for set: %w", err)
-			}
-		} else {
-			if err := updateMerkleTreeForDelete(trackedTx, change.Key); err != nil {
+	for key, value := range trackedTx.memWrites {
+		if value == nil {
+			if err := updateMerkleTreeForDelete(trackedTx, key); err != nil {
 				return fmt.Errorf("failed to update merkle tree for delete: %w", err)
 			}
+		} else {
+			if err := updateMerkleTreeForSet(trackedTx, key, value); err != nil {
+				return fmt.Errorf("failed to update merkle tree for set: %w", err)
+			}
 		}
 	}
 
-	return nil
-}
-
-// CreateSnapshot stores a complete state snapshot
-func CreateSnapshot(tx *TrackedTx, blockHash [32]byte, stateRoot [32]byte) error {
-	snapshot := Snapshot{
-		BlockHash: blockHash,
-		StateRoot: stateRoot,
-	}
-
-	// Use block hash as the key instead of height
-	metaKey := append([]byte("snapshot:meta:"), blockHash[:]...)
-
-	if err := setKV(tx, "meta", metaKey, serializer.Serialize(snapshot)); err != nil {
-		return fmt.Errorf("failed to store snapshot metadata: %w", err)
-	}
-
-	stateBucket := tx.Tx.Bucket([]byte("state"))
-	if stateBucket == nil {
-		return nil
-	}
-
-	return stateBucket.ForEach(func(k, v []byte) error {
-		// Use block hash in snapshot state keys
-		snapshotKey := append([]byte("snapshot:state:"), blockHash[:]...)
-		snapshotKey = append(snapshotKey, ':')
-		snapshotKey = append(snapshotKey, k...)
-		return setKV(tx, "snapshots", snapshotKey, v)
-	})
-}
-
-// LoadSnapshot restores state from a snapshot by block hash
-func LoadSnapshot(tx *TrackedTx, blockHash [32]byte) error {
-	if err := clearStateBucket(tx); err != nil {
-		return fmt.Errorf("failed to clear current state: %w", err)
-	}
-
-	prefix := append([]byte("snapshot:state:"), blockHash[:]...)
-	prefix = append(prefix, ':')
-
-	snapshotsBucket := tx.Tx.Bucket([]byte("snapshots"))
-	if snapshotsBucket == nil {
-		return fmt.Errorf("no snapshots bucket found")
-	}
-
-	return snapshotsBucket.ForEach(func(k, v []byte) error {
-		if !bytes.HasPrefix(k, prefix) {
-			return nil
-		}
-		stateKey := k[len(prefix):]
-		return setKV(tx, "state", stateKey, v)
-	})
-}
-
-func clearStateBucket(tx *TrackedTx) error {
-	bucket := tx.Tx.Bucket([]byte("state"))
-	if bucket == nil {
-		return nil
-	}
-
-	var keysToDelete [][]byte
-	bucket.ForEach(func(k, v []byte) error {
-		keysToDelete = append(keysToDelete, append([]byte{}, k...))
-		return nil
-	})
-
-	for _, key := range keysToDelete {
-		if err := bucket.Delete(key); err != nil {
-			return err
-		}
-	}
 	return nil
 }

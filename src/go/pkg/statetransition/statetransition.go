@@ -26,7 +26,6 @@ import (
 	"jam/pkg/validatorstatistics"
 	"jam/pkg/workreport"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -99,26 +98,27 @@ func STF(curBlock block.Block) ([32]byte, error) {
 
 	// If current tip is not the parent block, we need to reorganize
 	if priorStateRoot != parentBlock.Info.PosteriorStateRoot {
-		// 1. Find latest snapshot before parent block
-		latestSnapshot, err := block.FindLatestSnapshotBefore(parentBlock)
-		if err != nil {
-			return [32]byte{}, fmt.Errorf("failed to find latest snapshot: %w", err)
-		}
+		panic("not handling reorganization yet")
+		// // 1. Find latest snapshot before parent block
+		// latestSnapshot, err := block.FindLatestSnapshotBefore(parentBlock)
+		// if err != nil {
+		// 	return [32]byte{}, fmt.Errorf("failed to find latest snapshot: %w", err)
+		// }
 
-		// 2. Load snapshot state
-		if err := staterepository.LoadSnapshot(tx, latestSnapshot.StateRoot); err != nil {
-			return [32]byte{}, fmt.Errorf("failed to load snapshot: %w", err)
-		}
+		// // 2. Load snapshot state
+		// if err := staterepository.LoadSnapshot(tx, latestSnapshot.StateRoot); err != nil {
+		// 	return [32]byte{}, fmt.Errorf("failed to load snapshot: %w", err)
+		// }
 
-		// 3. Replay forward changes from snapshot to parent
-		pathFromSnapshot, err := parentBlock.GetPathFromAncestor(tx, latestSnapshot)
-		if err != nil {
-			return [32]byte{}, fmt.Errorf("failed to get path from snapshot: %w", err)
-		}
+		// // 3. Replay forward changes from snapshot to parent
+		// pathFromSnapshot, err := parentBlock.GetPathFromAncestor(tx, latestSnapshot)
+		// if err != nil {
+		// 	return [32]byte{}, fmt.Errorf("failed to get path from snapshot: %w", err)
+		// }
 
-		if err := block.ReplayPath(tx, pathFromSnapshot); err != nil {
-			return [32]byte{}, err
-		}
+		// if err := block.ReplayPath(tx, pathFromSnapshot); err != nil {
+		// 	return [32]byte{}, err
+		// }
 	}
 
 	// 5.8
@@ -176,7 +176,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	}
 
 	// Verify block
-	if err := curBlock.Verify(batch, priorState); err != nil {
+	if err := curBlock.Verify(priorState); err != nil {
 		return err
 	}
 
@@ -242,7 +242,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
 	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
-		batch,
+		tx,
 		priorState,
 		posteriorMostRecentBlockTimeslot,
 		accumulatableWorkReports,
@@ -277,7 +277,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	posteriorRecentActivity := computeRecentActivity(curBlock.Header, curBlock.Extrinsics.Guarantees, intermediateRecentBlocks, priorState.RecentActivity.AccumulationOutputLog, accumulationOutputSequence)
 
 	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	if err := computeServiceAccounts(batch, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
+	if err := computeServiceAccounts(tx, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
 		return fmt.Errorf("failed to compute service accounts: %w", err)
 	}
 
@@ -519,10 +519,10 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
-func computeServiceAccounts(batch *pebble.Batch, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
+func computeServiceAccounts(tx *staterepository.TrackedTx, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(batch, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return err
 		}
@@ -530,10 +530,10 @@ func computeServiceAccounts(batch *pebble.Batch, preimages extrinsics.Preimages,
 			continue
 		}
 		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
-		if err := serviceAccount.SetPreimageForHash(batch, hash, preimage.Data); err != nil {
+		if err := serviceAccount.SetPreimageForHash(tx, hash, preimage.Data); err != nil {
 			return err
 		}
-		if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
+		if err := serviceAccount.SetPreimageLookupHistoricalStatus(tx, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
 			return err
 		}
 	}
@@ -679,7 +679,7 @@ func computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(header header.
 }
 
 func accumulateAndIntegrate(
-	batch *pebble.Batch,
+	tx *staterepository.TrackedTx,
 	priorState *state.State,
 	posteriorMostRecentBlockTimeslot types.Timeslot,
 	accumulatableWorkReports []workreport.WorkReport,
@@ -687,7 +687,7 @@ func accumulateAndIntegrate(
 	posteriorEntropyAccumulator [4][32]byte,
 ) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(batch, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(tx, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
@@ -728,7 +728,7 @@ func accumulateAndIntegrate(
 
 	for serviceIndex := range o.ServiceAccounts {
 		selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, serviceIndex)
-		serviceAccount, gasUsed, err := pvm.OnTransfer(batch, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
+		serviceAccount, gasUsed, err := pvm.OnTransfer(tx, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
 		if err != nil {
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
 		}

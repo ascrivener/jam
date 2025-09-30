@@ -17,7 +17,6 @@ import (
 	"jam/pkg/ticket"
 	"jam/pkg/types"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/ed25519"
 )
@@ -91,7 +90,7 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 	return nil
 }
 
-func (b Block) Verify(batch *pebble.Batch, priorState *state.State) error {
+func (b Block) Verify(priorState *state.State) error {
 
 	if err := b.VerifyInBounds(priorState); err != nil {
 		return err
