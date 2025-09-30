@@ -430,7 +430,13 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 			// Also compare tree KVs to verify tree structure
-			treeKeys, err := staterepository.GetAllKeysFromTree(nil)
+			readTx, err := staterepository.NewTrackedTx()
+			if err != nil {
+				t.Errorf("Failed to create read transaction: %v", err)
+				return
+			}
+			defer readTx.Rollback()
+			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
 			} else {
@@ -443,7 +449,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 				compareTreeKeys(t, expectedKeys, treeKeys)
 				// Print tree structure for debugging
 				fmt.Println("=== DEBUGGING TREE STRUCTURE ===")
-				if err := staterepository.PrintTreeStructure(nil); err != nil {
+				if err := staterepository.PrintTreeStructure(readTx); err != nil {
 					t.Errorf("Failed to print tree structure: %v", err)
 				}
 			}
@@ -659,7 +665,13 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 			// Also compare tree KVs to verify tree structure
-			treeKeys, err := staterepository.GetAllKeysFromTree(nil)
+			readTx, err := staterepository.NewTrackedTx()
+			if err != nil {
+				t.Errorf("Failed to create read transaction: %v", err)
+				return
+			}
+			defer readTx.Rollback()
+			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
 			} else {

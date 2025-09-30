@@ -120,12 +120,24 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 
 	newServiceIndexCollisionDetected := false
 
+	var childTransactions []*staterepository.TrackedTx
+	var childTxMutex sync.Mutex
+
 	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
+
+			// Create child transaction for this goroutine
+			childTx := tx.CreateChild()
+
+			// Store child transaction for later merging
+			childTxMutex.Lock()
+			childTransactions = append(childTransactions, childTx)
+			childTxMutex.Unlock()
+
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
-				tx,
+				childTx, // Use child transaction instead of parent
 				accumulationStateComponents,
 				timeslot,
 				workReports,
@@ -189,6 +201,13 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		}(sIndex)
 	}
 	wg.Wait()
+
+	// Merge all child transactions back into parent after concurrent processing
+	for _, childTx := range childTransactions {
+		if err := tx.Apply(childTx); err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
+		}
+	}
 
 	// Process special service results after all parallel work is complete
 

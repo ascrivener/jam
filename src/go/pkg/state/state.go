@@ -1,7 +1,6 @@
 package state
 
 import (
-	"bytes"
 	"fmt"
 
 	"jam/pkg/constants"
@@ -173,16 +172,15 @@ func (s *State) loadServiceAccounts(ds dataSource) error {
 		return err
 	}
 	defer iter.Close()
-	serviceAccountPrefix := append([]byte("state:"), 255)
 
 	for key, value := iter.First(); iter.Valid(); key, value = iter.Next() {
 		// Make sure key starts with our prefix
-		if len(key) < 7 || !bytes.HasPrefix(key, serviceAccountPrefix) {
+		if len(key) < 1 || key[0] != 255 {
 			continue
 		}
 
 		// Skip the prefix for pattern checking (after "state:" + 255 byte)
-		unprefixedKey := key[len(serviceAccountPrefix):]
+		unprefixedKey := key[1:]
 
 		// Validate and extract service index
 		serviceIndex, valid := extractServiceIndexFromKey(unprefixedKey)

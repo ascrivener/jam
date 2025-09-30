@@ -43,6 +43,18 @@ func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
 		if _, err := tx.CreateBucketIfNotExists([]byte("blocks")); err != nil {
 			return err
 		}
+		// Create meta bucket for metadata (chain tip, etc.)
+		if _, err := tx.CreateBucketIfNotExists([]byte("meta")); err != nil {
+			return err
+		}
+		// Create preimage bucket for preimage storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("preimage")); err != nil {
+			return err
+		}
+		// Create workreport bucket for work report storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("workreport")); err != nil {
+			return err
+		}
 		return nil
 	})
 

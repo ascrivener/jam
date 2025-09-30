@@ -63,7 +63,15 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 
 func STF(curBlock block.Block) ([32]byte, error) {
 
-	parentBlock, err := block.Get(nil, curBlock.Header.ParentHash)
+	// 1. Begin a transaction for reorganization
+	tx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
+	}
+	// Use a separate txErr variable to track transaction errors
+	defer tx.Rollback()
+
+	parentBlock, err := block.Get(tx, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash
 	if err != nil {
 		return [32]byte{}, err
@@ -82,14 +90,6 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	// if curBlock.Header.TimeSlot*types.Timeslot(constants.SlotPeriodInSeconds) > types.Timeslot(time.Now().Unix()-constants.JamCommonEraStartUnixTime) {
 	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
 	// }
-
-	// 1. Begin a transaction for reorganization
-	tx, err := staterepository.NewTrackedTx()
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
-	}
-	// Use a separate txErr variable to track transaction errors
-	defer tx.Rollback()
 
 	priorStateRoot, err := staterepository.GetStateRoot(tx)
 	if err != nil {
@@ -176,7 +176,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	}
 
 	// Verify block
-	if err := curBlock.Verify(priorState); err != nil {
+	if err := curBlock.Verify(tx, priorState); err != nil {
 		return err
 	}
 
@@ -317,7 +317,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	}
 
 	// Save state
-	if err := postState.Set(batch); err != nil {
+	if err := postState.Set(tx); err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
 

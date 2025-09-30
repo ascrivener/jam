@@ -90,7 +90,7 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 	return nil
 }
 
-func (b Block) Verify(priorState *state.State) error {
+func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) error {
 
 	if err := b.VerifyInBounds(priorState); err != nil {
 		return err
@@ -426,7 +426,7 @@ func (b Block) Verify(priorState *state.State) error {
 	// (12.38)
 	for _, preimage := range b.Extrinsics.Preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		isNew, err := priorState.ServiceAccounts.IsNewPreimage(nil, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		isNew, err := priorState.ServiceAccounts.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return err
 		}

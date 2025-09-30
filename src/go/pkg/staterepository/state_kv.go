@@ -321,32 +321,33 @@ func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
 }
 
 func SetStateKV(tx *TrackedTx, key [31]byte, value []byte) error {
-	if tx.memoryMode {
-		tx.memWrites[key] = value
-		return nil
-	}
-
-	return setKV(tx, "state", key[:], value)
+	tx.memWrites[key] = value
+	return nil
 }
 
 func DeleteStateKV(tx *TrackedTx, key [31]byte) error {
-	if tx.memoryMode {
-		tx.memWrites[key] = nil // nil = delete
-		return nil
+	tx.memWrites[key] = nil
+	return nil
+}
+
+func normalizeTreePath(path []byte) []byte {
+	// Use special key for empty path (root node)
+	if len(path) == 0 {
+		return []byte("ROOT")
 	}
-	return deleteKV(tx, "state", key[:])
+	return path
 }
 
 func GetTreeNodeData(tx *TrackedTx, path []byte) ([]byte, bool, error) {
-	return getKV(tx, "tree", path)
+	return getKV(tx, "tree", normalizeTreePath(path))
 }
 
 func SetTreeNodeData(tx *TrackedTx, path []byte, value []byte) error {
-	return setKV(tx, "tree", path, value)
+	return setKV(tx, "tree", normalizeTreePath(path), value)
 }
 
 func DeleteTreeNodeData(tx *TrackedTx, path []byte) error {
-	return deleteKV(tx, "tree", path)
+	return deleteKV(tx, "tree", normalizeTreePath(path))
 }
 
 func GetBlockKV(tx *TrackedTx, key [32]byte) ([]byte, bool, error) {
@@ -498,6 +499,24 @@ func (tx *TrackedTx) CreateChild() *TrackedTx {
 	}
 
 	return child
+}
+
+func (tx *TrackedTx) Apply(childTx *TrackedTx) error {
+	if childTx == nil {
+		return fmt.Errorf("child transaction cannot be nil")
+	}
+
+	// Merge all changes from child into parent
+	for key, value := range childTx.memWrites {
+		if value == nil {
+			tx.memWrites[key] = nil // Copy delete operation
+		} else {
+			// Copy the value to avoid shared references
+			tx.memWrites[key] = append([]byte{}, value...)
+		}
+	}
+
+	return nil
 }
 
 // SetServiceAccount stores service account data
@@ -825,10 +844,16 @@ func ApplyMerkleTreeUpdates(trackedTx *TrackedTx) error {
 	// Apply changes to Merkle tree in sequence
 	for key, value := range trackedTx.memWrites {
 		if value == nil {
+			if err := deleteKV(trackedTx, "state", key[:]); err != nil {
+				return fmt.Errorf("failed to delete state kv: %w", err)
+			}
 			if err := updateMerkleTreeForDelete(trackedTx, key); err != nil {
 				return fmt.Errorf("failed to update merkle tree for delete: %w", err)
 			}
 		} else {
+			if err := setKV(trackedTx, "state", key[:], value); err != nil {
+				return fmt.Errorf("failed to set state kv for set: %w", err)
+			}
 			if err := updateMerkleTreeForSet(trackedTx, key, value); err != nil {
 				return fmt.Errorf("failed to update merkle tree for set: %w", err)
 			}

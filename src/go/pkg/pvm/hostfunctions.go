@@ -15,7 +15,6 @@ import (
 	"jam/pkg/util"
 	wp "jam/pkg/workpackage"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -485,7 +484,9 @@ func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReas
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Close the previous exceptional context batch if it exists
 		if ctx.Argument.ExceptionalAccumulationResultContext.Tx != nil {
-			ctx.Argument.ExceptionalAccumulationResultContext.Tx.Rollback()
+			if err := ctx.Argument.ExceptionalAccumulationResultContext.Tx.Apply(ctx.Argument.AccumulationResultContext.Tx); err != nil {
+				return ExitReasonPanic, err
+			}
 		}
 
 		ctx.Argument.ExceptionalAccumulationResultContext = *ctx.Argument.AccumulationResultContext.DeepCopy()
@@ -1531,7 +1532,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 }
 
 // HistoricalLookup retrieves a historical value for a key from a service account
-func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], batch *pebble.Batch, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) (ExitReason, error) {
+func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason, error) {
 		h := ctx.State.Registers[8] // Address of the key
 		o := ctx.State.Registers[9] // Output address
@@ -1557,7 +1558,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
 
 			var err error
-			preImage, err = historicallookup.HistoricalLookup(batch, a, timeslot, keyArray)
+			preImage, err = historicallookup.HistoricalLookup(tx, a, timeslot, keyArray)
 			if err != nil {
 				return ExitReason{}, err
 			}

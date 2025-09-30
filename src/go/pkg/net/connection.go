@@ -12,6 +12,7 @@ import (
 	"jam/pkg/block/header"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
 	"sync"
@@ -375,7 +376,12 @@ type Handshake struct {
 
 // createHandshake creates a handshake message with current finalized block info and known leaves
 func createHandshake() (Handshake, error) {
-	state, err := state.GetState(nil)
+	readTx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return Handshake{}, fmt.Errorf("failed to create read transaction: %w", err)
+	}
+	defer readTx.Rollback()
+	state, err := state.GetState(readTx)
 	if err != nil {
 		return Handshake{}, fmt.Errorf("failed to get state: %w", err)
 	}

@@ -226,26 +226,24 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	}
 
 	// Begin a transaction
-	globalBatch := staterepository.NewIndexedBatch()
+	tx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return ResponseMessage{}, err
+	}
+	tx.SetMemoryMode(true)
 	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			globalBatch.Close()
+			tx.Rollback()
 		}
 	}()
-	if err := (&initialize.State).OverwriteCurrentState(globalBatch); err != nil {
+	if err := (&initialize.State).OverwriteCurrentState(tx); err != nil {
 		return ResponseMessage{}, err
 	}
 
-	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
-	if err != nil {
-		return ResponseMessage{}, err
-	}
-	defer reverseDiff.Close()
-
-	root, err := staterepository.GetStateRoot(globalBatch)
+	root, err := staterepository.GetStateRoot(tx)
 	if err != nil {
 		return ResponseMessage{}, err
 	}
@@ -255,28 +253,27 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 			Header: initialize.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: root,
-			Height:             0,
-			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			PosteriorStateRoot:  root,
+			Height:              0,
+			ForwardStateChanges: tx.GetStateChanges(),
 		},
 	}
 
-	if err := blockWithInfo.Set(globalBatch); err != nil {
+	if err := blockWithInfo.Set(tx); err != nil {
+		return ResponseMessage{}, err
+	}
+
+	// Compute state root
+	stateRoot, err := staterepository.GetStateRoot(tx)
+	if err != nil {
 		return ResponseMessage{}, err
 	}
 
 	// Commit the transaction
-	if err := globalBatch.Commit(nil); err != nil {
+	if err := tx.Commit(); err != nil {
 		return ResponseMessage{}, err
 	}
 	txSuccess = true
-
-	// Compute state root
-	stateRoot, err := staterepository.GetStateRoot(nil)
-	if err != nil {
-		return ResponseMessage{}, err
-	}
 
 	log.Printf("State set successfully, state root: %x", stateRoot)
 	return ResponseMessage{StateRoot: (*StateRoot)(&stateRoot)}, nil
@@ -303,9 +300,14 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 
 // handleGetState handles a GetState request
 func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
-	state := merklizer.GetState(nil)
+	readTx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return ResponseMessage{}, err
+	}
+	defer readTx.Rollback()
+	state := merklizer.GetState(readTx)
 	var getState GetState
-	err := serializer.Deserialize(getStateData, &getState)
+	err = serializer.Deserialize(getStateData, &getState)
 	if err != nil {
 		return ResponseMessage{}, err
 	}

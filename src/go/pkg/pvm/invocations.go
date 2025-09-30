@@ -14,7 +14,6 @@ import (
 	"jam/pkg/workpackage"
 	wp "jam/pkg/workpackage"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -60,13 +59,13 @@ type HostFunctionContext[T any] struct {
 type RefineHostFunction = HostFunction[IntegratedPVMsAndExportSequence]
 
 // TODO: needs work. for m2
-func Refine(batch *pebble.Batch, workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte, error) {
+func Refine(tx *staterepository.TrackedTx, workItemIndex int, workPackage wp.WorkPackage, authorizerOutput []byte, importSegments [][][constants.SegmentSize]byte, exportSegmentOffset int, serviceAccounts serviceaccount.ServiceAccounts) (types.ExecutionExitReason, [][]byte, error) {
 	// TODO: implement
 	workItem := workPackage.WorkItems[workItemIndex] // w
 	var hf RefineHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason, error) {
 		switch n {
 		case HistoricalLookupID:
-			return HistoricalLookup(ctx, batch, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
+			return HistoricalLookup(ctx, tx, workItem.ServiceIdentifier, serviceAccounts, workPackage.RefinementContext.Timeslot)
 		case FetchID:
 			panic("not implemented")
 			// TODO: Figure out how to compute the blobs introduced for a work item
@@ -390,11 +389,6 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		ServiceIndex:     types.GenericNum(serviceIndex),
 		OperandTuplesLen: types.GenericNum(len(operandTuples)),
 	})
-	// make sure both batches are closed
-	defer func() {
-		ctx.AccumulationResultContext.Tx.Rollback()
-		ctx.ExceptionalAccumulationResultContext.Tx.Rollback()
-	}()
 	executionExitReason, gasUsed, err := RunWithArgs(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
@@ -407,7 +401,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}
 
 	// Success - apply changes to outer batch (merges changes into parent transaction)
-	if err := tx.Apply(ctx.AccumulationResultContext.Tx, nil); err != nil {
+	if err := tx.Apply(ctx.AccumulationResultContext.Tx); err != nil {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
 

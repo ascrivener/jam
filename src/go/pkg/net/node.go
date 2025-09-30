@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"jam/pkg/state"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"log"
 	"math"
@@ -254,7 +255,12 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 
 // Start starts the node. Initiate connections and UP 0 stream
 func (n *Node) Start(ctx context.Context) error {
-	state, err := state.GetState(nil)
+	readTx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		return fmt.Errorf("failed to create read transaction: %w", err)
+	}
+	defer readTx.Rollback()
+	state, err := state.GetState(readTx)
 	if err != nil {
 		return fmt.Errorf("failed to get state: %w", err)
 	}

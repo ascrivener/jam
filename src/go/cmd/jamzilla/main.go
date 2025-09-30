@@ -102,17 +102,21 @@ func main() {
 	}
 
 	// Begin a transaction
-	globalBatch := staterepository.NewIndexedBatch()
+	tx, err := staterepository.NewTrackedTx()
+	if err != nil {
+		log.Fatalf("Failed to create transaction: %v", err)
+	}
+	tx.SetMemoryMode(true)
 	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			globalBatch.Close()
+			tx.Rollback()
 		}
 	}()
 
-	err = merklizerState.OverwriteCurrentState(globalBatch)
+	err = merklizerState.OverwriteCurrentState(tx)
 	if err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
@@ -127,13 +131,7 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
-	reverseDiff, err := block.GenerateReverseBatch(nil, globalBatch)
-	if err != nil {
-		log.Fatalf("Failed to generate reverse diff: %v", err)
-	}
-	defer reverseDiff.Close()
-
-	root, err := staterepository.GetStateRoot(globalBatch)
+	root, err := staterepository.GetStateRoot(tx)
 	if err != nil {
 		log.Fatalf("Failed to get state root: %v", err)
 	}
@@ -143,19 +141,18 @@ func main() {
 			Header: header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot: root,
-			Height:             0,
-			ForwardStateDiff:   globalBatch.Repr(),
-			ReverseStateDiff:   reverseDiff.Repr(),
+			PosteriorStateRoot:  root,
+			Height:              0,
+			ForwardStateChanges: tx.GetStateChanges(),
 		},
 	}
 
-	if err := blockWithInfo.Set(globalBatch); err != nil {
+	if err := blockWithInfo.Set(tx); err != nil {
 		log.Fatalf("Failed to store genesis block: %v", err)
 	}
 
 	// Commit the transaction
-	if err := globalBatch.Commit(nil); err != nil {
+	if err := tx.Commit(); err != nil {
 		log.Fatalf("Failed to commit transaction: %v", err)
 	}
 	txSuccess = true
