@@ -12,200 +12,266 @@ import (
 )
 
 type Node struct {
-	Hash        [32]byte
-	OriginalKey [31]byte
-	LeftHash    [32]byte // For internal nodes
-	RightHash   [32]byte // For internal nodes
+	OriginalKey   [31]byte
+	OriginalValue []byte
+	LeftHash      [32]byte // For internal nodes
+	RightHash     [32]byte // For internal nodes
 }
 
 func (n *Node) IsLeaf() bool {
 	return n.LeftHash == [32]byte{} && n.RightHash == [32]byte{}
 }
 
+func keysMatchAtDepth(key1, key2 [31]byte, depth int) bool {
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+
+	if byteIndex >= len(key1) || byteIndex >= len(key2) {
+		return false
+	}
+
+	bit1 := (key1[byteIndex] >> bitIndex) & 1
+	bit2 := (key2[byteIndex] >> bitIndex) & 1
+
+	return bit1 == bit2
+}
+
 // createInternalNodeWithBit calculates the bit, recursively inserts, and creates an internal node
-func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, path []byte) (*Node, error) {
-	// Recursively insert and get child hashes
-	leftHash, rightHash, err := recursiveInsertAndGetHashes(tx, curNode, key, value, path)
-	if err != nil {
-		return nil, err
+func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, depth int) ([32]byte, error) {
+
+	// Get key's bit at this depth
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	keyBit := (key[byteIndex] >> bitIndex) & 1
+
+	var leftHash, rightHash [32]byte
+	var err error
+	if keyBit == 0 {
+		// New key goes left, collision goes right
+		leftHash, err = upsertLeafHelper(tx, key, value, curNode.LeftHash, depth+1)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		rightHash = curNode.RightHash
+	} else {
+		// New key goes right, collision goes left
+		leftHash = curNode.LeftHash
+		rightHash, err = upsertLeafHelper(tx, key, value, curNode.RightHash, depth+1)
+		if err != nil {
+			return [32]byte{}, err
+		}
 	}
 
 	// Create internal node
 	internalNode := &Node{
-		Hash:        calculateInternalNodeHash(leftHash, rightHash),
-		OriginalKey: [31]byte{},
-		LeftHash:    leftHash,
-		RightHash:   rightHash,
+		OriginalKey:   [31]byte{},
+		OriginalValue: []byte{},
+		LeftHash:      leftHash,
+		RightHash:     rightHash,
+	}
+	internalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
+
+	if err := SetTreeNodeData(tx, internalNodeHash, serializer.Serialize(internalNode)); err != nil {
+		return [32]byte{}, fmt.Errorf("failed to store internal node: %w", err)
 	}
 
-	if err := SetTreeNodeData(tx, path, serializer.Serialize(internalNode)); err != nil {
-		return nil, fmt.Errorf("failed to store internal node: %w", err)
+	return internalNodeHash, nil
+}
+
+// splitLeafCollision creates internal nodes until keys diverge, then places both leaves
+func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newValue []byte, depth int) ([32]byte, error) {
+	// Find where keys diverge
+	divergeDepth := depth
+	for keysMatchAtDepth(existingLeaf.OriginalKey, newKey, divergeDepth) {
+		divergeDepth++
 	}
 
-	return internalNode, nil
+	// Create new leaf
+	newLeaf := &Node{
+		OriginalKey:   newKey,
+		OriginalValue: newValue,
+		LeftHash:      [32]byte{},
+		RightHash:     [32]byte{},
+	}
+	newLeafHash := calculateLeafHash(newKey, newValue)
+	existingLeafHash := calculateLeafHash(existingLeaf.OriginalKey, existingLeaf.OriginalValue)
+
+	// Store new leaf
+	if err := SetTreeNodeData(tx, newLeafHash, serializer.Serialize(newLeaf)); err != nil {
+		return [32]byte{}, err
+	}
+
+	var currentHash [32]byte
+
+	// Work backwards from divergeDepth to depth, creating internal nodes
+	for currentDepth := divergeDepth; currentDepth >= depth; currentDepth-- {
+		pathByteIndex := currentDepth / 8
+		pathBitIndex := 7 - (currentDepth % 8)
+		pathBit := (newKey[pathByteIndex] >> pathBitIndex) & 1
+
+		var leftHash, rightHash [32]byte
+		if currentDepth == divergeDepth {
+			// At diverge depth - place the leaves
+			if pathBit == 0 {
+				leftHash = newLeafHash
+				rightHash = existingLeafHash
+			} else {
+				leftHash = existingLeafHash
+				rightHash = newLeafHash
+			}
+		} else {
+			// Above diverge depth - determine path direction
+			if pathBit == 0 {
+				leftHash = currentHash
+				rightHash = [32]byte{}
+			} else {
+				leftHash = [32]byte{}
+				rightHash = currentHash
+			}
+		}
+
+		currentHash = calculateInternalNodeHash(leftHash, rightHash)
+		internalNode := &Node{
+			OriginalKey:   [31]byte{},
+			OriginalValue: []byte{},
+			LeftHash:      leftHash,
+			RightHash:     rightHash,
+		}
+
+		if err := SetTreeNodeData(tx, currentHash, serializer.Serialize(internalNode)); err != nil {
+			return [32]byte{}, err
+		}
+	}
+
+	return currentHash, nil
 }
 
 // upsertLeafHelper recursively inserts a leaf node starting from curNode at given depth
-func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, path []byte) (*Node, error) {
+func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, depth int) ([32]byte, error) {
 
-	curNode, exists, err := GetTreeNode(tx, path)
+	curNode, exists, err := GetTreeNode(tx, hash)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get tree node: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to get tree node: %w", err)
 	}
+
 	if !exists {
+		// Case 1: create new leaf
 		newLeaf := &Node{
-			Hash:        calculateLeafHash(key, value),
-			OriginalKey: key,
-			LeftHash:    [32]byte{},
-			RightHash:   [32]byte{},
+			OriginalKey:   key,
+			OriginalValue: value,
+			LeftHash:      [32]byte{},
+			RightHash:     [32]byte{},
 		}
-		if err := SetTreeNodeData(tx, path, serializer.Serialize(newLeaf)); err != nil {
-			return nil, fmt.Errorf("failed to store new leaf: %w", err)
+		newHash := calculateLeafHash(key, value)
+		if err := SetTreeNodeData(tx, newHash, serializer.Serialize(newLeaf)); err != nil {
+			return [32]byte{}, fmt.Errorf("failed to store new leaf: %w", err)
 		}
-		return newLeaf, nil
+		return newHash, nil
 	}
-
-	// Check if current node is a leaf (has value) or internal (no value)
 	if curNode.IsLeaf() {
-		// Current node is a LEAF
 		if curNode.OriginalKey == key {
-			curNode.Hash = calculateLeafHash(key, value)
-			if err := SetTreeNodeData(tx, path, serializer.Serialize(curNode)); err != nil {
-				return nil, fmt.Errorf("failed to store updated leaf: %w", err)
+			curNode.OriginalValue = value
+			newHash := calculateLeafHash(key, value)
+			if err := SetTreeNodeData(tx, newHash, serializer.Serialize(curNode)); err != nil {
+				return [32]byte{}, fmt.Errorf("failed to store updated leaf: %w", err)
 			}
-			return curNode, nil
+			return newHash, nil
 		}
-		// Case B: Key doesn't match - need to create internal node and split
-		// This happens when two different keys end up at the same path
-		// We need to create an internal node and continue deeper
-
-		// Find the next bit where the keys differ
-		if len(path) >= 248 {
-			return nil, fmt.Errorf("path too deep")
-		}
-
-		// Get the next bit for existing key for split
-		byteIndex := len(path) / 8
-		bitPos := 7 - (len(path) % 8)
-		existingBit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
-
-		// Move existing leaf to its proper position based on its bit
-		existingNewPath := append(path, existingBit)
-		if err := SetTreeNodeData(tx, existingNewPath, serializer.Serialize(curNode)); err != nil {
-			return nil, fmt.Errorf("failed to move existing leaf: %w", err)
-		}
+		return splitLeafCollision(tx, curNode, key, value, depth)
 	}
-	result, err := createInternalNodeWithBit(tx, curNode, key, value, path)
+
+	newHash, err := createInternalNodeWithBit(tx, curNode, key, value, depth)
 	if err != nil {
-		return nil, err
+		return [32]byte{}, err
 	}
-	return result, nil
+	return newHash, nil
 }
 
-// deleteLeafHelper recursively deletes a leaf node and cleans up the tree
-func deleteLeafHelper(tx *TrackedTx, key [31]byte, path []byte) error {
-	curNode, exists, err := GetTreeNode(tx, path)
+// Phase 1: Find and delete the target node
+func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([32]byte, bool, error) {
+	curNode, exists, err := GetTreeNode(tx, hash)
 	if err != nil {
-		return fmt.Errorf("failed to get tree node: %w", err)
+		return [32]byte{}, false, fmt.Errorf("failed to get tree node: %w", err)
 	}
 
 	if !exists {
-		// Key doesn't exist - nothing to delete
-		return nil
+		return [32]byte{}, false, fmt.Errorf("key does not exist")
 	}
 
-	// Check if current node is a leaf (has value) or internal (no value)
 	if curNode.IsLeaf() {
-		// Current node is a LEAF
 		if curNode.OriginalKey == key {
-			// Found the key to delete - remove this node
-			if err := DeleteTreeNodeData(tx, path); err != nil {
-				return fmt.Errorf("failed to delete leaf node: %w", err)
-			}
-			return nil
-		} else {
-			// Different key - nothing to delete
-			return nil
+			return [32]byte{}, true, nil // Delete this leaf
 		}
-	} else {
-		// Current node is INTERNAL - recurse to appropriate child
-		if len(path) >= 248 {
-			return fmt.Errorf("path too deep")
-		}
-
-		// Get the next bit to determine which child to follow
-		byteIndex := len(path) / 8
-		bitPos := 7 - (len(path) % 8)
-		nextBit := (key[byteIndex] >> bitPos) & 1
-
-		// Recursively delete from the appropriate child
-		err := deleteLeafHelper(tx, key, append(path, nextBit))
-		if err != nil {
-			return err
-		}
-
-		// Get both children to see if we need to clean up this internal node
-		var leftChild, rightChild *Node
-
-		leftChild, leftExists, err := GetTreeNode(tx, append(path, 0))
-		if err != nil {
-			return fmt.Errorf("failed to get left child: %w", err)
-		}
-
-		rightChild, rightExists, err := GetTreeNode(tx, append(path, 1))
-		if err != nil {
-			return fmt.Errorf("failed to get right child: %w", err)
-		}
-
-		// Smart cleanup: only collapse if exactly one child exists AND it's a leaf
-		if !leftExists && !rightExists {
-			// No children left - delete this internal node
-			if err := DeleteTreeNodeData(tx, path); err != nil {
-				return fmt.Errorf("failed to delete empty internal node: %w", err)
-			}
-			return nil
-		} else if !leftExists && rightExists && rightChild.IsLeaf() {
-			// Only right child exists AND it's a leaf - collapse
-			if err := SetTreeNodeData(tx, path, serializer.Serialize(rightChild)); err != nil {
-				return fmt.Errorf("failed to move right leaf up: %w", err)
-			}
-			// Delete the old right child position
-			if err := DeleteTreeNodeData(tx, append(path, 1)); err != nil {
-				return fmt.Errorf("failed to delete old right child: %w", err)
-			}
-			return nil
-		} else if !rightExists && leftExists && leftChild.IsLeaf() {
-			// Only left child exists AND it's a leaf - collapse
-			if err := SetTreeNodeData(tx, path, serializer.Serialize(leftChild)); err != nil {
-				return fmt.Errorf("failed to move left leaf up: %w", err)
-			}
-			// Delete the old left child position
-			if err := DeleteTreeNodeData(tx, append(path, 0)); err != nil {
-				return fmt.Errorf("failed to delete old left child: %w", err)
-			}
-			return nil
-		} else {
-			// Either both children exist, or single child is internal - update hash
-			var leftHash, rightHash [32]byte
-
-			if leftChild != nil {
-				leftHash = leftChild.Hash
-			}
-			if rightChild != nil {
-				rightHash = rightChild.Hash
-			}
-
-			curNode.Hash = calculateInternalNodeHash(leftHash, rightHash)
-			curNode.LeftHash = leftHash
-			curNode.RightHash = rightHash
-
-			if err := SetTreeNodeData(tx, path, serializer.Serialize(curNode)); err != nil {
-				return fmt.Errorf("failed to update internal node: %w", err)
-			}
-
-			return nil
-		}
+		return hash, false, fmt.Errorf("key does not exist")
 	}
+
+	// Recurse to find the target
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	bit := (key[byteIndex] >> bitIndex) & 1
+
+	var leftHash, rightHash [32]byte
+
+	if bit == 0 {
+		newLeftHash, windup, err := deleteLeafHelper(tx, key, curNode.LeftHash, depth+1)
+		if err != nil {
+			return [32]byte{}, false, err
+		}
+		if windup {
+			if curNode.RightHash == [32]byte{} {
+				return newLeftHash, true, nil
+			}
+			if newLeftHash == [32]byte{} {
+				rightNode, exists, err := GetTreeNode(tx, curNode.RightHash)
+				if err != nil {
+					return [32]byte{}, false, fmt.Errorf("failed to get right node: %w", err)
+				}
+				if !exists {
+					return [32]byte{}, false, fmt.Errorf("right node does not exist")
+				}
+				if rightNode.IsLeaf() {
+					return curNode.RightHash, true, nil
+				}
+			}
+		}
+		leftHash = newLeftHash
+		rightHash = curNode.RightHash
+	} else {
+		newRightHash, windup, err := deleteLeafHelper(tx, key, curNode.RightHash, depth+1)
+		if err != nil {
+			return [32]byte{}, false, err
+		}
+		if windup {
+			if curNode.LeftHash == [32]byte{} {
+				return newRightHash, true, nil
+			}
+			if newRightHash == [32]byte{} {
+				leftNode, exists, err := GetTreeNode(tx, curNode.LeftHash)
+				if err != nil {
+					return [32]byte{}, false, fmt.Errorf("failed to get left node: %w", err)
+				}
+				if !exists {
+					return [32]byte{}, false, fmt.Errorf("left node does not exist")
+				}
+				if leftNode.IsLeaf() {
+					return curNode.LeftHash, true, nil
+				}
+			}
+		}
+		leftHash = curNode.LeftHash
+		rightHash = newRightHash
+	}
+	newInternalNode := &Node{
+		OriginalKey:   [31]byte{},
+		OriginalValue: []byte{},
+		LeftHash:      leftHash,
+		RightHash:     rightHash,
+	}
+	newInternalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
+	if err := SetTreeNodeData(tx, newInternalNodeHash, serializer.Serialize(newInternalNode)); err != nil {
+		return [32]byte{}, false, fmt.Errorf("failed to store internal node: %w", err)
+	}
+	return newInternalNodeHash, false, nil
 }
 
 // updateMerkleTreeForSet updates the Merkle tree for a set operation
@@ -215,7 +281,7 @@ func updateMerkleTreeForSet(tx *TrackedTx, key [31]byte, value []byte) error {
 
 // upsertLeaf inserts or updates a leaf node and returns the new root hash
 func upsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
-	_, err := upsertLeafHelper(tx, key, value, []byte{})
+	_, err := upsertLeafHelper(tx, key, value, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to upsert leaf: %w", err)
 	}
@@ -257,53 +323,7 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 	return blake2b.Sum256(nodeData[:])
 }
 
-func recursiveInsertAndGetHashes(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, path []byte) ([32]byte, [32]byte, error) {
-	// Get the next bit to determine which child to follow
-	byteIndex := len(path) / 8
-	bitPos := 7 - (len(path) % 8)
-	bit := (key[byteIndex] >> bitPos) & 1
-	newChild, err := upsertLeafHelper(tx, key, value, append(path, bit))
-	if err != nil {
-		return [32]byte{}, [32]byte{}, err
-	}
-
-	var leftHash, rightHash [32]byte
-
-	// Check if curNode was originally a leaf (being split) or internal node (being updated)
-	if curNode.IsLeaf() {
-		// curNode was a leaf that's being split
-		// Get the existing leaf's bit at this position
-		existingBit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
-
-		if bit == existingBit {
-			// Both keys go to the same child - other child is empty (zero hash)
-			if bit == 0 {
-				leftHash = newChild.Hash
-				rightHash = [32]byte{} // Empty
-			} else {
-				rightHash = newChild.Hash
-				leftHash = [32]byte{} // Empty
-			}
-		} else {
-			// Keys go to different children - sibling is the existing leaf
-			if bit == 0 {
-				leftHash = newChild.Hash
-				rightHash = curNode.Hash // Existing leaf
-			} else {
-				rightHash = newChild.Hash
-				leftHash = curNode.Hash // Existing leaf
-			}
-		}
-	} else {
-		// curNode was already an internal node - can use stored child hashes
-		if bit == 0 {
-			leftHash = newChild.Hash
-			rightHash = curNode.RightHash
-		} else {
-			rightHash = newChild.Hash
-			leftHash = curNode.LeftHash
-		}
-	}
+func recursiveInsertAndGetHashes(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, path []byte, leafCollision *Node) ([32]byte, [32]byte, error) {
 
 	return leftHash, rightHash, nil
 }
@@ -338,16 +358,12 @@ func normalizeTreePath(path []byte) []byte {
 	return path
 }
 
-func GetTreeNodeData(tx *TrackedTx, path []byte) ([]byte, bool, error) {
-	return getKV(tx, "tree", normalizeTreePath(path))
+func GetTreeNodeData(tx *TrackedTx, hash [32]byte) ([]byte, bool, error) {
+	return getKV(tx, "tree", hash[:])
 }
 
-func SetTreeNodeData(tx *TrackedTx, path []byte, value []byte) error {
-	return setKV(tx, "tree", normalizeTreePath(path), value)
-}
-
-func DeleteTreeNodeData(tx *TrackedTx, path []byte) error {
-	return deleteKV(tx, "tree", normalizeTreePath(path))
+func SetTreeNodeData(tx *TrackedTx, hash [32]byte, value []byte) error {
+	return setKV(tx, "tree", hash[:], value)
 }
 
 func GetBlockKV(tx *TrackedTx, key [32]byte) ([]byte, bool, error) {
@@ -446,8 +462,7 @@ func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
 // TrackedTx wraps bolt.Tx and tracks state changes
 type TrackedTx struct {
 	*bolt.Tx
-	memWrites  map[[31]byte][]byte
-	memoryMode bool
+	stateRoot [32]byte
 }
 
 // Snapshot represents metadata for a state snapshot
@@ -622,8 +637,8 @@ func DeletePreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.Serv
 	return DeleteStateKV(tx, dbKey)
 }
 
-func GetTreeNode(tx *TrackedTx, path []byte) (*Node, bool, error) {
-	value, exists, err := GetTreeNodeData(tx, path)
+func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
+	value, exists, err := GetTreeNodeData(tx, hash)
 	if err != nil {
 		return nil, false, err
 	}
