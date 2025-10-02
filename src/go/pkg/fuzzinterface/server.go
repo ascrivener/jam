@@ -281,8 +281,6 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 		}
 	}()
 
-	log.Printf("handleImportBlock: Processing block data of size %d bytes", len(importBlockData))
-
 	var importBlock ImportBlock
 	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {

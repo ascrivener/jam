@@ -32,7 +32,9 @@ func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
 		defer os.Remove(dbPath) // Remove when done
 	}
 
-	db, err = bolt.Open(dbPath, 0600, nil)
+	db, err = bolt.Open(dbPath, 0600, &bolt.Options{
+		NoSync: true,
+	})
 
 	if err != nil {
 		return nil, err

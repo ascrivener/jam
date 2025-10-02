@@ -115,8 +115,7 @@ func main() {
 		}
 	}()
 
-	err = merklizerState.OverwriteCurrentState(tx)
-	if err != nil {
+	if err := merklizerState.OverwriteCurrentState(tx); err != nil {
 		log.Fatalf("Failed to overwrite current state: %v", err)
 	}
 

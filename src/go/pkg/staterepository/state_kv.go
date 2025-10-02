@@ -6,6 +6,7 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
 	"strings"
+	"sync"
 
 	"maps"
 
@@ -39,7 +40,7 @@ func keysMatchAtDepth(key1, key2 [31]byte, depth int) bool {
 }
 
 // createInternalNodeWithBit calculates the bit, recursively inserts, and creates an internal node
-func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, depth int) ([32]byte, error) {
+func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, hash [32]byte, key [31]byte, value []byte, depth int) ([32]byte, error) {
 
 	// Get key's bit at this depth
 	byteIndex := depth / 8
@@ -64,6 +65,10 @@ func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value
 		}
 	}
 
+	if leftHash == curNode.LeftHash && rightHash == curNode.RightHash {
+		return hash, nil
+	}
+
 	// Create internal node
 	internalNode := &Node{
 		OriginalKey:   [31]byte{},
@@ -73,9 +78,7 @@ func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value
 	}
 	internalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
 
-	if err := SetTreeNodeData(tx, internalNodeHash, serializer.Serialize(internalNode)); err != nil {
-		return [32]byte{}, fmt.Errorf("failed to store internal node: %w", err)
-	}
+	setTreeNode(tx, internalNodeHash, internalNode)
 
 	return internalNodeHash, nil
 }
@@ -99,9 +102,7 @@ func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newV
 	existingLeafHash := calculateLeafHash(existingLeaf.OriginalKey, existingLeaf.OriginalValue)
 
 	// Store new leaf
-	if err := SetTreeNodeData(tx, newLeafHash, serializer.Serialize(newLeaf)); err != nil {
-		return [32]byte{}, err
-	}
+	setTreeNode(tx, newLeafHash, newLeaf)
 
 	var currentHash [32]byte
 
@@ -140,9 +141,7 @@ func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newV
 			RightHash:     rightHash,
 		}
 
-		if err := SetTreeNodeData(tx, currentHash, serializer.Serialize(internalNode)); err != nil {
-			return [32]byte{}, err
-		}
+		setTreeNode(tx, currentHash, internalNode)
 	}
 
 	return currentHash, nil
@@ -194,24 +193,28 @@ func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, 
 			RightHash:     [32]byte{},
 		}
 		newHash := calculateLeafHash(key, value)
-		if err := SetTreeNodeData(tx, newHash, serializer.Serialize(newLeaf)); err != nil {
-			return [32]byte{}, fmt.Errorf("failed to store new leaf: %w", err)
-		}
+		setTreeNode(tx, newHash, newLeaf)
 		return newHash, nil
 	}
 	if curNode.IsLeaf() {
 		if curNode.OriginalKey == key {
-			curNode.OriginalValue = value
-			newHash := calculateLeafHash(key, value)
-			if err := SetTreeNodeData(tx, newHash, serializer.Serialize(curNode)); err != nil {
-				return [32]byte{}, fmt.Errorf("failed to store updated leaf: %w", err)
+			if bytes.Equal(curNode.OriginalValue, value) {
+				return hash, nil
 			}
+			newLeaf := &Node{
+				OriginalKey:   key,
+				OriginalValue: value,
+				LeftHash:      [32]byte{},
+				RightHash:     [32]byte{},
+			}
+			newHash := calculateLeafHash(key, value)
+			setTreeNode(tx, newHash, newLeaf)
 			return newHash, nil
 		}
 		return splitLeafCollision(tx, curNode, key, value, depth)
 	}
 
-	newHash, err := createInternalNodeWithBit(tx, curNode, key, value, depth)
+	newHash, err := createInternalNodeWithBit(tx, curNode, hash, key, value, depth)
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -226,14 +229,14 @@ func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([3
 	}
 
 	if !exists {
-		return [32]byte{}, false, fmt.Errorf("key does not exist")
+		return [32]byte{}, false, nil
 	}
 
 	if curNode.IsLeaf() {
 		if curNode.OriginalKey == key {
 			return [32]byte{}, true, nil // Delete this leaf
 		}
-		return hash, false, fmt.Errorf("key does not exist")
+		return hash, false, nil
 	}
 
 	// Recurse to find the target
@@ -299,9 +302,7 @@ func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([3
 		RightHash:     rightHash,
 	}
 	newInternalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
-	if err := SetTreeNodeData(tx, newInternalNodeHash, serializer.Serialize(newInternalNode)); err != nil {
-		return [32]byte{}, false, fmt.Errorf("failed to store internal node: %w", err)
-	}
+	setTreeNode(tx, newInternalNodeHash, newInternalNode)
 	return newInternalNodeHash, false, nil
 }
 
@@ -310,7 +311,7 @@ func getLeaf(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
 }
 
 // upsertLeaf inserts or updates a leaf node and returns the new root hash
-func upsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
+func UpsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
 	newStateRoot, err := upsertLeafHelper(tx, key, value, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to upsert leaf: %w", err)
@@ -320,7 +321,7 @@ func upsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
 }
 
 // updateMerkleTreeForDelete updates the Merkle tree for a delete operation
-func deleteLeaf(tx *TrackedTx, key [31]byte) error {
+func DeleteLeaf(tx *TrackedTx, key [31]byte) error {
 	newStateRoot, _, err := deleteLeafHelper(tx, key, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to delete leaf: %w", err)
@@ -356,40 +357,30 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 }
 
 func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
-	if tx.memoryMode {
-		value, exists := tx.memory[key]
-		if exists {
-			if value == nil {
-				return nil, false, nil // Explicitly deleted
-			}
-			return value, true, nil
+	value, exists := tx.memory[key]
+	if exists {
+		if value == nil {
+			return nil, false, nil // Explicitly deleted
 		}
+		return value, true, nil
 	}
 	return getLeaf(tx, key)
 }
 
-func SetStateKV(tx *TrackedTx, key [31]byte, value []byte) error {
-	if tx.memoryMode {
-		tx.memory[key] = value
-		return nil
-	}
-	return upsertLeaf(tx, key, value)
+func SetStateKV(tx *TrackedTx, key [31]byte, value []byte) {
+	tx.memory[key] = value
 }
 
-func DeleteStateKV(tx *TrackedTx, key [31]byte) error {
-	if tx.memoryMode {
-		tx.memory[key] = nil
-		return nil
-	}
-	return deleteLeaf(tx, key)
+func DeleteStateKV(tx *TrackedTx, key [31]byte) {
+	tx.memory[key] = nil
 }
 
-func GetTreeNodeData(tx *TrackedTx, hash [32]byte) ([]byte, bool, error) {
-	return getKV(tx, "tree", hash[:])
+func setTreeNode(tx *TrackedTx, hash [32]byte, value *Node) {
+	tx.treeNodes[hash] = value
 }
 
-func SetTreeNodeData(tx *TrackedTx, hash [32]byte, value []byte) error {
-	return setKV(tx, "tree", hash[:], value)
+func SetTreeNodeDB(tx *TrackedTx, hash [32]byte, value *Node) error {
+	return setKV(tx, "tree", hash[:], serializer.Serialize(value))
 }
 
 func GetBlockKV(tx *TrackedTx, key [32]byte) ([]byte, bool, error) {
@@ -488,9 +479,9 @@ func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
 // TrackedTx wraps bolt.Tx and tracks state changes
 type TrackedTx struct {
 	*bolt.Tx
-	stateRoot  [32]byte
-	memory     map[[31]byte][]byte
-	memoryMode bool
+	stateRoot [32]byte
+	memory    map[[31]byte][]byte
+	treeNodes map[[32]byte]*Node
 }
 
 // NewTrackedTx creates a new tracked transaction wrapper
@@ -504,10 +495,10 @@ func NewTrackedTx(stateRoot [32]byte) (*TrackedTx, error) {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	return &TrackedTx{
-		Tx:         tx,
-		stateRoot:  stateRoot,
-		memory:     make(map[[31]byte][]byte),
-		memoryMode: false,
+		Tx:        tx,
+		stateRoot: stateRoot,
+		memory:    make(map[[31]byte][]byte),
+		treeNodes: make(map[[32]byte]*Node),
 	}, nil
 }
 
@@ -521,10 +512,9 @@ func (tx *TrackedTx) SetStateRoot(stateRoot [32]byte) {
 
 func (tx *TrackedTx) CreateChild() *TrackedTx {
 	child := &TrackedTx{
-		Tx:         tx.Tx,
-		stateRoot:  tx.stateRoot,
-		memory:     make(map[[31]byte][]byte),
-		memoryMode: tx.memoryMode,
+		Tx:        tx.Tx,
+		stateRoot: tx.stateRoot,
+		memory:    make(map[[31]byte][]byte),
 	}
 
 	maps.Copy(child.memory, tx.memory)
@@ -537,19 +527,71 @@ func (tx *TrackedTx) Apply(childTx *TrackedTx) error {
 		return fmt.Errorf("child transaction cannot be nil")
 	}
 
-	tx.stateRoot = childTx.stateRoot
-
 	maps.Copy(tx.memory, childTx.memory)
 
 	return nil
 }
 
-func (tx *TrackedTx) SetMemoryMode(mode bool) {
-	tx.memoryMode = mode
+func (tx *TrackedTx) FlushMemoryToDB() error {
+	for key, val := range tx.GetMemoryContents() {
+		if val == nil {
+			if err := DeleteLeaf(tx, key); err != nil {
+				return err
+			}
+		} else {
+			if err := UpsertLeaf(tx, key, val); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Prune unreachable tree nodes
+	prunedTree := tx.PruneUnreachableNodes()
+
+	for key, val := range prunedTree {
+		if val == nil { // This should never happen
+			return fmt.Errorf("pruned tree node is nil")
+		} else {
+			if err := SetTreeNodeDB(tx, key, val); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (tx *TrackedTx) GetMemoryContents() map[[31]byte][]byte {
 	return tx.memory
+}
+
+func (tx *TrackedTx) PruneUnreachableNodes() map[[32]byte]*Node {
+	reachable := make(map[[32]byte]bool)
+	tx.markReachableNodes(tx.GetStateRoot(), reachable)
+
+	// Remove unreachable nodes from treeNodes map
+	for hash := range tx.treeNodes {
+		if !reachable[hash] {
+			delete(tx.treeNodes, hash)
+		}
+	}
+
+	return tx.treeNodes
+}
+
+func (tx *TrackedTx) markReachableNodes(hash [32]byte, reachable map[[32]byte]bool) {
+	if reachable[hash] {
+		return
+	}
+	if node, exists := tx.treeNodes[hash]; exists {
+		reachable[hash] = true
+		if node.LeftHash != ([32]byte{}) {
+			tx.markReachableNodes(node.LeftHash, reachable)
+		}
+		if node.RightHash != ([32]byte{}) {
+			tx.markReachableNodes(node.RightHash, reachable)
+		}
+	}
 }
 
 func GetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) ([]byte, bool, error) {
@@ -557,51 +599,43 @@ func GetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) ([]byte, 
 }
 
 // SetServiceAccount stores service account data
-func SetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex, data []byte) error {
-	dbKey := stateKeyConstructorFromServiceIndex(serviceIndex)
-	return SetStateKV(tx, dbKey, data)
+func SetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex, data []byte) {
+	SetStateKV(tx, stateKeyConstructorFromServiceIndex(serviceIndex), data)
 }
 
 // DeleteServiceAccount deletes a service account
-func DeleteServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) error {
-	dbKey := stateKeyConstructorFromServiceIndex(serviceIndex)
-	return DeleteStateKV(tx, dbKey)
+func DeleteServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) {
+	DeleteStateKV(tx, stateKeyConstructorFromServiceIndex(serviceIndex))
 }
 
 // GetServiceStorageItem retrieves a service storage item with proper error handling
 func GetServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey []byte) ([]byte, bool, error) {
-	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	return GetStateKV(tx, dbKey)
+	return GetStateKV(tx, makeServiceStorageKey(serviceIndex, storageKey))
 }
 
 // SetServiceStorageItem stores a service storage item
-func SetServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey, value []byte) error {
-	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	return SetStateKV(tx, dbKey, value)
+func SetServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey, value []byte) {
+	SetStateKV(tx, makeServiceStorageKey(serviceIndex, storageKey), value)
 }
 
 // DeleteServiceStorageItem deletes a service storage item
-func DeleteServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey []byte) error {
-	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	return DeleteStateKV(tx, dbKey)
+func DeleteServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey []byte) {
+	DeleteStateKV(tx, makeServiceStorageKey(serviceIndex, storageKey))
 }
 
 // GetServicePreimage retrieves a preimage for a given hash
 func GetServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte) ([]byte, bool, error) {
-	dbKey := makePreimageKey(serviceIndex, hash)
-	return GetStateKV(tx, dbKey)
+	return GetStateKV(tx, makePreimageKey(serviceIndex, hash))
 }
 
 // SetServicePreimage stores a preimage for a given hash
-func SetServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, preimage []byte) error {
-	dbKey := makePreimageKey(serviceIndex, hash)
-	return SetStateKV(tx, dbKey, preimage)
+func SetServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, preimage []byte) {
+	SetStateKV(tx, makePreimageKey(serviceIndex, hash), preimage)
 }
 
 // DeleteServicePreimage deletes a preimage for a given hash
-func DeleteServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte) error {
-	dbKey := makePreimageKey(serviceIndex, hash)
-	return DeleteStateKV(tx, dbKey)
+func DeleteServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte) {
+	DeleteStateKV(tx, makePreimageKey(serviceIndex, hash))
 }
 
 // SetWorkReportBySegmentRoot stores a work report by segment root
@@ -647,31 +681,53 @@ func GetPreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.Service
 }
 
 // SetPreimageLookupHistoricalStatus stores historical status for a preimage lookup
-func SetPreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
-	dbKey := makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage)
-	serializedStatus := serializer.Serialize(status)
-	return SetStateKV(tx, dbKey, serializedStatus)
+func SetPreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) {
+	SetStateKV(tx, makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage), serializer.Serialize(status))
 }
 
 // DeletePreimageLookupHistoricalStatus deletes historical status for a preimage lookup
-func DeletePreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) error {
-	dbKey := makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage)
-	return DeleteStateKV(tx, dbKey)
+func DeletePreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) {
+	DeleteStateKV(tx, makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage))
 }
 
+var (
+	globalTreeNodeCache = make(map[[32]byte]*Node)
+	globalTreeNodeMutex sync.RWMutex
+)
+
 func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
-	value, exists, err := GetTreeNodeData(tx, hash)
+	// 1. Check tx-level cache first
+	if node, exists := tx.treeNodes[hash]; exists {
+		return node, true, nil
+	}
+
+	// 2. Check global cache
+	globalTreeNodeMutex.RLock()
+	if node, exists := globalTreeNodeCache[hash]; exists {
+		globalTreeNodeMutex.RUnlock()
+		return node, true, nil
+	}
+	globalTreeNodeMutex.RUnlock()
+
+	// 3. Load from database
+	value, exists, err := getKV(tx, "tree", hash[:])
 	if err != nil {
 		return nil, false, err
 	}
 	if !exists {
-		return nil, false, nil // Node not found
+		return nil, false, nil
 	}
 
 	var node Node
 	if err := serializer.Deserialize(value, &node); err != nil {
 		return nil, false, err
 	}
+
+	// 4. Cache at both levels
+	globalTreeNodeMutex.Lock()
+	globalTreeNodeCache[hash] = &node
+	globalTreeNodeMutex.Unlock()
+
 	return &node, true, nil
 }
 

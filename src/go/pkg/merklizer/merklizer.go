@@ -63,10 +63,8 @@ func collectLeaves(tx *staterepository.TrackedTx, nodeHash [32]byte, state *Stat
 func (s *State) OverwriteCurrentState(tx *staterepository.TrackedTx) error {
 	// Insert all state KVs from this state
 	for _, kv := range *s {
-		if err := staterepository.SetStateKV(tx, kv.OriginalKey, kv.Value); err != nil {
-			return fmt.Errorf("failed to insert state key-value: %w", err)
-		}
+		staterepository.SetStateKV(tx, kv.OriginalKey, kv.Value)
 	}
 
-	return nil
+	return tx.FlushMemoryToDB()
 }

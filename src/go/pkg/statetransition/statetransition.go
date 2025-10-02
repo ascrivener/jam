@@ -126,6 +126,10 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		return [32]byte{}, err
 	}
 
+	if err := tx.FlushMemoryToDB(); err != nil {
+		return [32]byte{}, err
+	}
+
 	root := tx.GetStateRoot()
 
 	blockWithInfo := &block.BlockWithInfo{
@@ -518,9 +522,7 @@ func computeServiceAccounts(tx *staterepository.TrackedTx, preimages extrinsics.
 		if !exists {
 			return errors.ProtocolErrorf("service account %d does not exist", types.ServiceIndex(preimage.ServiceIndex))
 		}
-		if err := serviceAccount.SetPreimageForHash(tx, hash, preimage.Data); err != nil {
-			return err
-		}
+		serviceAccount.SetPreimageForHash(tx, hash, preimage.Data)
 		if err := serviceAccount.SetPreimageLookupHistoricalStatus(tx, uint32(len(preimage.Data)), hash, []types.Timeslot{posteriorMostRecentBlockTimeslot}); err != nil {
 			return err
 		}
@@ -715,9 +717,7 @@ func accumulateAndIntegrate(
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, nil
 		}
 		serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
-		if err := serviceaccount.SetServiceAccount(tx, serviceAccount); err != nil {
-			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
-		}
+		serviceaccount.SetServiceAccount(tx, serviceAccount)
 	}
 
 	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}

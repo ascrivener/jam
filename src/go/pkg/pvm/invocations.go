@@ -234,9 +234,7 @@ func (ctx *AccumulationResultContext) ApplyChangesToTx(tx *staterepository.Track
 	if err := tx.Apply(ctx.Tx); err != nil {
 		return fmt.Errorf("failed to apply nested batch: %w", err)
 	}
-	if err := serviceaccount.SetServiceAccount(tx, ctx.AccumulatingServiceAccount); err != nil {
-		return fmt.Errorf("failed to set service account: %w", err)
-	}
+	serviceaccount.SetServiceAccount(tx, ctx.AccumulatingServiceAccount)
 	return nil
 }
 
@@ -476,9 +474,7 @@ func OnTransfer(tx *staterepository.TrackedTx, timeslot types.Timeslot, serviceI
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
-	if err := serviceaccount.SetServiceAccount(tx, serviceAccount); err != nil {
-		return serviceAccount, 0, err
-	}
+	serviceaccount.SetServiceAccount(tx, serviceAccount)
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
 		return serviceAccount, 0, err

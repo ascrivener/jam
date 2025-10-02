@@ -81,16 +81,12 @@ func GetServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.Service
 	}
 }
 
-func SetServiceAccount(tx *staterepository.TrackedTx, serviceAccount *ServiceAccount) error {
-	return staterepository.SetServiceAccount(tx, serviceAccount.ServiceIndex, serializer.Serialize(serviceAccount.ServiceAccountData))
+func SetServiceAccount(tx *staterepository.TrackedTx, serviceAccount *ServiceAccount) {
+	staterepository.SetServiceAccount(tx, serviceAccount.ServiceIndex, serializer.Serialize(serviceAccount.ServiceAccountData))
 }
 
-func DeleteServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) error {
-	if err := staterepository.DeleteServiceAccount(tx, serviceIndex); err != nil {
-		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
-	}
-
-	return nil
+func DeleteServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) {
+	staterepository.DeleteServiceAccount(tx, serviceIndex)
 }
 
 // t
@@ -153,7 +149,8 @@ func (s *ServiceAccount) SetServiceStorageItem(tx *staterepository.TrackedTx, ke
 	}
 
 	// Set the storage item
-	return staterepository.SetServiceStorageItem(tx, s.ServiceIndex, key, value)
+	staterepository.SetServiceStorageItem(tx, s.ServiceIndex, key, value)
+	return nil
 }
 
 // DeleteServiceStorageItem deletes a storage item for a service account
@@ -172,10 +169,7 @@ func (s *ServiceAccount) DeleteServiceStorageItem(tx *staterepository.TrackedTx,
 	s.TotalOctetsUsedInStorage -= (34 + uint64(len(key)) + uint64(len(oldItem))) // Key + value
 
 	// Delete the storage item
-	if err := staterepository.DeleteServiceStorageItem(tx, s.ServiceIndex, key); err != nil {
-		return err
-	}
-
+	staterepository.DeleteServiceStorageItem(tx, s.ServiceIndex, key)
 	return nil
 }
 
@@ -185,21 +179,13 @@ func (s *ServiceAccount) GetPreimageForHash(tx *staterepository.TrackedTx, hash 
 }
 
 // SetPreimageForHash sets a preimage for a given hash
-func (s *ServiceAccount) SetPreimageForHash(tx *staterepository.TrackedTx, hash [32]byte, preimage []byte) error {
-	if err := staterepository.SetServicePreimage(tx, s.ServiceIndex, hash, preimage); err != nil {
-		return fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err)
-	}
-
-	return nil
+func (s *ServiceAccount) SetPreimageForHash(tx *staterepository.TrackedTx, hash [32]byte, preimage []byte) {
+	staterepository.SetServicePreimage(tx, s.ServiceIndex, hash, preimage)
 }
 
 // DeletePreimageForHash deletes a preimage for a given hash
-func (s *ServiceAccount) DeletePreimageForHash(tx *staterepository.TrackedTx, hash [32]byte) error {
-	if err := staterepository.DeleteServicePreimage(tx, s.ServiceIndex, hash); err != nil {
-		return fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err)
-	}
-
-	return nil
+func (s *ServiceAccount) DeletePreimageForHash(tx *staterepository.TrackedTx, hash [32]byte) {
+	staterepository.DeleteServicePreimage(tx, s.ServiceIndex, hash)
 }
 
 // GetPreimageLookupHistoricalStatus retrieves historical status for a preimage lookup
@@ -224,9 +210,7 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(tx *staterepository.T
 	}
 
 	// Set the historical status
-	if err := staterepository.SetPreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage, status); err != nil {
-		return fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err)
-	}
+	staterepository.SetPreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage, status)
 
 	return nil
 }
@@ -249,9 +233,7 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(tx *staterepositor
 	s.TotalOctetsUsedInStorage -= (81 + uint64(blobLength))
 
 	// Delete using StateKV function (replaces manual key construction)
-	if err := staterepository.DeletePreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage); err != nil {
-		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
-	}
+	staterepository.DeletePreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage)
 
 	return nil
 }

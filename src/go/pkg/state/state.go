@@ -245,9 +245,7 @@ func (state *State) Set(tx *staterepository.TrackedTx) error {
 
 	// Store each component
 	for _, component := range componentData {
-		if err := staterepository.SetStateKV(tx, component.key, component.data); err != nil {
-			return fmt.Errorf("failed to store component: %w", err)
-		}
+		staterepository.SetStateKV(tx, component.key, component.data)
 	}
 
 	return nil

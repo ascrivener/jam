@@ -558,9 +558,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		accumulatingServiceAccount.Balance -= newAccount.Balance
 
 		// store new account
-		if err := serviceaccount.SetServiceAccount(tx, newAccount); err != nil {
-			return ExitReason{}, err
-		}
+		serviceaccount.SetServiceAccount(tx, newAccount)
 
 		ctx.State.Registers[7] = types.Register(newAccount.ServiceIndex)
 		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = types.ServiceIndex((1 << 8) + ((uint64(newAccount.ServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
@@ -735,20 +733,14 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
 				// IMPORTANT: actually delete the service account and preimage from state as well
-				if err := serviceaccount.DeleteServiceAccount(tx, destServiceIndex); err != nil {
-					return ExitReason{}, err
-				}
+				serviceaccount.DeleteServiceAccount(tx, destServiceIndex)
 				if err := destinationAccount.DeletePreimageLookupHistoricalStatus(tx, uint32(length), hash); err != nil {
 					return ExitReason{}, err
 				}
-				if err := destinationAccount.DeletePreimageForHash(tx, hash); err != nil {
-					return ExitReason{}, err
-				}
+				destinationAccount.DeletePreimageForHash(tx, hash)
 
 				// Remove the entry from destination account
-				if err := serviceaccount.DeleteServiceAccount(tx, destServiceIndex); err != nil {
-					return ExitReason{}, err
-				}
+				serviceaccount.DeleteServiceAccount(tx, destServiceIndex)
 
 				// Set status to OK
 				ctx.State.Registers[7] = types.Register(HostCallOK)
@@ -909,9 +901,7 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepo
 			}
 
 			// Also remove the key from PreimageLookup if it exists
-			if err := xs.DeletePreimageForHash(tx, keyHash); err != nil {
-				return ExitReason{}, err
-			}
+			xs.DeletePreimageForHash(tx, keyHash)
 		} else if len(historicalStatus) == 1 {
 			// Replace [x] with [x, t] if status is [x]
 			if err := xs.SetPreimageLookupHistoricalStatus(tx, uint32(z), keyHash, []types.Timeslot{historicalStatus[0], timeslot}); err != nil {

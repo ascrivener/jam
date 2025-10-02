@@ -112,8 +112,6 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	var childTransactions []*staterepository.TrackedTx
 	var childTxMutex sync.Mutex
 
-	tx.SetMemoryMode(true)
-
 	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
@@ -178,16 +176,10 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	}
 	wg.Wait()
 
-	tx.SetMemoryMode(false)
-
 	// Merge all child transactions back into parent after concurrent processing
 	for _, childTx := range childTransactions {
-		for key, val := range childTx.GetMemoryContents() {
-			if val == nil {
-				staterepository.DeleteStateKV(tx, key)
-			} else {
-				staterepository.SetStateKV(tx, key, val)
-			}
+		if err := tx.Apply(childTx); err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
 	}
 
@@ -256,9 +248,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		if err := serviceAccount.SetPreimageLookupHistoricalStatus(tx, uint32(len(blob)), preimage, []types.Timeslot{timeslot}); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
-		if err := serviceAccount.SetPreimageForHash(tx, preimage, blob); err != nil {
-			return AccumulationStateComponents{}, nil, nil, nil, err
-		}
+		serviceAccount.SetPreimageForHash(tx, preimage, blob)
 	}
 
 	return AccumulationStateComponents{
