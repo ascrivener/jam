@@ -13,77 +13,59 @@ type StateKV struct {
 	Value       []byte
 }
 
-func GetState(tx *staterepository.TrackedTx) *State {
-	// Create a new iterator
-	iter, err := staterepository.NewIter(tx, "state", &staterepository.IterOptions{})
-	if err != nil {
-		// Return empty hash if we can't create the iterator
-		return nil
-	}
-	defer iter.Close()
-
+func GetState(tx *staterepository.TrackedTx) (*State, error) {
 	state := &State{}
-	// Iterate through all matching keys
-	for key, value := iter.First(); iter.Valid(); key, value = iter.Next() {
 
-		// Convert to [31]byte
-		var keyBytes [31]byte
-		copy(keyBytes[:], key)
-
-		// Copy value
-		valueBytes := make([]byte, len(value))
-		copy(valueBytes, value)
-
-		// Add to the state
-		*state = append(*state, StateKV{
-			OriginalKey: keyBytes,
-			Value:       valueBytes,
-		})
+	// Start traversal from root
+	err := collectLeaves(tx, tx.GetStateRoot(), state)
+	if err != nil {
+		return nil, err
 	}
 
-	return state
+	return state, nil
+}
+
+func collectLeaves(tx *staterepository.TrackedTx, nodeHash [32]byte, state *State) error {
+	// Get node from database using "tree:node:<hash>" key
+	node, exists, err := staterepository.GetTreeNode(tx, nodeHash)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("node %x does not exist", nodeHash)
+	}
+
+	if node.IsLeaf() {
+		// This is a leaf - add to state
+		*state = append(*state, StateKV{
+			OriginalKey: node.OriginalKey,
+			Value:       node.OriginalValue,
+		})
+	} else {
+		// This is an internal node - recurse on children
+		if node.LeftHash != [32]byte{} {
+			err = collectLeaves(tx, node.LeftHash, state)
+			if err != nil {
+				return err
+			}
+		}
+		if node.RightHash != [32]byte{} {
+			err = collectLeaves(tx, node.RightHash, state)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *State) OverwriteCurrentState(tx *staterepository.TrackedTx) error {
-	// Delete all existing state entries by iterating through all keys with "state:" prefix
-	iter, err := staterepository.NewIter(tx, "state", &staterepository.IterOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create iterator: %w", err)
-	}
-	defer iter.Close()
-
-	// Delete all existing state entries
-	for key, _ := iter.First(); iter.Valid(); key, _ = iter.Next() {
-		var keyBytes [31]byte
-		copy(keyBytes[:], key)
-		if err := staterepository.DeleteStateKV(tx, keyBytes); err != nil {
-			return fmt.Errorf("failed to delete existing state key: %w", err)
-		}
-	}
-
-	// delete tree too
-	treeIter, err := staterepository.NewIter(tx, "tree", &staterepository.IterOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create tree iterator: %w", err)
-	}
-	defer treeIter.Close()
-
-	// Delete all existing tree entries
-	for key, _ := treeIter.First(); treeIter.Valid(); key, _ = treeIter.Next() {
-		if err := staterepository.DeleteTreeNodeData(tx, key); err != nil {
-			return fmt.Errorf("failed to delete existing tree key: %w", err)
-		}
-	}
-
 	// Insert all state KVs from this state
 	for _, kv := range *s {
 		if err := staterepository.SetStateKV(tx, kv.OriginalKey, kv.Value); err != nil {
 			return fmt.Errorf("failed to insert state key-value: %w", err)
 		}
-	}
-
-	if err := staterepository.ApplyMerkleTreeUpdates(tx); err != nil {
-		return fmt.Errorf("failed to apply Merkle tree updates: %w", err)
 	}
 
 	return nil

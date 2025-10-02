@@ -3,6 +3,7 @@ package staterepository
 import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
+	"os"
 
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/blake2b"
@@ -19,11 +20,19 @@ func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
 	var err error
 
 	if dbPath == "" {
-		// Use in-memory database for empty path
-		db, err = bolt.Open(":memory:", 0600, nil)
-	} else {
-		db, err = bolt.Open(dbPath, 0600, nil)
+		// Create a temporary file for in-memory-like database
+		tmpFile, err := os.CreateTemp("", "jam_temp_*.db")
+		if err != nil {
+			return nil, err
+		}
+		tmpFile.Close() // Close the file handle, BoltDB will open it
+		dbPath = tmpFile.Name()
+
+		// Optionally, schedule cleanup
+		defer os.Remove(dbPath) // Remove when done
 	}
+
+	db, err = bolt.Open(dbPath, 0600, nil)
 
 	if err != nil {
 		return nil, err

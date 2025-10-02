@@ -376,7 +376,7 @@ type Handshake struct {
 
 // createHandshake creates a handshake message with current finalized block info and known leaves
 func createHandshake() (Handshake, error) {
-	readTx, err := staterepository.NewTrackedTx()
+	readTx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return Handshake{}, fmt.Errorf("failed to create read transaction: %w", err)
 	}

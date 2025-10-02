@@ -7,7 +7,6 @@ import (
 	"jam/pkg/merklizer"
 	"jam/pkg/pvm"
 	"jam/pkg/serializer"
-	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/validatorstatistics"
@@ -18,7 +17,6 @@ type State struct {
 	AuthorizersPool            [constants.NumCores][][32]byte
 	RecentActivity             RecentActivity
 	SafroleBasicState          SafroleBasicState
-	ServiceAccounts            serviceaccount.ServiceAccounts
 	EntropyAccumulator         [4][32]byte
 	ValidatorKeysetsStaging    types.ValidatorKeysets
 	ValidatorKeysetsActive     types.ValidatorKeysets
@@ -166,41 +164,8 @@ func (ki *kvIterator) Close() error {
 	return nil
 }
 
-func (s *State) loadServiceAccounts(ds dataSource) error {
-	iter, err := ds.iterateServiceAccounts()
-	if err != nil {
-		return err
-	}
-	defer iter.Close()
-
-	for key, value := iter.First(); iter.Valid(); key, value = iter.Next() {
-		// Make sure key starts with our prefix
-		if len(key) < 1 || key[0] != 255 {
-			continue
-		}
-
-		// Skip the prefix for pattern checking (after "state:" + 255 byte)
-		unprefixedKey := key[1:]
-
-		// Validate and extract service index
-		serviceIndex, valid := extractServiceIndexFromKey(unprefixedKey)
-		if !valid {
-			continue
-		}
-
-		// Process the service account
-		if err := s.processServiceAccount(serviceIndex, value); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func getStateFromDataSource(ds dataSource) (*State, error) {
-	state := State{
-		ServiceAccounts: make(map[types.ServiceIndex]*serviceaccount.ServiceAccount),
-	}
+	state := State{}
 
 	// Define static state components
 	components := []struct {
@@ -243,11 +208,6 @@ func getStateFromDataSource(ds dataSource) (*State, error) {
 		}
 	}
 
-	// Load service accounts using the appropriate method
-	if err := state.loadServiceAccounts(ds); err != nil {
-		return nil, err
-	}
-
 	return &state, nil
 }
 
@@ -257,66 +217,6 @@ func createKVMap(kvs merklizer.State) map[[31]byte][]byte {
 		kvMap[kv.OriginalKey] = kv.Value
 	}
 	return kvMap
-}
-
-func extractServiceIndexFromKey(unprefixedKey []byte) (uint64, bool) {
-	// Check the pattern [n_0, 0, n_1, 0, n_2, 0, n_3, 0, 0...]
-	// Only proceed if the zero bytes are in the right places
-	if len(unprefixedKey) < 8 || unprefixedKey[1] != 0 || unprefixedKey[3] != 0 || unprefixedKey[5] != 0 || unprefixedKey[7] != 0 {
-		return 0, false
-	}
-
-	// Check that all remaining bytes are zeros
-	for i := 8; i < len(unprefixedKey); i++ {
-		if unprefixedKey[i] != 0 {
-			return 0, false
-		}
-	}
-
-	// Extract service index from key using little endian [n0,n1,n2,n3]
-	serviceIndex := uint64(unprefixedKey[0]) |
-		uint64(unprefixedKey[2])<<8 |
-		uint64(unprefixedKey[4])<<16 |
-		uint64(unprefixedKey[6])<<24
-
-	return serviceIndex, true
-}
-
-func (state *State) processServiceAccount(serviceIndex uint64, value []byte) error {
-	var serviceAccountData struct {
-		CodeHash                       [32]byte           // c
-		Balance                        types.Balance      // b
-		MinimumGasForAccumulate        types.GasValue     // g
-		MinimumGasForOnTransfer        types.GasValue     // m
-		TotalOctetsUsedInStorage       uint64             // o
-		GratisStorageOffset            types.Balance      // f
-		TotalItemsUsedInStorage        uint32             // i
-		CreatedTimeSlot                types.Timeslot     // r
-		MostRecentAccumulationTimeslot types.Timeslot     // a
-		ParentServiceIndex             types.ServiceIndex // p
-	}
-
-	// Deserialize account
-	if err := serializer.Deserialize(value, &serviceAccountData); err != nil {
-		return fmt.Errorf("failed to deserialize service account %d: %w", serviceIndex, err)
-	}
-
-	// Add to state
-	state.ServiceAccounts[types.ServiceIndex(serviceIndex)] = &serviceaccount.ServiceAccount{
-		ServiceIndex:                   types.ServiceIndex(serviceIndex),
-		CodeHash:                       serviceAccountData.CodeHash,
-		Balance:                        serviceAccountData.Balance,
-		MinimumGasForAccumulate:        serviceAccountData.MinimumGasForAccumulate,
-		MinimumGasForOnTransfer:        serviceAccountData.MinimumGasForOnTransfer,
-		TotalOctetsUsedInStorage:       serviceAccountData.TotalOctetsUsedInStorage,
-		GratisStorageOffset:            serviceAccountData.GratisStorageOffset,
-		TotalItemsUsedInStorage:        serviceAccountData.TotalItemsUsedInStorage,
-		CreatedTimeSlot:                serviceAccountData.CreatedTimeSlot,
-		MostRecentAccumulationTimeslot: serviceAccountData.MostRecentAccumulationTimeslot,
-		ParentServiceIndex:             serviceAccountData.ParentServiceIndex,
-	}
-
-	return nil
 }
 
 func (state *State) Set(tx *staterepository.TrackedTx) error {
@@ -347,37 +247,6 @@ func (state *State) Set(tx *staterepository.TrackedTx) error {
 	for _, component := range componentData {
 		if err := staterepository.SetStateKV(tx, component.key, component.data); err != nil {
 			return fmt.Errorf("failed to store component: %w", err)
-		}
-	}
-
-	// Store service accounts
-	for serviceIndex, account := range state.ServiceAccounts {
-		var serviceAccountData = struct {
-			CodeHash                       [32]byte           // c
-			Balance                        types.Balance      // b
-			MinimumGasForAccumulate        types.GasValue     // g
-			MinimumGasForOnTransfer        types.GasValue     // m
-			TotalOctetsUsedInStorage       uint64             // o
-			GratisStorageOffset            types.Balance      // f
-			TotalItemsUsedInStorage        uint32             // i
-			CreatedTimeSlot                types.Timeslot     // r
-			MostRecentAccumulationTimeslot types.Timeslot     // a
-			ParentServiceIndex             types.ServiceIndex // p
-		}{
-			CodeHash:                       account.CodeHash,
-			Balance:                        account.Balance,
-			MinimumGasForAccumulate:        account.MinimumGasForAccumulate,
-			MinimumGasForOnTransfer:        account.MinimumGasForOnTransfer,
-			TotalOctetsUsedInStorage:       account.TotalOctetsUsedInStorage,
-			GratisStorageOffset:            account.GratisStorageOffset,
-			TotalItemsUsedInStorage:        account.TotalItemsUsedInStorage,
-			CreatedTimeSlot:                account.CreatedTimeSlot,
-			MostRecentAccumulationTimeslot: account.MostRecentAccumulationTimeslot,
-			ParentServiceIndex:             account.ParentServiceIndex,
-		}
-		data := serializer.Serialize(&serviceAccountData)
-		if err := staterepository.SetServiceAccount(tx, serviceIndex, data); err != nil {
-			return fmt.Errorf("failed to store service account %d: %w", serviceIndex, err)
 		}
 	}
 

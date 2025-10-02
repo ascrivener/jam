@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"runtime/trace"
 
@@ -226,11 +227,10 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	}
 
 	// Begin a transaction
-	tx, err := staterepository.NewTrackedTx()
+	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return ResponseMessage{}, err
 	}
-	tx.SetMemoryMode(true)
 	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
@@ -243,19 +243,15 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 		return ResponseMessage{}, err
 	}
 
-	root, err := staterepository.GetStateRoot(tx)
-	if err != nil {
-		return ResponseMessage{}, err
-	}
+	root := tx.GetStateRoot()
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: block.Block{
 			Header: initialize.Header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot:  root,
-			Height:              0,
-			ForwardStateChanges: tx.GetStateChanges(),
+			PosteriorStateRoot: root,
+			Height:             0,
 		},
 	}
 
@@ -264,10 +260,7 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	}
 
 	// Compute state root
-	stateRoot, err := staterepository.GetStateRoot(tx)
-	if err != nil {
-		return ResponseMessage{}, err
-	}
+	stateRoot := tx.GetStateRoot()
 
 	// Commit the transaction
 	if err := tx.Commit(); err != nil {
@@ -281,6 +274,15 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 
 // handleImportBlock handles an ImportBlock request
 func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC in handleImportBlock: %v", r)
+			debug.PrintStack()
+		}
+	}()
+
+	log.Printf("handleImportBlock: Processing block data of size %d bytes", len(importBlockData))
+
 	var importBlock ImportBlock
 	err := serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
@@ -300,14 +302,22 @@ func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, err
 
 // handleGetState handles a GetState request
 func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
-	readTx, err := staterepository.NewTrackedTx()
+	var getState GetState
+	err := serializer.Deserialize(getStateData, &getState)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
+	readTx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return ResponseMessage{}, err
 	}
 	defer readTx.Rollback()
-	state := merklizer.GetState(readTx)
-	var getState GetState
-	err = serializer.Deserialize(getStateData, &getState)
+	block, err := block.Get(readTx, getState)
+	if err != nil {
+		return ResponseMessage{}, err
+	}
+	readTx.SetStateRoot(block.Info.PosteriorStateRoot)
+	state, err := merklizer.GetState(readTx)
 	if err != nil {
 		return ResponseMessage{}, err
 	}

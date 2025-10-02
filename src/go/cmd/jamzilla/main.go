@@ -102,11 +102,10 @@ func main() {
 	}
 
 	// Begin a transaction
-	tx, err := staterepository.NewTrackedTx()
+	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		log.Fatalf("Failed to create transaction: %v", err)
 	}
-	tx.SetMemoryMode(true)
 	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
@@ -131,19 +130,15 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
-	root, err := staterepository.GetStateRoot(tx)
-	if err != nil {
-		log.Fatalf("Failed to get state root: %v", err)
-	}
+	root := tx.GetStateRoot()
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
 			Header: header,
 		},
 		Info: block.BlockInfo{
-			PosteriorStateRoot:  root,
-			Height:              0,
-			ForwardStateChanges: tx.GetStateChanges(),
+			PosteriorStateRoot: root,
+			Height:             0,
 		},
 	}
 

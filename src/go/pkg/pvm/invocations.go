@@ -136,40 +136,6 @@ func Refine(tx *staterepository.TrackedTx, workItemIndex int, workPackage wp.Wor
 	return r, integratedPVMsAndExportSequence.ExportSequence, nil
 }
 
-// U
-type AccumulationStateComponents struct {
-	ServiceAccounts          serviceaccount.ServiceAccounts                                // d
-	UpcomingValidatorKeysets [constants.NumValidators]types.ValidatorKeyset                // i
-	AuthorizersQueue         [constants.NumCores][constants.AuthorizerQueueLength][32]byte // q
-	PrivilegedServices       types.PrivilegedServices                                      // x
-}
-
-func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
-	// Create a new struct to hold the copied data
-	copy := AccumulationStateComponents{
-		UpcomingValidatorKeysets: u.UpcomingValidatorKeysets,
-		AuthorizersQueue:         u.AuthorizersQueue,
-		PrivilegedServices:       u.PrivilegedServices, // Copy the struct
-	}
-
-	// Deep copy ServiceAccounts
-	copy.ServiceAccounts = make(serviceaccount.ServiceAccounts, len(u.ServiceAccounts))
-	for idx, account := range u.ServiceAccounts {
-		if account != nil {
-			accountCopy := *account
-			copy.ServiceAccounts[idx] = &accountCopy
-		}
-	}
-
-	// Deep copy the map inside PrivilegedServices if it exists
-	if u.PrivilegedServices.AlwaysAccumulateServicesWithGas != nil {
-		copy.PrivilegedServices.AlwaysAccumulateServicesWithGas = make(map[types.ServiceIndex]types.GasValue)
-		maps.Copy(copy.PrivilegedServices.AlwaysAccumulateServicesWithGas, u.PrivilegedServices.AlwaysAccumulateServicesWithGas)
-	}
-
-	return copy
-}
-
 type DeferredTransfer struct { // T
 	SenderServiceIndex   types.ServiceIndex               // s
 	ReceiverServiceIndex types.ServiceIndex               // d
@@ -216,13 +182,13 @@ type PreimageProvisions map[struct {
 }]struct{}
 
 type AccumulationResultContext struct { // X
-	AccumulatingServiceIndex types.ServiceIndex          // s
-	StateComponents          AccumulationStateComponents // u
-	DerivedServiceIndex      types.ServiceIndex          // i
-	DeferredTransfers        []DeferredTransfer          // t
-	PreimageResult           *[32]byte                   // y
-	PreimageProvisions       PreimageProvisions          // p
-	Tx                       *staterepository.TrackedTx
+	AccumulatingServiceAccount *serviceaccount.ServiceAccount // s
+	StateComponents            AccumulationStateComponents    // d
+	DerivedServiceIndex        types.ServiceIndex             // i
+	DeferredTransfers          []DeferredTransfer             // t
+	PreimageResult             *[32]byte                      // y
+	PreimageProvisions         PreimageProvisions             // p
+	Tx                         *staterepository.TrackedTx
 }
 
 func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
@@ -230,10 +196,20 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 	exceptionalTx := ctx.Tx.CreateChild()
 
 	contextCheckpoint := &AccumulationResultContext{
-		AccumulatingServiceIndex: ctx.AccumulatingServiceIndex,
-		StateComponents:          ctx.StateComponents.DeepCopy(),
-		DerivedServiceIndex:      ctx.DerivedServiceIndex,
-		Tx:                       exceptionalTx,
+		StateComponents:     ctx.StateComponents.DeepCopy(),
+		DerivedServiceIndex: ctx.DerivedServiceIndex,
+		Tx:                  exceptionalTx,
+	}
+
+	serviceAccountCopy := *ctx.AccumulatingServiceAccount
+	contextCheckpoint.AccumulatingServiceAccount = &serviceAccountCopy
+
+	// Deep copy PreimageProvisions
+	if ctx.PreimageProvisions != nil {
+		contextCheckpoint.PreimageProvisions = make(PreimageProvisions)
+		for k, v := range ctx.PreimageProvisions {
+			contextCheckpoint.PreimageProvisions[k] = v
+		}
 	}
 
 	// Deep copy DeferredTransfers slice
@@ -254,27 +230,64 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 	return contextCheckpoint
 }
 
-func AccumulationResultContextFromAccumulationStateComponents(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
+func (ctx *AccumulationResultContext) ApplyChangesToTx(tx *staterepository.TrackedTx) error {
+	if err := tx.Apply(ctx.Tx); err != nil {
+		return fmt.Errorf("failed to apply nested batch: %w", err)
+	}
+	if err := serviceaccount.SetServiceAccount(tx, ctx.AccumulatingServiceAccount); err != nil {
+		return fmt.Errorf("failed to set service account: %w", err)
+	}
+	return nil
+}
+
+func AccumulationResultContextFromAccumulationStateComponents(tx *staterepository.TrackedTx, stateComponents *AccumulationStateComponents, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
 	hash := blake2b.Sum256(serializer.Serialize(struct {
 		ServiceIndex types.GenericNum
 		Entropy      [32]byte
 		Timeslot     types.GenericNum
 	}{
-		ServiceIndex: types.GenericNum(serviceIndex),
+		ServiceIndex: types.GenericNum(serviceAccount.ServiceIndex),
 		Entropy:      posteriorEntropyAccumulator[0],
 		Timeslot:     types.GenericNum(timeslot),
 	}))
-	derivedServiceIndex := check(types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)), accumulationStateComponents)
+	derivedServiceIndex, err := check(tx, types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)))
+	if err != nil {
+		return nil
+	}
 	childTx := tx.CreateChild()
 	return &AccumulationResultContext{
-		AccumulatingServiceIndex: serviceIndex,
-		StateComponents:          accumulationStateComponents.DeepCopy(),
-		DerivedServiceIndex:      derivedServiceIndex,
-		DeferredTransfers:        []DeferredTransfer{},
-		PreimageResult:           nil,
-		PreimageProvisions:       PreimageProvisions{},
-		Tx:                       childTx,
+		AccumulatingServiceAccount: serviceAccount,
+		StateComponents:            *stateComponents,
+		DerivedServiceIndex:        derivedServiceIndex,
+		DeferredTransfers:          []DeferredTransfer{},
+		PreimageResult:             nil,
+		PreimageProvisions:         PreimageProvisions{},
+		Tx:                         childTx,
 	}
+}
+
+// U
+type AccumulationStateComponents struct {
+	UpcomingValidatorKeysets [constants.NumValidators]types.ValidatorKeyset                // i
+	AuthorizersQueue         [constants.NumCores][constants.AuthorizerQueueLength][32]byte // q
+	PrivilegedServices       types.PrivilegedServices                                      // x
+}
+
+func (u AccumulationStateComponents) DeepCopy() AccumulationStateComponents {
+	// Create a new struct to hold the copied data
+	copy := AccumulationStateComponents{
+		UpcomingValidatorKeysets: u.UpcomingValidatorKeysets,
+		AuthorizersQueue:         u.AuthorizersQueue,
+		PrivilegedServices:       u.PrivilegedServices, // Copy the struct
+	}
+
+	// Deep copy the map inside PrivilegedServices if it exists
+	if u.PrivilegedServices.AlwaysAccumulateServicesWithGas != nil {
+		copy.PrivilegedServices.AlwaysAccumulateServicesWithGas = make(map[types.ServiceIndex]types.GasValue)
+		maps.Copy(copy.PrivilegedServices.AlwaysAccumulateServicesWithGas, u.PrivilegedServices.AlwaysAccumulateServicesWithGas)
+	}
+
+	return copy
 }
 
 type AccumulateInvocationContext struct {
@@ -282,37 +295,26 @@ type AccumulateInvocationContext struct {
 	ExceptionalAccumulationResultContext AccumulationResultContext // y
 }
 
-// s
-func (ctx AccumulateInvocationContext) AccumulatingServiceAccount() *serviceaccount.ServiceAccount {
-	s := ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex]
-	return s
-}
-
-// G
-func (ctx *AccumulateInvocationContext) SetAccumulatingServiceAccount(serviceAccount *serviceaccount.ServiceAccount) {
-	ctx.AccumulationResultContext.StateComponents.ServiceAccounts[ctx.AccumulationResultContext.AccumulatingServiceIndex] = serviceAccount
-}
-
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		switch n {
 		case ReadID:
 			return Read(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
+			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex)
 		case WriteID:
 			return Write(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex)
+			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount)
 		case LookupID:
 			return Lookup(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulatingServiceAccount(), ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
+			}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount)
 		case GasID:
 			return Gas(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -323,7 +325,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		case InfoID:
 			return Info(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
-				Argument: &struct{}{}}, ctx.Argument.AccumulationResultContext.AccumulatingServiceIndex, ctx.Argument.AccumulationResultContext.StateComponents.ServiceAccounts)
+				Argument: &struct{}{}}, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount)
 		case BlessID:
 			return Bless(ctx)
 		case AssignID:
@@ -349,7 +351,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		case YieldID:
 			return Yield(ctx)
 		case ProvideID:
-			return Provide(ctx, ctx.Argument.AccumulationResultContext.Tx, serviceIndex)
+			return Provide(ctx, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex)
 		case LogID:
 			return Log(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -362,17 +364,20 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 			})
 		}
 	}
-	normalContext := AccumulationResultContextFromAccumulationStateComponents(tx, accumulationStateComponents, serviceIndex, timeslot, posteriorEntropyAccumulator)
-	serviceAccount, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
-	if !ok {
-		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+	serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
+	if err != nil {
+		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
+	if !exists {
+		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+	}
+	normalContext := AccumulationResultContextFromAccumulationStateComponents(tx, accumulationStateComponents, serviceAccount, timeslot, posteriorEntropyAccumulator)
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
-		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
+		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
-		return normalContext.StateComponents, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
 	// Create two separate context objects
 	exceptionalContext := normalContext.DeepCopy()
@@ -391,17 +396,17 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	})
 	executionExitReason, gasUsed, err := RunWithArgs(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, err
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		if err := tx.Apply(ctx.ExceptionalAccumulationResultContext.Tx); err != nil {
+		if err := ctx.ExceptionalAccumulationResultContext.ApplyChangesToTx(tx); err != nil {
 			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
 		}
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
 	}
 
 	// Success - apply changes to outer batch (merges changes into parent transaction)
-	if err := tx.Apply(ctx.AccumulationResultContext.Tx); err != nil {
+	if err := ctx.AccumulationResultContext.ApplyChangesToTx(tx); err != nil {
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
 
@@ -414,24 +419,24 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
 }
 
-func OnTransfer(tx *staterepository.TrackedTx, serviceAccounts serviceaccount.ServiceAccounts, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue, error) {
+func OnTransfer(tx *staterepository.TrackedTx, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue, error) {
 	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) (ExitReason, error) {
 		switch n {
 		case LookupID:
 			return Lookup(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, tx, ctx.Argument, serviceIndex, serviceAccounts)
+			}, tx, ctx.Argument)
 		case ReadID:
 			return Read(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, tx, ctx.Argument, serviceIndex, serviceAccounts)
+			}, tx, ctx.Argument, ctx.Argument.ServiceIndex)
 		case WriteID:
 			return Write(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, tx, ctx.Argument, serviceIndex)
+			}, tx, ctx.Argument)
 		case GasID:
 			return Gas(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -443,7 +448,7 @@ func OnTransfer(tx *staterepository.TrackedTx, serviceAccounts serviceaccount.Se
 			return Info(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
 				Argument: &struct{}{},
-			}, serviceIndex, serviceAccounts)
+			}, tx, ctx.Argument)
 		case LogID:
 			return Log(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -456,7 +461,13 @@ func OnTransfer(tx *staterepository.TrackedTx, serviceAccounts serviceaccount.Se
 			})
 		}
 	}
-	serviceAccount := serviceAccounts[serviceIndex]
+	serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !exists {
+		return nil, 0, nil
+	}
 	if len(deferredTransfers) == 0 {
 		return serviceAccount, 0, nil
 	}
@@ -464,6 +475,9 @@ func OnTransfer(tx *staterepository.TrackedTx, serviceAccounts serviceaccount.Se
 	for _, deferredTransfer := range deferredTransfers {
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
+	}
+	if err := serviceaccount.SetServiceAccount(tx, serviceAccount); err != nil {
+		return serviceAccount, 0, err
 	}
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {

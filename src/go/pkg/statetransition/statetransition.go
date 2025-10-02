@@ -64,7 +64,7 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 func STF(curBlock block.Block) ([32]byte, error) {
 
 	// 1. Begin a transaction for reorganization
-	tx, err := staterepository.NewTrackedTx()
+	tx, err := staterepository.NewTrackedTx(curBlock.Header.PriorStateRoot)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
 	}
@@ -91,13 +91,8 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
 	// }
 
-	priorStateRoot, err := staterepository.GetStateRoot(tx)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to get current tip: %w", err)
-	}
-
 	// If current tip is not the parent block, we need to reorganize
-	if priorStateRoot != parentBlock.Info.PosteriorStateRoot {
+	if curBlock.Header.PriorStateRoot != parentBlock.Info.PosteriorStateRoot {
 		panic("not handling reorganization yet")
 		// // 1. Find latest snapshot before parent block
 		// latestSnapshot, err := block.FindLatestSnapshotBefore(parentBlock)
@@ -126,29 +121,18 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("parent block state root does not match merklized state")
 	}
 
-	tx.SetMemoryMode(true)
-
 	// Run state transition function on globalBatch (so it sees the parentBlock state)
 	if err := stfHelper(tx, curBlock); err != nil {
 		return [32]byte{}, err
 	}
 
-	// update merkle tree (for each set, call UpdateMerkleTreeForSet, for each delete, call UpdateMerkleTreeForDelete)
-	if err := staterepository.ApplyMerkleTreeUpdates(tx); err != nil {
-		return [32]byte{}, fmt.Errorf("failed to apply Merkle tree updates: %w", err)
-	}
-
-	root, err := staterepository.GetStateRoot(tx)
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("failed to get state root: %w", err)
-	}
+	root := tx.GetStateRoot()
 
 	blockWithInfo := &block.BlockWithInfo{
 		Block: curBlock,
 		Info: block.BlockInfo{
-			PosteriorStateRoot:  root,
-			Height:              parentBlock.Info.Height + 1,
-			ForwardStateChanges: tx.GetStateChanges(),
+			PosteriorStateRoot: root,
+			Height:             parentBlock.Info.Height + 1,
 		},
 	}
 
@@ -276,8 +260,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 
 	posteriorRecentActivity := computeRecentActivity(curBlock.Header, curBlock.Extrinsics.Guarantees, intermediateRecentBlocks, priorState.RecentActivity.AccumulationOutputLog, accumulationOutputSequence)
 
-	postAccumulationIntermediateServiceAccounts := accumulationStateComponents.ServiceAccounts
-	if err := computeServiceAccounts(tx, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot, &postAccumulationIntermediateServiceAccounts); err != nil {
+	if err := computeServiceAccounts(tx, curBlock.Extrinsics.Preimages, posteriorMostRecentBlockTimeslot); err != nil {
 		return fmt.Errorf("failed to compute service accounts: %w", err)
 	}
 
@@ -296,7 +279,6 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	postState.AuthorizersPool = authorizersPool
 	postState.RecentActivity = posteriorRecentActivity
 	postState.SafroleBasicState = safroleRes.state
-	postState.ServiceAccounts = postAccumulationIntermediateServiceAccounts
 	postState.EntropyAccumulator = posteriorEntropyAccumulator
 	postState.ValidatorKeysetsStaging = accumulationStateComponents.UpcomingValidatorKeysets
 	postState.ValidatorKeysetsActive = posteriorValidatorKeysetsActive
@@ -519,17 +501,23 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 }
 
 // NOTE: This function modifies postAccumulationIntermediateServiceAccounts directly
-func computeServiceAccounts(tx *staterepository.TrackedTx, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot, postAccumulationIntermediateServiceAccounts *serviceaccount.ServiceAccounts) error {
+func computeServiceAccounts(tx *staterepository.TrackedTx, preimages extrinsics.Preimages, posteriorMostRecentBlockTimeslot types.Timeslot) error {
 	for _, preimage := range preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		ok, err := postAccumulationIntermediateServiceAccounts.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		ok, err := serviceaccount.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return err
 		}
 		if !ok {
 			continue
 		}
-		serviceAccount := (*postAccumulationIntermediateServiceAccounts)[types.ServiceIndex(preimage.ServiceIndex)]
+		serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, types.ServiceIndex(preimage.ServiceIndex))
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return errors.ProtocolErrorf("service account %d does not exist", types.ServiceIndex(preimage.ServiceIndex))
+		}
 		if err := serviceAccount.SetPreimageForHash(tx, hash, preimage.Data); err != nil {
 			return err
 		}
@@ -688,7 +676,6 @@ func accumulateAndIntegrate(
 ) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
 	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(tx, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
-		ServiceAccounts:          priorState.ServiceAccounts,
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
 		PrivilegedServices:       priorState.PrivilegedServices,
@@ -699,49 +686,55 @@ func accumulateAndIntegrate(
 	}
 
 	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
-	for serviceIndex := range o.ServiceAccounts {
-		N := make([]workreport.WorkDigest, 0)
-		for _, workReport := range accumulatableWorkReports[:n] {
-			for _, workDigest := range workReport.WorkDigests {
-				if workDigest.ServiceIndex == serviceIndex {
-					N = append(N, workDigest)
-				}
-			}
+	workDigestsForServiceIndex := map[types.ServiceIndex][]workreport.WorkDigest{}
+	for _, workReport := range accumulatableWorkReports[:n] {
+		for _, workDigest := range workReport.WorkDigests {
+			workDigestsForServiceIndex[workDigest.ServiceIndex] = append(workDigestsForServiceIndex[workDigest.ServiceIndex], workDigest)
 		}
-		if len(N) > 0 {
-			var gasUsed types.GasValue
-			for _, serviceAndGasUsage := range serviceGasUsage {
-				if serviceAndGasUsage.ServiceIndex != serviceIndex {
-					continue
-				}
-				gasUsed += serviceAndGasUsage.GasUsed
+	}
+	for serviceIndex, digests := range workDigestsForServiceIndex {
+		var gasUsed types.GasValue
+		for _, serviceAndGasUsage := range serviceGasUsage {
+			if serviceAndGasUsage.ServiceIndex != serviceIndex {
+				continue
 			}
-			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
-				NumberOfWorkItems: types.GenericNum(len(N)),
-				GasUsed:           types.GenericNum(gasUsed),
-			}
+			gasUsed += serviceAndGasUsage.GasUsed
+		}
+		accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+			NumberOfWorkItems: types.GenericNum(len(digests)),
+			GasUsed:           types.GenericNum(gasUsed),
+		}
+	}
+
+	for serviceIndex, _ := range accumulationStatistics {
+		serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
+		if err != nil {
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+		}
+		if !exists {
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, nil
+		}
+		serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
+		if err := serviceaccount.SetServiceAccount(tx, serviceAccount); err != nil {
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
 		}
 	}
 
 	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}
-	var mutex sync.Mutex // Add mutex to protect map access
 
-	for serviceIndex := range o.ServiceAccounts {
-		selectedTransfers := pvm.SelectDeferredTransfers(deferredTransfers, serviceIndex)
-		serviceAccount, gasUsed, err := pvm.OnTransfer(tx, o.ServiceAccounts, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, selectedTransfers)
+	var deferredTransfersForServiceIndex = make(map[types.ServiceIndex][]pvm.DeferredTransfer)
+	for _, deferredTransfer := range deferredTransfers {
+		deferredTransfersForServiceIndex[deferredTransfer.ReceiverServiceIndex] = append(deferredTransfersForServiceIndex[deferredTransfer.ReceiverServiceIndex], deferredTransfer)
+	}
+
+	for serviceIndex, deferredTransfers := range deferredTransfersForServiceIndex {
+		_, gasUsed, err := pvm.OnTransfer(tx, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, deferredTransfers)
 		if err != nil {
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
 		}
-		if _, exists := accumulationStatistics[serviceIndex]; exists {
-			serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
-		}
-		if len(selectedTransfers) > 0 {
-			mutex.Lock() // Lock before writing to the map
-			deferredTransferStatistics[serviceIndex] = validatorstatistics.ServiceTransferStatistics{
-				NumberOfTransfers: types.GenericNum(len(selectedTransfers)),
-				GasUsed:           types.GenericNum(gasUsed),
-			}
-			mutex.Unlock() // Don't forget to unlock
+		deferredTransferStatistics[serviceIndex] = validatorstatistics.ServiceTransferStatistics{
+			NumberOfTransfers: types.GenericNum(len(deferredTransfers)),
+			GasUsed:           types.GenericNum(gasUsed),
 		}
 	}
 

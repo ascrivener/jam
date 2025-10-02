@@ -37,7 +37,7 @@ func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateC
 			}
 		}
 	}
-	return Accumulate(tx, accumulationStateComponents, timeslot, serviceIndex, gas, operandTuples, posteriorEntropyAccumulator)
+	return Accumulate(tx, accumulationStateComponents, serviceIndex, timeslot, gas, operandTuples, posteriorEntropyAccumulator)
 }
 
 type BEEFYCommitment struct {
@@ -95,20 +95,9 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		GasUsed      types.GasValue
 	}
 	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
-	n := make(serviceaccount.ServiceAccounts)
 
 	// Collect errors from goroutines
 	var accumulationErrors []error
-
-	// m will store the union of (original keys - result keys) for all service indices
-	// This represents all keys that were present in the original set but missing in at least one result
-	m := make(map[types.ServiceIndex]struct{})
-
-	// Keep track of original keys for reference
-	originalKeys := make(map[types.ServiceIndex]struct{})
-	for serviceIndex := range accumulationStateComponents.ServiceAccounts {
-		originalKeys[serviceIndex] = struct{}{}
-	}
 
 	// Map to store deferred transfers by service index
 	transfersByServiceIndex := make(map[types.ServiceIndex][]DeferredTransfer)
@@ -122,6 +111,8 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 
 	var childTransactions []*staterepository.TrackedTx
 	var childTxMutex sync.Mutex
+
+	tx.SetMemoryMode(true)
 
 	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
@@ -180,21 +171,6 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 				// Store transfers by service index
 				transfersByServiceIndex[sIndex] = transfers
 
-				// Add relevant service accounts to n
-				for serviceIndex, serviceAccount := range components.ServiceAccounts {
-					_, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
-					if serviceIndex == sIndex || !ok {
-						n[serviceIndex] = serviceAccount
-					}
-				}
-
-				// For each original key, check if it's missing in this result
-				// If missing, add it to m (the union of missing keys)
-				for origKey := range originalKeys {
-					if _, exists := components.ServiceAccounts[origKey]; !exists {
-						m[origKey] = struct{}{}
-					}
-				}
 			}
 
 			mu.Unlock()
@@ -202,10 +178,16 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	}
 	wg.Wait()
 
+	tx.SetMemoryMode(false)
+
 	// Merge all child transactions back into parent after concurrent processing
 	for _, childTx := range childTransactions {
-		if err := tx.Apply(childTx); err != nil {
-			return AccumulationStateComponents{}, nil, nil, nil, err
+		for key, val := range childTx.GetMemoryContents() {
+			if val == nil {
+				staterepository.DeleteStateKV(tx, key)
+			} else {
+				staterepository.SetStateKV(tx, key, val)
+			}
 		}
 	}
 
@@ -262,21 +244,6 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	// 3. Remove keys in m (keys that disappeared in at least one result)
 	finalServiceAccounts := make(serviceaccount.ServiceAccounts)
 
-	// First, add all original accounts
-	for serviceIndex, serviceAccount := range accumulationStateComponents.ServiceAccounts {
-		finalServiceAccounts[serviceIndex] = serviceAccount
-	}
-
-	// Then add/override with accounts from n
-	for serviceIndex, serviceAccount := range n {
-		finalServiceAccounts[serviceIndex] = serviceAccount
-	}
-
-	// Finally, remove any keys in m (keys that disappeared in at least one result)
-	for serviceIndex := range m {
-		delete(finalServiceAccounts, serviceIndex)
-	}
-
 	// Provisions preimage integration done below
 
 	for preimageProvision := range allPreimageProvisions {
@@ -295,7 +262,6 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	}
 
 	return AccumulationStateComponents{
-		ServiceAccounts:          finalServiceAccounts,
 		UpcomingValidatorKeysets: posteriorUpcomingValidatorKeysets,
 		AuthorizersQueue:         posteriorAuthorizersQueue,
 		PrivilegedServices:       posteriorPrivilegedServices,
@@ -338,7 +304,11 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	// 2. exist in accumulation state components
 	for serviceIndex := range uniqueServiceIndices {
 		if _, exists := resultsByServiceIndex[serviceIndex]; !exists {
-			if _, exists := accumulationStateComponents.ServiceAccounts[serviceIndex]; !exists {
+			_, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
+			if err != nil {
+				return types.PrivilegedServices{}, err
+			}
+			if !exists {
 				continue
 			}
 			wg.Add(1)

@@ -255,7 +255,7 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 
 // Start starts the node. Initiate connections and UP 0 stream
 func (n *Node) Start(ctx context.Context) error {
-	readTx, err := staterepository.NewTrackedTx()
+	readTx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return fmt.Errorf("failed to create read transaction: %w", err)
 	}

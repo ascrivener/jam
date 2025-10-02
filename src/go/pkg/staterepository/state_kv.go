@@ -7,6 +7,8 @@ import (
 	"jam/pkg/types"
 	"strings"
 
+	"maps"
+
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/blake2b"
 )
@@ -146,6 +148,35 @@ func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newV
 	return currentHash, nil
 }
 
+func getLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([]byte, bool, error) {
+	curNode, exists, err := GetTreeNode(tx, hash)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get tree node: %w", err)
+	}
+
+	if !exists {
+		return nil, false, nil
+	}
+
+	if curNode.IsLeaf() {
+		if curNode.OriginalKey == key {
+			return curNode.OriginalValue, true, nil
+		}
+		return nil, false, nil
+	}
+
+	// Internal node - follow the key's bit
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	bit := (key[byteIndex] >> bitIndex) & 1
+
+	if bit == 0 {
+		return getLeafHelper(tx, key, curNode.LeftHash, depth+1)
+	} else {
+		return getLeafHelper(tx, key, curNode.RightHash, depth+1)
+	}
+}
+
 // upsertLeafHelper recursively inserts a leaf node starting from curNode at given depth
 func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, depth int) ([32]byte, error) {
 
@@ -274,26 +305,27 @@ func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([3
 	return newInternalNodeHash, false, nil
 }
 
-// updateMerkleTreeForSet updates the Merkle tree for a set operation
-func updateMerkleTreeForSet(tx *TrackedTx, key [31]byte, value []byte) error {
-	return upsertLeaf(tx, key, value)
+func getLeaf(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
+	return getLeafHelper(tx, key, tx.stateRoot, 0)
 }
 
 // upsertLeaf inserts or updates a leaf node and returns the new root hash
 func upsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
-	_, err := upsertLeafHelper(tx, key, value, tx.stateRoot, 0)
+	newStateRoot, err := upsertLeafHelper(tx, key, value, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to upsert leaf: %w", err)
 	}
+	tx.stateRoot = newStateRoot
 	return nil
 }
 
 // updateMerkleTreeForDelete updates the Merkle tree for a delete operation
-func updateMerkleTreeForDelete(tx *TrackedTx, key [31]byte) error {
-	err := deleteLeafHelper(tx, key, []byte{})
+func deleteLeaf(tx *TrackedTx, key [31]byte) error {
+	newStateRoot, _, err := deleteLeafHelper(tx, key, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to delete leaf: %w", err)
 	}
+	tx.stateRoot = newStateRoot
 	return nil
 }
 
@@ -323,39 +355,33 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 	return blake2b.Sum256(nodeData[:])
 }
 
-func recursiveInsertAndGetHashes(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, path []byte, leafCollision *Node) ([32]byte, [32]byte, error) {
-
-	return leftHash, rightHash, nil
-}
-
 func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
 	if tx.memoryMode {
-		if value, exists := tx.memWrites[key]; exists {
+		value, exists := tx.memory[key]
+		if exists {
 			if value == nil {
-				return nil, false, nil // Deleted
+				return nil, false, nil // Explicitly deleted
 			}
-			return value, true, nil // Set
+			return value, true, nil
 		}
 	}
-	return getKV(tx, "state", key[:])
+	return getLeaf(tx, key)
 }
 
 func SetStateKV(tx *TrackedTx, key [31]byte, value []byte) error {
-	tx.memWrites[key] = value
-	return nil
+	if tx.memoryMode {
+		tx.memory[key] = value
+		return nil
+	}
+	return upsertLeaf(tx, key, value)
 }
 
 func DeleteStateKV(tx *TrackedTx, key [31]byte) error {
-	tx.memWrites[key] = nil
-	return nil
-}
-
-func normalizeTreePath(path []byte) []byte {
-	// Use special key for empty path (root node)
-	if len(path) == 0 {
-		return []byte("ROOT")
+	if tx.memoryMode {
+		tx.memory[key] = nil
+		return nil
 	}
-	return path
+	return deleteLeaf(tx, key)
 }
 
 func GetTreeNodeData(tx *TrackedTx, hash [32]byte) ([]byte, bool, error) {
@@ -462,17 +488,13 @@ func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
 // TrackedTx wraps bolt.Tx and tracks state changes
 type TrackedTx struct {
 	*bolt.Tx
-	stateRoot [32]byte
-}
-
-// Snapshot represents metadata for a state snapshot
-type Snapshot struct {
-	BlockHash [32]byte
-	StateRoot [32]byte
+	stateRoot  [32]byte
+	memory     map[[31]byte][]byte
+	memoryMode bool
 }
 
 // NewTrackedTx creates a new tracked transaction wrapper
-func NewTrackedTx() (*TrackedTx, error) {
+func NewTrackedTx(stateRoot [32]byte) (*TrackedTx, error) {
 	repo := GetGlobalRepository()
 	if repo == nil {
 		return nil, fmt.Errorf("global repository not initialized")
@@ -483,35 +505,29 @@ func NewTrackedTx() (*TrackedTx, error) {
 	}
 	return &TrackedTx{
 		Tx:         tx,
-		memWrites:  make(map[[31]byte][]byte),
+		stateRoot:  stateRoot,
+		memory:     make(map[[31]byte][]byte),
 		memoryMode: false,
 	}, nil
 }
 
-// GetStateChanges returns all tracked state changes
-func (t *TrackedTx) GetStateChanges() map[[31]byte][]byte {
-	return t.memWrites
+func (tx *TrackedTx) GetStateRoot() [32]byte {
+	return tx.stateRoot
 }
 
-func (t *TrackedTx) SetMemoryMode(mode bool) {
-	t.memoryMode = mode
+func (tx *TrackedTx) SetStateRoot(stateRoot [32]byte) {
+	tx.stateRoot = stateRoot
 }
 
 func (tx *TrackedTx) CreateChild() *TrackedTx {
 	child := &TrackedTx{
 		Tx:         tx.Tx,
-		memWrites:  make(map[[31]byte][]byte),
-		memoryMode: true,
+		stateRoot:  tx.stateRoot,
+		memory:     make(map[[31]byte][]byte),
+		memoryMode: tx.memoryMode,
 	}
 
-	// Copy parent state
-	for key, value := range tx.memWrites {
-		if value == nil {
-			child.memWrites[key] = nil // Copy delete
-		} else {
-			child.memWrites[key] = append([]byte{}, value...) // Copy value
-		}
-	}
+	maps.Copy(child.memory, tx.memory)
 
 	return child
 }
@@ -521,17 +537,23 @@ func (tx *TrackedTx) Apply(childTx *TrackedTx) error {
 		return fmt.Errorf("child transaction cannot be nil")
 	}
 
-	// Merge all changes from child into parent
-	for key, value := range childTx.memWrites {
-		if value == nil {
-			tx.memWrites[key] = nil // Copy delete operation
-		} else {
-			// Copy the value to avoid shared references
-			tx.memWrites[key] = append([]byte{}, value...)
-		}
-	}
+	tx.stateRoot = childTx.stateRoot
+
+	maps.Copy(tx.memory, childTx.memory)
 
 	return nil
+}
+
+func (tx *TrackedTx) SetMemoryMode(mode bool) {
+	tx.memoryMode = mode
+}
+
+func (tx *TrackedTx) GetMemoryContents() map[[31]byte][]byte {
+	return tx.memory
+}
+
+func GetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) ([]byte, bool, error) {
+	return GetStateKV(tx, stateKeyConstructorFromServiceIndex(serviceIndex))
 }
 
 // SetServiceAccount stores service account data
@@ -653,18 +675,6 @@ func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
 	return &node, true, nil
 }
 
-// GetStateRoot retrieves the current Merkle root
-func GetStateRoot(tx *TrackedTx) ([32]byte, error) {
-	root, exists, err := GetTreeNode(tx, []byte{})
-	if err != nil {
-		return [32]byte{}, err
-	}
-	if !exists {
-		return [32]byte{}, nil
-	}
-	return root.Hash, nil
-}
-
 // GetAllKeysFromTree extracts all keys from the tree by traversing leaf nodes
 func GetAllKeysFromTree(tx *TrackedTx) ([][31]byte, error) {
 	var keys [][31]byte
@@ -772,106 +782,48 @@ func NewIter(tx *TrackedTx, bucketName string, opts *IterOptions) (Iterator, err
 	return iter, nil
 }
 
-// PrintTreeStructure prints the entire tree structure for debugging
 func PrintTreeStructure(tx *TrackedTx) error {
 	fmt.Println("=== TREE STRUCTURE ===")
 
-	// Get the tree bucket
-	bucket := tx.Bucket([]byte("tree"))
-	if bucket == nil {
-		return nil // Empty tree if bucket doesn't exist
+	if tx.stateRoot == [32]byte{} {
+		fmt.Println("Empty tree (no state root)")
+		return nil
 	}
 
-	// Create cursor to iterate through all key-value pairs in tree bucket
-	cursor := bucket.Cursor()
-
-	// Collect all nodes first to sort by path
-	type nodeInfo struct {
-		path []byte
-		node *Node
-	}
-	var nodes []nodeInfo
-
-	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-		// Make copies since BoltDB data is only valid during transaction
-		path := make([]byte, len(k))
-		copy(path, k)
-
-		value := make([]byte, len(v))
-		copy(value, v)
-
-		node := &Node{}
-		if err := serializer.Deserialize(value, node); err != nil {
-			fmt.Printf("ERROR deserializing node at path %x: %v\n", path, err)
-			continue
-		}
-
-		nodes = append(nodes, nodeInfo{path: path, node: node})
-	}
-
-	// Sort nodes by path length (root first, then by path)
-	for i := 0; i < len(nodes); i++ {
-		for j := i + 1; j < len(nodes); j++ {
-			if len(nodes[i].path) > len(nodes[j].path) ||
-				(len(nodes[i].path) == len(nodes[j].path) && string(nodes[i].path) > string(nodes[j].path)) {
-				nodes[i], nodes[j] = nodes[j], nodes[i]
-			}
-		}
-	}
-
-	// Print each node
-	for _, nodeInfo := range nodes {
-		path := nodeInfo.path
-		node := nodeInfo.node
-
-		indent := strings.Repeat("  ", len(path))
-		var pathStr string
-		if len(path) == 0 {
-			pathStr = "ROOT"
-		} else {
-			// Convert binary path to bit string (0s and 1s)
-			pathStr = ""
-			for _, b := range path {
-				if b == 0 {
-					pathStr += "0"
-				} else {
-					pathStr += "1"
-				}
-			}
-		}
-
-		if node.IsLeaf() {
-			// Leaf node
-			fmt.Printf("%s%s: LEAF hash=%x key=%x\n",
-				indent, pathStr, node.Hash[:8], node.OriginalKey[:8])
-		} else {
-			// Internal node
-			fmt.Printf("%s%s: INTERNAL hash=%x\n",
-				indent, pathStr, node.Hash[:8])
-		}
-	}
-
-	fmt.Println("=== END TREE STRUCTURE ===")
-	return nil
+	return printNodeRecursive(tx, tx.stateRoot, 0, "ROOT")
 }
 
-func ApplyMerkleTreeUpdates(trackedTx *TrackedTx) error {
-	// Apply changes to Merkle tree in sequence
-	for key, value := range trackedTx.memWrites {
-		if value == nil {
-			if err := deleteKV(trackedTx, "state", key[:]); err != nil {
-				return fmt.Errorf("failed to delete state kv: %w", err)
-			}
-			if err := updateMerkleTreeForDelete(trackedTx, key); err != nil {
-				return fmt.Errorf("failed to update merkle tree for delete: %w", err)
-			}
-		} else {
-			if err := setKV(trackedTx, "state", key[:], value); err != nil {
-				return fmt.Errorf("failed to set state kv for set: %w", err)
-			}
-			if err := updateMerkleTreeForSet(trackedTx, key, value); err != nil {
-				return fmt.Errorf("failed to update merkle tree for set: %w", err)
-			}
+// PrintTreeStructure prints the entire tree structure for debugging
+func printNodeRecursive(tx *TrackedTx, hash [32]byte, depth int, pathStr string) error {
+	if hash == [32]byte{} {
+		return nil // Empty child
+	}
+
+	node, exists, err := GetTreeNode(tx, hash)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if !exists {
+		fmt.Printf("%sNOT FOUND: hash=%x\n", strings.Repeat("  ", depth), hash[:8])
+		return nil
+	}
+
+	indent := strings.Repeat("  ", depth)
+
+	if node.IsLeaf() {
+		fmt.Printf("%s%s: LEAF hash=%x key=%x value=%x\n",
+			indent, pathStr, hash[:8], node.OriginalKey[:8], node.OriginalValue[:8])
+	} else {
+		fmt.Printf("%s%s: INTERNAL hash=%x\n",
+			indent, pathStr, hash[:8])
+
+		// Recursively print children
+		if err := printNodeRecursive(tx, node.LeftHash, depth+1, pathStr+"0"); err != nil {
+			return err
+		}
+		if err := printNodeRecursive(tx, node.RightHash, depth+1, pathStr+"1"); err != nil {
+			return err
 		}
 	}
 

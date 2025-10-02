@@ -12,6 +12,7 @@ import (
 	"jam/pkg/constants"
 	"jam/pkg/errors"
 	"jam/pkg/serializer"
+	"jam/pkg/serviceaccount"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
 	"jam/pkg/ticket"
@@ -281,8 +282,15 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 		totalAccumulateGasLimit := types.GasValue(0)
 		for _, workDigest := range guarantee.WorkReport.WorkDigests {
 			totalAccumulateGasLimit += workDigest.AccumulateGasLimit
-			if workDigest.AccumulateGasLimit < priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate {
-				return errors.ProtocolErrorf("accumulate gas limit %d less than minimum gas for accumulate %d", workDigest.AccumulateGasLimit, priorState.ServiceAccounts[workDigest.ServiceIndex].MinimumGasForAccumulate)
+			serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, workDigest.ServiceIndex)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errors.ProtocolErrorf("service account %d does not exist", workDigest.ServiceIndex)
+			}
+			if workDigest.AccumulateGasLimit < serviceAccount.MinimumGasForAccumulate {
+				return errors.ProtocolErrorf("accumulate gas limit %d less than minimum gas for accumulate %d", workDigest.AccumulateGasLimit, serviceAccount.MinimumGasForAccumulate)
 			}
 		}
 		if totalAccumulateGasLimit > types.GasValue(constants.SingleAccumulationAllocatedGas) {
@@ -400,8 +408,15 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 	// (11.42)
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		for _, workDigest := range guarantee.WorkReport.WorkDigests {
-			if workDigest.ServiceCodeHash != priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash {
-				return errors.ProtocolErrorf("service code hash %x does not match service account code hash %x", workDigest.ServiceCodeHash, priorState.ServiceAccounts[workDigest.ServiceIndex].CodeHash)
+			serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, workDigest.ServiceIndex)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return errors.ProtocolErrorf("service account %d does not exist", workDigest.ServiceIndex)
+			}
+			if workDigest.ServiceCodeHash != serviceAccount.CodeHash {
+				return errors.ProtocolErrorf("service code hash %x does not match service account code hash %x", workDigest.ServiceCodeHash, serviceAccount.CodeHash)
 			}
 		}
 	}
@@ -426,7 +441,7 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 	// (12.38)
 	for _, preimage := range b.Extrinsics.Preimages {
 		hash := blake2b.Sum256(preimage.Data)
-		isNew, err := priorState.ServiceAccounts.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
+		isNew, err := serviceaccount.IsNewPreimage(tx, types.ServiceIndex(preimage.ServiceIndex), hash, types.BlobLength(len(preimage.Data)))
 		if err != nil {
 			return err
 		}
@@ -664,9 +679,8 @@ type BlockWithInfo struct {
 }
 
 type BlockInfo struct {
-	PosteriorStateRoot  [32]byte
-	Height              uint64
-	ForwardStateChanges map[[31]byte][]byte
+	PosteriorStateRoot [32]byte
+	Height             uint64
 }
 
 func Get(tx *staterepository.TrackedTx, headerHash [32]byte) (*BlockWithInfo, error) {
@@ -744,24 +758,6 @@ func (block *BlockWithInfo) GetPathFromAncestor(tx *staterepository.TrackedTx, a
 	}
 
 	return path, nil
-}
-
-func ReplayPath(tx *staterepository.TrackedTx, path []*BlockWithInfo) error {
-	for _, blockToReplay := range path {
-		// Apply each forward state change to replay this block's changes
-		for key, value := range blockToReplay.Info.ForwardStateChanges {
-			if value != nil {
-				if err := staterepository.SetStateKV(tx, key, value); err != nil {
-					return fmt.Errorf("failed to apply forward set operation: %w", err)
-				}
-			} else {
-				if err := staterepository.DeleteStateKV(tx, key); err != nil {
-					return fmt.Errorf("failed to apply forward delete operation: %w", err)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 func (block *BlockWithInfo) Set(tx *staterepository.TrackedTx) error {

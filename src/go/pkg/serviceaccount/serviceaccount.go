@@ -13,12 +13,15 @@ import (
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 // R
-func (s *ServiceAccounts) IsNewPreimage(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
-	serviceAccount, exists := (*s)[serviceIndex]
+func IsNewPreimage(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
+	serviceAccount, exists, err := GetServiceAccount(tx, serviceIndex)
+	if err != nil {
+		return false, err
+	}
 	if !exists {
 		return false, errors.ProtocolErrorf("service account %d does not exist", serviceIndex)
 	}
-	_, exists, err := serviceAccount.GetPreimageForHash(tx, hash)
+	_, exists, err = serviceAccount.GetPreimageForHash(tx, hash)
 	if err != nil {
 		return false, err
 	}
@@ -43,8 +46,7 @@ type PreimageLookupHistoricalStatusKey struct {
 	BlobLength     types.BlobLength
 }
 
-type ServiceAccount struct {
-	ServiceIndex                   types.ServiceIndex
+type ServiceAccountData struct {
 	CodeHash                       [32]byte           // c
 	Balance                        types.Balance      // b
 	MinimumGasForAccumulate        types.GasValue     // g
@@ -55,6 +57,40 @@ type ServiceAccount struct {
 	CreatedTimeSlot                types.Timeslot     // r
 	MostRecentAccumulationTimeslot types.Timeslot     // a
 	ParentServiceIndex             types.ServiceIndex // p
+}
+
+type ServiceAccount struct {
+	ServiceIndex types.ServiceIndex
+	ServiceAccountData
+}
+
+func GetServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) (*ServiceAccount, bool, error) {
+	if serviceAccount, exists, err := staterepository.GetServiceAccount(tx, serviceIndex); err != nil {
+		return nil, false, err
+	} else if !exists {
+		return nil, false, nil
+	} else {
+		var serviceAccountData ServiceAccountData
+		if err := serializer.Deserialize(serviceAccount, &serviceAccountData); err != nil {
+			return nil, false, err
+		}
+		return &ServiceAccount{
+			ServiceIndex:       serviceIndex,
+			ServiceAccountData: serviceAccountData,
+		}, true, nil
+	}
+}
+
+func SetServiceAccount(tx *staterepository.TrackedTx, serviceAccount *ServiceAccount) error {
+	return staterepository.SetServiceAccount(tx, serviceAccount.ServiceIndex, serializer.Serialize(serviceAccount.ServiceAccountData))
+}
+
+func DeleteServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) error {
+	if err := staterepository.DeleteServiceAccount(tx, serviceIndex); err != nil {
+		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
+	}
+
+	return nil
 }
 
 // t
@@ -215,14 +251,6 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(tx *staterepositor
 	// Delete using StateKV function (replaces manual key construction)
 	if err := staterepository.DeletePreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage); err != nil {
 		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
-	}
-
-	return nil
-}
-
-func DeleteServiceAccountByServiceIndex(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) error {
-	if err := staterepository.DeleteServiceAccount(tx, serviceIndex); err != nil {
-		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
 	}
 
 	return nil
