@@ -3,37 +3,76 @@ package staterepository
 import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
+	"os"
 
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/blake2b"
 )
 
-// PebbleStateRepository implements StateRepository using PebbleDB
-type PebbleStateRepository struct {
-	db *pebble.DB
+// BoltStateRepository implements StateRepository using BoltDB
+type BoltStateRepository struct {
+	db *bolt.DB
 }
 
-// newPebbleStateRepository creates a new PebbleDB-backed repository
-func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
-	var opts *pebble.Options
+// newBoltStateRepository creates a new BoltDB-backed repository
+func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
+	var db *bolt.DB
+	var err error
 
 	if dbPath == "" {
-		// Use in-memory filesystem for empty path
-		opts = &pebble.Options{
-			FS: vfs.NewMem(),
+		// Create a temporary file for in-memory-like database
+		tmpFile, err := os.CreateTemp("", "jam_temp_*.db")
+		if err != nil {
+			return nil, err
 		}
-		dbPath = "/tmp" // Use any path with memory FS
-	} else {
-		opts = &pebble.Options{}
+		tmpFile.Close() // Close the file handle, BoltDB will open it
+		dbPath = tmpFile.Name()
+
+		// Optionally, schedule cleanup
+		defer os.Remove(dbPath) // Remove when done
 	}
 
-	db, err := pebble.Open(dbPath, opts)
+	db, err = bolt.Open(dbPath, 0600, nil)
+
 	if err != nil {
 		return nil, err
 	}
 
-	return &PebbleStateRepository{
+	// Create required buckets
+	err = db.Update(func(tx *bolt.Tx) error {
+		// Create state bucket for key-value storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("state")); err != nil {
+			return err
+		}
+		// Create tree bucket for Merkle tree nodes
+		if _, err := tx.CreateBucketIfNotExists([]byte("tree")); err != nil {
+			return err
+		}
+		// Create blocks bucket for block storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("blocks")); err != nil {
+			return err
+		}
+		// Create meta bucket for metadata (chain tip, etc.)
+		if _, err := tx.CreateBucketIfNotExists([]byte("meta")); err != nil {
+			return err
+		}
+		// Create preimage bucket for preimage storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("preimage")); err != nil {
+			return err
+		}
+		// Create workreport bucket for work report storage
+		if _, err := tx.CreateBucketIfNotExists([]byte("workreport")); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &BoltStateRepository{
 		db: db,
 	}, nil
 }
@@ -113,7 +152,7 @@ func makeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32,
 }
 
 // Close closes the database
-func (r *PebbleStateRepository) Close() error {
+func (r *BoltStateRepository) Close() error {
 	if r.db != nil {
 		return r.db.Close()
 	}

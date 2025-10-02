@@ -8,26 +8,27 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
-
-	"github.com/cockroachdb/pebble"
 )
 
 type ServiceAccounts map[types.ServiceIndex]*ServiceAccount
 
 // R
-func (s *ServiceAccounts) IsNewPreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
-	serviceAccount, exists := (*s)[serviceIndex]
+func IsNewPreimage(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, dataLen types.BlobLength) (bool, error) {
+	serviceAccount, exists, err := GetServiceAccount(tx, serviceIndex)
+	if err != nil {
+		return false, err
+	}
 	if !exists {
 		return false, errors.ProtocolErrorf("service account %d does not exist", serviceIndex)
 	}
-	_, exists, err := serviceAccount.GetPreimageForHash(batch, hash)
+	_, exists, err = serviceAccount.GetPreimageForHash(tx, hash)
 	if err != nil {
 		return false, err
 	}
 	if exists {
 		return false, nil
 	}
-	availabilityTimeslots, exists, err := serviceAccount.GetPreimageLookupHistoricalStatus(batch, uint32(dataLen), hash)
+	availabilityTimeslots, exists, err := serviceAccount.GetPreimageLookupHistoricalStatus(tx, uint32(dataLen), hash)
 	if err != nil {
 		return false, err
 	}
@@ -45,8 +46,7 @@ type PreimageLookupHistoricalStatusKey struct {
 	BlobLength     types.BlobLength
 }
 
-type ServiceAccount struct {
-	ServiceIndex                   types.ServiceIndex
+type ServiceAccountData struct {
 	CodeHash                       [32]byte           // c
 	Balance                        types.Balance      // b
 	MinimumGasForAccumulate        types.GasValue     // g
@@ -57,6 +57,40 @@ type ServiceAccount struct {
 	CreatedTimeSlot                types.Timeslot     // r
 	MostRecentAccumulationTimeslot types.Timeslot     // a
 	ParentServiceIndex             types.ServiceIndex // p
+}
+
+type ServiceAccount struct {
+	ServiceIndex types.ServiceIndex
+	ServiceAccountData
+}
+
+func GetServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) (*ServiceAccount, bool, error) {
+	if serviceAccount, exists, err := staterepository.GetServiceAccount(tx, serviceIndex); err != nil {
+		return nil, false, err
+	} else if !exists {
+		return nil, false, nil
+	} else {
+		var serviceAccountData ServiceAccountData
+		if err := serializer.Deserialize(serviceAccount, &serviceAccountData); err != nil {
+			return nil, false, err
+		}
+		return &ServiceAccount{
+			ServiceIndex:       serviceIndex,
+			ServiceAccountData: serviceAccountData,
+		}, true, nil
+	}
+}
+
+func SetServiceAccount(tx *staterepository.TrackedTx, serviceAccount *ServiceAccount) error {
+	return staterepository.SetServiceAccount(tx, serviceAccount.ServiceIndex, serializer.Serialize(serviceAccount.ServiceAccountData))
+}
+
+func DeleteServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) error {
+	if err := staterepository.DeleteServiceAccount(tx, serviceIndex); err != nil {
+		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
+	}
+
+	return nil
 }
 
 // t
@@ -70,8 +104,8 @@ func (s ServiceAccount) ThresholdBalanceNeeded() types.Balance {
 
 // bold m, bold c
 
-func (s *ServiceAccount) MetadataAndCode(batch *pebble.Batch) (*[]byte, *[]byte, error) {
-	preimage, ok, err := s.GetPreimageForHash(batch, s.CodeHash)
+func (s *ServiceAccount) MetadataAndCode(tx *staterepository.TrackedTx) (*[]byte, *[]byte, error) {
+	preimage, ok, err := s.GetPreimageForHash(tx, s.CodeHash)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -95,14 +129,14 @@ func (s *ServiceAccount) MetadataAndCode(batch *pebble.Batch) (*[]byte, *[]byte,
 }
 
 // GetServiceStorageItem retrieves a storage item for a service account
-func (s *ServiceAccount) GetServiceStorageItem(batch *pebble.Batch, key []byte) ([]byte, bool, error) {
-	return staterepository.GetServiceStorageItem(batch, s.ServiceIndex, key)
+func (s *ServiceAccount) GetServiceStorageItem(tx *staterepository.TrackedTx, key []byte) ([]byte, bool, error) {
+	return staterepository.GetServiceStorageItem(tx, s.ServiceIndex, key)
 }
 
 // SetServiceStorageItem sets a storage item for a service account
-func (s *ServiceAccount) SetServiceStorageItem(batch *pebble.Batch, key []byte, value []byte) error {
+func (s *ServiceAccount) SetServiceStorageItem(tx *staterepository.TrackedTx, key []byte, value []byte) error {
 	// Check if this is a new key or an update
-	oldItem, exists, err := s.GetServiceStorageItem(batch, key)
+	oldItem, exists, err := s.GetServiceStorageItem(tx, key)
 	if err != nil {
 		return err
 	}
@@ -119,13 +153,13 @@ func (s *ServiceAccount) SetServiceStorageItem(batch *pebble.Batch, key []byte, 
 	}
 
 	// Set the storage item
-	return staterepository.SetServiceStorageItem(batch, s.ServiceIndex, key, value)
+	return staterepository.SetServiceStorageItem(tx, s.ServiceIndex, key, value)
 }
 
 // DeleteServiceStorageItem deletes a storage item for a service account
-func (s *ServiceAccount) DeleteServiceStorageItem(batch *pebble.Batch, key []byte) error {
+func (s *ServiceAccount) DeleteServiceStorageItem(tx *staterepository.TrackedTx, key []byte) error {
 	// Check if the item exists
-	oldItem, exists, err := s.GetServiceStorageItem(batch, key)
+	oldItem, exists, err := s.GetServiceStorageItem(tx, key)
 	if err != nil {
 		return err
 	}
@@ -138,7 +172,7 @@ func (s *ServiceAccount) DeleteServiceStorageItem(batch *pebble.Batch, key []byt
 	s.TotalOctetsUsedInStorage -= (34 + uint64(len(key)) + uint64(len(oldItem))) // Key + value
 
 	// Delete the storage item
-	if err := staterepository.DeleteServiceStorageItem(batch, s.ServiceIndex, key); err != nil {
+	if err := staterepository.DeleteServiceStorageItem(tx, s.ServiceIndex, key); err != nil {
 		return err
 	}
 
@@ -146,13 +180,13 @@ func (s *ServiceAccount) DeleteServiceStorageItem(batch *pebble.Batch, key []byt
 }
 
 // GetPreimageForHash retrieves a preimage for a given hash
-func (s *ServiceAccount) GetPreimageForHash(batch *pebble.Batch, hash [32]byte) ([]byte, bool, error) {
-	return staterepository.GetPreimage(batch, s.ServiceIndex, hash)
+func (s *ServiceAccount) GetPreimageForHash(tx *staterepository.TrackedTx, hash [32]byte) ([]byte, bool, error) {
+	return staterepository.GetServicePreimage(tx, s.ServiceIndex, hash)
 }
 
 // SetPreimageForHash sets a preimage for a given hash
-func (s *ServiceAccount) SetPreimageForHash(batch *pebble.Batch, hash [32]byte, preimage []byte) error {
-	if err := staterepository.SetPreimage(batch, s.ServiceIndex, hash, preimage); err != nil {
+func (s *ServiceAccount) SetPreimageForHash(tx *staterepository.TrackedTx, hash [32]byte, preimage []byte) error {
+	if err := staterepository.SetServicePreimage(tx, s.ServiceIndex, hash, preimage); err != nil {
 		return fmt.Errorf("failed to set preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
@@ -160,8 +194,8 @@ func (s *ServiceAccount) SetPreimageForHash(batch *pebble.Batch, hash [32]byte, 
 }
 
 // DeletePreimageForHash deletes a preimage for a given hash
-func (s *ServiceAccount) DeletePreimageForHash(batch *pebble.Batch, hash [32]byte) error {
-	if err := staterepository.DeletePreimage(batch, s.ServiceIndex, hash); err != nil {
+func (s *ServiceAccount) DeletePreimageForHash(tx *staterepository.TrackedTx, hash [32]byte) error {
+	if err := staterepository.DeleteServicePreimage(tx, s.ServiceIndex, hash); err != nil {
 		return fmt.Errorf("failed to delete preimage for service %d: %w", s.ServiceIndex, err)
 	}
 
@@ -169,19 +203,16 @@ func (s *ServiceAccount) DeletePreimageForHash(batch *pebble.Batch, hash [32]byt
 }
 
 // GetPreimageLookupHistoricalStatus retrieves historical status for a preimage lookup
-func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(batch *pebble.Batch, blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool, error) {
-	return staterepository.GetPreimageLookupHistoricalStatus(batch, s.ServiceIndex, blobLength, hashedPreimage)
+func (s *ServiceAccount) GetPreimageLookupHistoricalStatus(tx *staterepository.TrackedTx, blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool, error) {
+	return staterepository.GetPreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage)
 }
 
 // SetPreimageLookupHistoricalStatus sets historical status for a preimage lookup
-func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(batch *pebble.Batch, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
+func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(tx *staterepository.TrackedTx, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
 	// Check if this is a new key or an update
-	_, exists, err := s.GetPreimageLookupHistoricalStatus(batch, blobLength, hashedPreimage)
+	_, exists, err := s.GetPreimageLookupHistoricalStatus(tx, blobLength, hashedPreimage)
 	if err != nil {
 		return fmt.Errorf("failed to get historical status for service %d: %w", s.ServiceIndex, err)
-	}
-	if batch == nil {
-		return fmt.Errorf("Not in batch")
 	}
 
 	// Update storage metrics
@@ -193,7 +224,7 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(batch *pebble.Batch, 
 	}
 
 	// Set the historical status
-	if err := staterepository.SetPreimageLookupHistoricalStatus(batch, s.ServiceIndex, blobLength, hashedPreimage, status); err != nil {
+	if err := staterepository.SetPreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage, status); err != nil {
 		return fmt.Errorf("failed to set historical status for service %d: %w", s.ServiceIndex, err)
 	}
 
@@ -201,9 +232,9 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(batch *pebble.Batch, 
 }
 
 // DeletePreimageLookupHistoricalStatus deletes historical status for a preimage lookup
-func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(batch *pebble.Batch, blobLength uint32, hashedPreimage [32]byte) error {
+func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(tx *staterepository.TrackedTx, blobLength uint32, hashedPreimage [32]byte) error {
 	// Check if the status exists
-	_, exists, err := s.GetPreimageLookupHistoricalStatus(batch, blobLength, hashedPreimage)
+	_, exists, err := s.GetPreimageLookupHistoricalStatus(tx, blobLength, hashedPreimage)
 	if err != nil {
 		return fmt.Errorf("failed to get preimage lookup historical status for service %d: %w", s.ServiceIndex, err)
 	}
@@ -218,16 +249,8 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(batch *pebble.Batc
 	s.TotalOctetsUsedInStorage -= (81 + uint64(blobLength))
 
 	// Delete using StateKV function (replaces manual key construction)
-	if err := staterepository.DeletePreimageLookupHistoricalStatus(batch, s.ServiceIndex, blobLength, hashedPreimage); err != nil {
+	if err := staterepository.DeletePreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage); err != nil {
 		return fmt.Errorf("failed to delete historical status for service %d: %w", s.ServiceIndex, err)
-	}
-
-	return nil
-}
-
-func DeleteServiceAccountByServiceIndex(batch *pebble.Batch, serviceIndex types.ServiceIndex) error {
-	if err := staterepository.DeleteServiceAccount(batch, serviceIndex); err != nil {
-		return fmt.Errorf("failed to delete service account %d: %w", serviceIndex, err)
 	}
 
 	return nil

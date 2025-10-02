@@ -3,248 +3,329 @@ package staterepository
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
-
 	"strings"
 
-	"github.com/cockroachdb/pebble"
+	"maps"
+
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/crypto/blake2b"
 )
 
 type Node struct {
-	Hash        [32]byte
-	OriginalKey [31]byte
-	LeftHash    [32]byte // For internal nodes
-	RightHash   [32]byte // For internal nodes
+	OriginalKey   [31]byte
+	OriginalValue []byte
+	LeftHash      [32]byte // For internal nodes
+	RightHash     [32]byte // For internal nodes
 }
 
 func (n *Node) IsLeaf() bool {
 	return n.LeftHash == [32]byte{} && n.RightHash == [32]byte{}
 }
 
-func GetTreeNode(batch *pebble.Batch, path []byte) (*Node, error) {
-	prefixedKey := addTreeNodePrefix(path)
-	value, closer, err := get(batch, prefixedKey)
-	if err != nil {
-		return nil, err
-	}
-	defer closer.Close()
+func keysMatchAtDepth(key1, key2 [31]byte, depth int) bool {
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
 
-	var node Node
-	if err := serializer.Deserialize(value, &node); err != nil {
-		return nil, err
+	if byteIndex >= len(key1) || byteIndex >= len(key2) {
+		return false
 	}
-	return &node, nil
+
+	bit1 := (key1[byteIndex] >> bitIndex) & 1
+	bit2 := (key2[byteIndex] >> bitIndex) & 1
+
+	return bit1 == bit2
 }
 
 // createInternalNodeWithBit calculates the bit, recursively inserts, and creates an internal node
-func createInternalNodeWithBit(batch *pebble.Batch, curNode *Node, key [31]byte, value []byte, path []byte) (*Node, error) {
-	// Recursively insert and get child hashes
-	leftHash, rightHash, err := recursiveInsertAndGetHashes(batch, curNode, key, value, path)
-	if err != nil {
-		return nil, err
+func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, key [31]byte, value []byte, depth int) ([32]byte, error) {
+
+	// Get key's bit at this depth
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	keyBit := (key[byteIndex] >> bitIndex) & 1
+
+	var leftHash, rightHash [32]byte
+	var err error
+	if keyBit == 0 {
+		// New key goes left, collision goes right
+		leftHash, err = upsertLeafHelper(tx, key, value, curNode.LeftHash, depth+1)
+		if err != nil {
+			return [32]byte{}, err
+		}
+		rightHash = curNode.RightHash
+	} else {
+		// New key goes right, collision goes left
+		leftHash = curNode.LeftHash
+		rightHash, err = upsertLeafHelper(tx, key, value, curNode.RightHash, depth+1)
+		if err != nil {
+			return [32]byte{}, err
+		}
 	}
 
 	// Create internal node
 	internalNode := &Node{
-		Hash:        calculateInternalNodeHash(leftHash, rightHash),
-		OriginalKey: [31]byte{},
-		LeftHash:    leftHash,
-		RightHash:   rightHash,
+		OriginalKey:   [31]byte{},
+		OriginalValue: []byte{},
+		LeftHash:      leftHash,
+		RightHash:     rightHash,
+	}
+	internalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
+
+	if err := SetTreeNodeData(tx, internalNodeHash, serializer.Serialize(internalNode)); err != nil {
+		return [32]byte{}, fmt.Errorf("failed to store internal node: %w", err)
 	}
 
-	if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(internalNode)); err != nil {
-		return nil, fmt.Errorf("failed to store internal node: %w", err)
+	return internalNodeHash, nil
+}
+
+// splitLeafCollision creates internal nodes until keys diverge, then places both leaves
+func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newValue []byte, depth int) ([32]byte, error) {
+	// Find where keys diverge
+	divergeDepth := depth
+	for keysMatchAtDepth(existingLeaf.OriginalKey, newKey, divergeDepth) {
+		divergeDepth++
 	}
 
-	return internalNode, nil
+	// Create new leaf
+	newLeaf := &Node{
+		OriginalKey:   newKey,
+		OriginalValue: newValue,
+		LeftHash:      [32]byte{},
+		RightHash:     [32]byte{},
+	}
+	newLeafHash := calculateLeafHash(newKey, newValue)
+	existingLeafHash := calculateLeafHash(existingLeaf.OriginalKey, existingLeaf.OriginalValue)
+
+	// Store new leaf
+	if err := SetTreeNodeData(tx, newLeafHash, serializer.Serialize(newLeaf)); err != nil {
+		return [32]byte{}, err
+	}
+
+	var currentHash [32]byte
+
+	// Work backwards from divergeDepth to depth, creating internal nodes
+	for currentDepth := divergeDepth; currentDepth >= depth; currentDepth-- {
+		pathByteIndex := currentDepth / 8
+		pathBitIndex := 7 - (currentDepth % 8)
+		pathBit := (newKey[pathByteIndex] >> pathBitIndex) & 1
+
+		var leftHash, rightHash [32]byte
+		if currentDepth == divergeDepth {
+			// At diverge depth - place the leaves
+			if pathBit == 0 {
+				leftHash = newLeafHash
+				rightHash = existingLeafHash
+			} else {
+				leftHash = existingLeafHash
+				rightHash = newLeafHash
+			}
+		} else {
+			// Above diverge depth - determine path direction
+			if pathBit == 0 {
+				leftHash = currentHash
+				rightHash = [32]byte{}
+			} else {
+				leftHash = [32]byte{}
+				rightHash = currentHash
+			}
+		}
+
+		currentHash = calculateInternalNodeHash(leftHash, rightHash)
+		internalNode := &Node{
+			OriginalKey:   [31]byte{},
+			OriginalValue: []byte{},
+			LeftHash:      leftHash,
+			RightHash:     rightHash,
+		}
+
+		if err := SetTreeNodeData(tx, currentHash, serializer.Serialize(internalNode)); err != nil {
+			return [32]byte{}, err
+		}
+	}
+
+	return currentHash, nil
+}
+
+func getLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([]byte, bool, error) {
+	curNode, exists, err := GetTreeNode(tx, hash)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get tree node: %w", err)
+	}
+
+	if !exists {
+		return nil, false, nil
+	}
+
+	if curNode.IsLeaf() {
+		if curNode.OriginalKey == key {
+			return curNode.OriginalValue, true, nil
+		}
+		return nil, false, nil
+	}
+
+	// Internal node - follow the key's bit
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	bit := (key[byteIndex] >> bitIndex) & 1
+
+	if bit == 0 {
+		return getLeafHelper(tx, key, curNode.LeftHash, depth+1)
+	} else {
+		return getLeafHelper(tx, key, curNode.RightHash, depth+1)
+	}
 }
 
 // upsertLeafHelper recursively inserts a leaf node starting from curNode at given depth
-func upsertLeafHelper(batch *pebble.Batch, key [31]byte, value []byte, path []byte) (*Node, error) {
+func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, depth int) ([32]byte, error) {
 
-	curNode, err := GetTreeNode(batch, path)
-	if err != nil && err != pebble.ErrNotFound {
-		return nil, fmt.Errorf("failed to get tree node: %w", err)
-	}
-
-	if curNode == nil {
-		newLeaf := &Node{
-			Hash:        calculateLeafHash(key, value),
-			OriginalKey: key,
-			LeftHash:    [32]byte{},
-			RightHash:   [32]byte{},
-		}
-		if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(newLeaf)); err != nil {
-			return nil, fmt.Errorf("failed to store new leaf: %w", err)
-		}
-		return newLeaf, nil
-	}
-
-	// Check if current node is a leaf (has value) or internal (no value)
-	if curNode.IsLeaf() {
-		// Current node is a LEAF
-		if curNode.OriginalKey == key {
-			curNode.Hash = calculateLeafHash(key, value)
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(curNode)); err != nil {
-				return nil, fmt.Errorf("failed to store updated leaf: %w", err)
-			}
-			return curNode, nil
-		}
-		// Case B: Key doesn't match - need to create internal node and split
-		// This happens when two different keys end up at the same path
-		// We need to create an internal node and continue deeper
-
-		// Find the next bit where the keys differ
-		if len(path) >= 248 {
-			return nil, fmt.Errorf("path too deep")
-		}
-
-		// Get the next bit for existing key for split
-		byteIndex := len(path) / 8
-		bitPos := 7 - (len(path) % 8)
-		existingBit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
-
-		// Move existing leaf to its proper position based on its bit
-		existingNewPath := append(path, existingBit)
-		if err := set(batch, addTreeNodePrefix(existingNewPath), serializer.Serialize(curNode)); err != nil {
-			return nil, fmt.Errorf("failed to move existing leaf: %w", err)
-		}
-	}
-	result, err := createInternalNodeWithBit(batch, curNode, key, value, path)
+	curNode, exists, err := GetTreeNode(tx, hash)
 	if err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// deleteLeafHelper recursively deletes a leaf node and cleans up the tree
-func deleteLeafHelper(batch *pebble.Batch, key [31]byte, path []byte) error {
-	curNode, err := GetTreeNode(batch, path)
-	if err != nil && err != pebble.ErrNotFound {
-		return fmt.Errorf("failed to get tree node: %w", err)
+		return [32]byte{}, fmt.Errorf("failed to get tree node: %w", err)
 	}
 
-	if curNode == nil {
-		// Key doesn't exist - nothing to delete
-		return nil
+	if !exists {
+		// Case 1: create new leaf
+		newLeaf := &Node{
+			OriginalKey:   key,
+			OriginalValue: value,
+			LeftHash:      [32]byte{},
+			RightHash:     [32]byte{},
+		}
+		newHash := calculateLeafHash(key, value)
+		if err := SetTreeNodeData(tx, newHash, serializer.Serialize(newLeaf)); err != nil {
+			return [32]byte{}, fmt.Errorf("failed to store new leaf: %w", err)
+		}
+		return newHash, nil
 	}
-
-	// Check if current node is a leaf (has value) or internal (no value)
 	if curNode.IsLeaf() {
-		// Current node is a LEAF
 		if curNode.OriginalKey == key {
-			// Found the key to delete - remove this node
-			if err := delete(batch, addTreeNodePrefix(path)); err != nil {
-				return fmt.Errorf("failed to delete leaf node: %w", err)
+			curNode.OriginalValue = value
+			newHash := calculateLeafHash(key, value)
+			if err := SetTreeNodeData(tx, newHash, serializer.Serialize(curNode)); err != nil {
+				return [32]byte{}, fmt.Errorf("failed to store updated leaf: %w", err)
 			}
-			return nil
-		} else {
-			// Different key - nothing to delete
-			return nil
+			return newHash, nil
 		}
-	} else {
-		// Current node is INTERNAL - recurse to appropriate child
-		if len(path) >= 248 {
-			return fmt.Errorf("path too deep")
-		}
-
-		// Get the next bit to determine which child to follow
-		byteIndex := len(path) / 8
-		bitPos := 7 - (len(path) % 8)
-		nextBit := (key[byteIndex] >> bitPos) & 1
-
-		// Recursively delete from the appropriate child
-		err := deleteLeafHelper(batch, key, append(path, nextBit))
-		if err != nil {
-			return err
-		}
-
-		// Get both children to see if we need to clean up this internal node
-		var leftChild, rightChild *Node
-
-		leftChild, err = GetTreeNode(batch, append(path, 0))
-		if err != nil && err != pebble.ErrNotFound {
-			return fmt.Errorf("failed to get left child: %w", err)
-		}
-
-		rightChild, err = GetTreeNode(batch, append(path, 1))
-		if err != nil && err != pebble.ErrNotFound {
-			return fmt.Errorf("failed to get right child: %w", err)
-		}
-
-		// Smart cleanup: only collapse if exactly one child exists AND it's a leaf
-		if leftChild == nil && rightChild == nil {
-			// No children left - delete this internal node
-			if err := delete(batch, addTreeNodePrefix(path)); err != nil {
-				return fmt.Errorf("failed to delete empty internal node: %w", err)
-			}
-			return nil
-		} else if leftChild == nil && rightChild != nil && rightChild.IsLeaf() {
-			// Only right child exists AND it's a leaf - collapse
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(rightChild)); err != nil {
-				return fmt.Errorf("failed to move right leaf up: %w", err)
-			}
-			// Delete the old right child position
-			if err := delete(batch, addTreeNodePrefix(append(path, 1))); err != nil {
-				return fmt.Errorf("failed to delete old right child: %w", err)
-			}
-			return nil
-		} else if rightChild == nil && leftChild != nil && leftChild.IsLeaf() {
-			// Only left child exists AND it's a leaf - collapse
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(leftChild)); err != nil {
-				return fmt.Errorf("failed to move left leaf up: %w", err)
-			}
-			// Delete the old left child position
-			if err := delete(batch, addTreeNodePrefix(append(path, 0))); err != nil {
-				return fmt.Errorf("failed to delete old left child: %w", err)
-			}
-			return nil
-		} else {
-			// Either both children exist, or single child is internal - update hash
-			var leftHash, rightHash [32]byte
-			if leftChild != nil {
-				leftHash = leftChild.Hash
-			}
-			if rightChild != nil {
-				rightHash = rightChild.Hash
-			}
-
-			curNode.Hash = calculateInternalNodeHash(leftHash, rightHash)
-			curNode.LeftHash = leftHash
-			curNode.RightHash = rightHash
-
-			if err := set(batch, addTreeNodePrefix(path), serializer.Serialize(curNode)); err != nil {
-				return fmt.Errorf("failed to update internal node: %w", err)
-			}
-
-			return nil
-		}
+		return splitLeafCollision(tx, curNode, key, value, depth)
 	}
+
+	newHash, err := createInternalNodeWithBit(tx, curNode, key, value, depth)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return newHash, nil
 }
 
-// updateMerkleTreeForSet updates the Merkle tree for a set operation
-func updateMerkleTreeForSet(batch *pebble.Batch, key [31]byte, value []byte) error {
-	return upsertLeaf(batch, key, value)
+// Phase 1: Find and delete the target node
+func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([32]byte, bool, error) {
+	curNode, exists, err := GetTreeNode(tx, hash)
+	if err != nil {
+		return [32]byte{}, false, fmt.Errorf("failed to get tree node: %w", err)
+	}
+
+	if !exists {
+		return [32]byte{}, false, fmt.Errorf("key does not exist")
+	}
+
+	if curNode.IsLeaf() {
+		if curNode.OriginalKey == key {
+			return [32]byte{}, true, nil // Delete this leaf
+		}
+		return hash, false, fmt.Errorf("key does not exist")
+	}
+
+	// Recurse to find the target
+	byteIndex := depth / 8
+	bitIndex := 7 - (depth % 8)
+	bit := (key[byteIndex] >> bitIndex) & 1
+
+	var leftHash, rightHash [32]byte
+
+	if bit == 0 {
+		newLeftHash, windup, err := deleteLeafHelper(tx, key, curNode.LeftHash, depth+1)
+		if err != nil {
+			return [32]byte{}, false, err
+		}
+		if windup {
+			if curNode.RightHash == [32]byte{} {
+				return newLeftHash, true, nil
+			}
+			if newLeftHash == [32]byte{} {
+				rightNode, exists, err := GetTreeNode(tx, curNode.RightHash)
+				if err != nil {
+					return [32]byte{}, false, fmt.Errorf("failed to get right node: %w", err)
+				}
+				if !exists {
+					return [32]byte{}, false, fmt.Errorf("right node does not exist")
+				}
+				if rightNode.IsLeaf() {
+					return curNode.RightHash, true, nil
+				}
+			}
+		}
+		leftHash = newLeftHash
+		rightHash = curNode.RightHash
+	} else {
+		newRightHash, windup, err := deleteLeafHelper(tx, key, curNode.RightHash, depth+1)
+		if err != nil {
+			return [32]byte{}, false, err
+		}
+		if windup {
+			if curNode.LeftHash == [32]byte{} {
+				return newRightHash, true, nil
+			}
+			if newRightHash == [32]byte{} {
+				leftNode, exists, err := GetTreeNode(tx, curNode.LeftHash)
+				if err != nil {
+					return [32]byte{}, false, fmt.Errorf("failed to get left node: %w", err)
+				}
+				if !exists {
+					return [32]byte{}, false, fmt.Errorf("left node does not exist")
+				}
+				if leftNode.IsLeaf() {
+					return curNode.LeftHash, true, nil
+				}
+			}
+		}
+		leftHash = curNode.LeftHash
+		rightHash = newRightHash
+	}
+	newInternalNode := &Node{
+		OriginalKey:   [31]byte{},
+		OriginalValue: []byte{},
+		LeftHash:      leftHash,
+		RightHash:     rightHash,
+	}
+	newInternalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
+	if err := SetTreeNodeData(tx, newInternalNodeHash, serializer.Serialize(newInternalNode)); err != nil {
+		return [32]byte{}, false, fmt.Errorf("failed to store internal node: %w", err)
+	}
+	return newInternalNodeHash, false, nil
+}
+
+func getLeaf(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
+	return getLeafHelper(tx, key, tx.stateRoot, 0)
 }
 
 // upsertLeaf inserts or updates a leaf node and returns the new root hash
-func upsertLeaf(batch *pebble.Batch, key [31]byte, value []byte) error {
-	_, err := upsertLeafHelper(batch, key, value, []byte{})
+func upsertLeaf(tx *TrackedTx, key [31]byte, value []byte) error {
+	newStateRoot, err := upsertLeafHelper(tx, key, value, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to upsert leaf: %w", err)
 	}
+	tx.stateRoot = newStateRoot
 	return nil
 }
 
 // updateMerkleTreeForDelete updates the Merkle tree for a delete operation
-func updateMerkleTreeForDelete(batch *pebble.Batch, key [31]byte) error {
-	err := deleteLeafHelper(batch, key, []byte{})
+func deleteLeaf(tx *TrackedTx, key [31]byte) error {
+	newStateRoot, _, err := deleteLeafHelper(tx, key, tx.stateRoot, 0)
 	if err != nil {
 		return fmt.Errorf("failed to delete leaf: %w", err)
 	}
+	tx.stateRoot = newStateRoot
 	return nil
 }
 
@@ -274,378 +355,350 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 	return blake2b.Sum256(nodeData[:])
 }
 
-func recursiveInsertAndGetHashes(batch *pebble.Batch, curNode *Node, key [31]byte, value []byte, path []byte) ([32]byte, [32]byte, error) {
-	// Get the next bit to determine which child to follow
-	byteIndex := len(path) / 8
-	bitPos := 7 - (len(path) % 8)
-	bit := (key[byteIndex] >> bitPos) & 1
-	newChild, err := upsertLeafHelper(batch, key, value, append(path, bit))
-	if err != nil {
-		return [32]byte{}, [32]byte{}, err
-	}
-
-	var leftHash, rightHash [32]byte
-
-	// Check if curNode was originally a leaf (being split) or internal node (being updated)
-	if curNode.IsLeaf() {
-		// curNode was a leaf that's being split
-		// Get the existing leaf's bit at this position
-		existingBit := (curNode.OriginalKey[byteIndex] >> bitPos) & 1
-
-		if bit == existingBit {
-			// Both keys go to the same child - other child is empty (zero hash)
-			if bit == 0 {
-				leftHash = newChild.Hash
-				rightHash = [32]byte{} // Empty
-			} else {
-				rightHash = newChild.Hash
-				leftHash = [32]byte{} // Empty
+func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
+	if tx.memoryMode {
+		value, exists := tx.memory[key]
+		if exists {
+			if value == nil {
+				return nil, false, nil // Explicitly deleted
 			}
-		} else {
-			// Keys go to different children - sibling is the existing leaf
-			if bit == 0 {
-				leftHash = newChild.Hash
-				rightHash = curNode.Hash // Existing leaf
-			} else {
-				rightHash = newChild.Hash
-				leftHash = curNode.Hash // Existing leaf
-			}
-		}
-	} else {
-		// curNode was already an internal node - can use stored child hashes
-		if bit == 0 {
-			leftHash = newChild.Hash
-			rightHash = curNode.RightHash
-		} else {
-			rightHash = newChild.Hash
-			leftHash = curNode.LeftHash
+			return value, true, nil
 		}
 	}
-
-	return leftHash, rightHash, nil
+	return getLeaf(tx, key)
 }
 
-func GetStateKV(batch *pebble.Batch, key [31]byte) ([]byte, error) {
-	val, closer, err := get(batch, addStatePrefix(key))
-	if err != nil {
-		return nil, err
+func SetStateKV(tx *TrackedTx, key [31]byte, value []byte) error {
+	if tx.memoryMode {
+		tx.memory[key] = value
+		return nil
 	}
-	defer closer.Close()
+	return upsertLeaf(tx, key, value)
+}
 
-	// Make a copy of the data since it's only valid until closer.Close()
+func DeleteStateKV(tx *TrackedTx, key [31]byte) error {
+	if tx.memoryMode {
+		tx.memory[key] = nil
+		return nil
+	}
+	return deleteLeaf(tx, key)
+}
+
+func GetTreeNodeData(tx *TrackedTx, hash [32]byte) ([]byte, bool, error) {
+	return getKV(tx, "tree", hash[:])
+}
+
+func SetTreeNodeData(tx *TrackedTx, hash [32]byte, value []byte) error {
+	return setKV(tx, "tree", hash[:], value)
+}
+
+func GetBlockKV(tx *TrackedTx, key [32]byte) ([]byte, bool, error) {
+	return getKV(tx, "blocks", key[:])
+}
+
+func SetBlockKV(tx *TrackedTx, key [32]byte, value []byte) error {
+	return setKV(tx, "blocks", key[:], value)
+}
+
+func DeleteBlockKV(tx *TrackedTx, key []byte) error {
+	return deleteKV(tx, "blocks", key)
+}
+
+func GetTip(tx *TrackedTx) ([32]byte, error) {
+	value, exists, err := getKV(tx, "meta", []byte("chaintip"))
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if !exists {
+		return [32]byte{}, fmt.Errorf("chain tip not found")
+	}
+	var tip [32]byte
+	copy(tip[:], value)
+	return tip, nil
+}
+
+func SetTip(tx *TrackedTx, tip [32]byte) error {
+	return setKV(tx, "meta", []byte("chaintip"), tip[:])
+}
+
+func GetPreimage(tx *TrackedTx, hash [32]byte) ([]byte, bool, error) {
+	return getKV(tx, "preimage", hash[:])
+}
+
+func SetPreimage(tx *TrackedTx, hash [32]byte, preimage []byte) error {
+	return setKV(tx, "preimage", hash[:], preimage)
+}
+
+func DeletePreimage(tx *TrackedTx, hash [32]byte) error {
+	return deleteKV(tx, "preimage", hash[:])
+}
+
+func GetWorkReport(tx *TrackedTx, key []byte) ([]byte, bool, error) {
+	return getKV(tx, "workreport", key)
+}
+
+func SetWorkReport(tx *TrackedTx, key []byte, value []byte) error {
+	return setKV(tx, "workreport", key, value)
+}
+
+func DeleteWorkReport(tx *TrackedTx, key []byte) error {
+	return deleteKV(tx, "workreport", key)
+}
+
+func getKV(tx *TrackedTx, bucketName string, key []byte) ([]byte, bool, error) {
+	if tx == nil {
+		return nil, false, fmt.Errorf("transaction cannot be nil")
+	}
+	bucket := tx.Bucket([]byte(bucketName))
+	if bucket == nil {
+		return nil, false, fmt.Errorf("%s bucket not found", bucketName)
+	}
+	val := bucket.Get(key)
+	if val == nil {
+		return nil, false, nil // Key not found
+	}
+	// Make a copy since BoltDB values are only valid during transaction
 	dataCopy := make([]byte, len(val))
 	copy(dataCopy, val)
-
-	return dataCopy, nil
+	return dataCopy, true, nil
 }
 
-func SetStateKV(batch *pebble.Batch, key [31]byte, value []byte) error {
-	return set(batch, addStatePrefix(key), value)
-}
-
-func DeleteStateKV(batch *pebble.Batch, key [31]byte) error {
-	return delete(batch, addStatePrefix(key))
-}
-
-// Exists checks if a key exists
-func ExistsStateKV(batch *pebble.Batch, key [31]byte) (bool, error) {
-	_, err := GetStateKV(batch, key)
-	if err == pebble.ErrNotFound {
-		return false, nil
+func setKV(tx *TrackedTx, bucketName string, key, value []byte) error {
+	if tx == nil {
+		return fmt.Errorf("transaction cannot be nil")
 	}
+	bucket := tx.Bucket([]byte(bucketName))
+	if bucket == nil {
+		return fmt.Errorf("%s bucket not found", bucketName)
+	}
+	return bucket.Put(key, value)
+}
+
+func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
+	if tx == nil {
+		return fmt.Errorf("transaction cannot be nil")
+	}
+	bucket := tx.Bucket([]byte(bucketName))
+	if bucket == nil {
+		return fmt.Errorf("%s bucket not found", bucketName)
+	}
+	return bucket.Delete(key)
+}
+
+// TrackedTx wraps bolt.Tx and tracks state changes
+type TrackedTx struct {
+	*bolt.Tx
+	stateRoot  [32]byte
+	memory     map[[31]byte][]byte
+	memoryMode bool
+}
+
+// NewTrackedTx creates a new tracked transaction wrapper
+func NewTrackedTx(stateRoot [32]byte) (*TrackedTx, error) {
+	repo := GetGlobalRepository()
+	if repo == nil {
+		return nil, fmt.Errorf("global repository not initialized")
+	}
+	tx, err := repo.db.Begin(true) // writable transaction
 	if err != nil {
-		return false, err
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	return true, nil
+	return &TrackedTx{
+		Tx:         tx,
+		stateRoot:  stateRoot,
+		memory:     make(map[[31]byte][]byte),
+		memoryMode: false,
+	}, nil
+}
+
+func (tx *TrackedTx) GetStateRoot() [32]byte {
+	return tx.stateRoot
+}
+
+func (tx *TrackedTx) SetStateRoot(stateRoot [32]byte) {
+	tx.stateRoot = stateRoot
+}
+
+func (tx *TrackedTx) CreateChild() *TrackedTx {
+	child := &TrackedTx{
+		Tx:         tx.Tx,
+		stateRoot:  tx.stateRoot,
+		memory:     make(map[[31]byte][]byte),
+		memoryMode: tx.memoryMode,
+	}
+
+	maps.Copy(child.memory, tx.memory)
+
+	return child
+}
+
+func (tx *TrackedTx) Apply(childTx *TrackedTx) error {
+	if childTx == nil {
+		return fmt.Errorf("child transaction cannot be nil")
+	}
+
+	tx.stateRoot = childTx.stateRoot
+
+	maps.Copy(tx.memory, childTx.memory)
+
+	return nil
+}
+
+func (tx *TrackedTx) SetMemoryMode(mode bool) {
+	tx.memoryMode = mode
+}
+
+func (tx *TrackedTx) GetMemoryContents() map[[31]byte][]byte {
+	return tx.memory
+}
+
+func GetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) ([]byte, bool, error) {
+	return GetStateKV(tx, stateKeyConstructorFromServiceIndex(serviceIndex))
 }
 
 // SetServiceAccount stores service account data
-func SetServiceAccount(batch *pebble.Batch, serviceIndex types.ServiceIndex, data []byte) error {
+func SetServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex, data []byte) error {
 	dbKey := stateKeyConstructorFromServiceIndex(serviceIndex)
-	return SetStateKV(batch, dbKey, data)
+	return SetStateKV(tx, dbKey, data)
 }
 
 // DeleteServiceAccount deletes a service account
-func DeleteServiceAccount(batch *pebble.Batch, serviceIndex types.ServiceIndex) error {
+func DeleteServiceAccount(tx *TrackedTx, serviceIndex types.ServiceIndex) error {
 	dbKey := stateKeyConstructorFromServiceIndex(serviceIndex)
-	return DeleteStateKV(batch, dbKey)
+	return DeleteStateKV(tx, dbKey)
 }
 
 // GetServiceStorageItem retrieves a service storage item with proper error handling
-func GetServiceStorageItem(batch *pebble.Batch, serviceIndex types.ServiceIndex, storageKey []byte) ([]byte, bool, error) {
+func GetServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey []byte) ([]byte, bool, error) {
 	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	value, err := GetStateKV(batch, dbKey)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
+	return GetStateKV(tx, dbKey)
 }
 
 // SetServiceStorageItem stores a service storage item
-func SetServiceStorageItem(batch *pebble.Batch, serviceIndex types.ServiceIndex, storageKey, value []byte) error {
+func SetServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey, value []byte) error {
 	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	return SetStateKV(batch, dbKey, value)
+	return SetStateKV(tx, dbKey, value)
 }
 
 // DeleteServiceStorageItem deletes a service storage item
-func DeleteServiceStorageItem(batch *pebble.Batch, serviceIndex types.ServiceIndex, storageKey []byte) error {
+func DeleteServiceStorageItem(tx *TrackedTx, serviceIndex types.ServiceIndex, storageKey []byte) error {
 	dbKey := makeServiceStorageKey(serviceIndex, storageKey)
-	return DeleteStateKV(batch, dbKey)
+	return DeleteStateKV(tx, dbKey)
 }
 
-// GetPreimage retrieves a preimage for a given hash
-func GetPreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte) ([]byte, bool, error) {
+// GetServicePreimage retrieves a preimage for a given hash
+func GetServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte) ([]byte, bool, error) {
 	dbKey := makePreimageKey(serviceIndex, hash)
-	value, err := GetStateKV(batch, dbKey)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
+	return GetStateKV(tx, dbKey)
 }
 
-// SetPreimage stores a preimage for a given hash
-func SetPreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte, preimage []byte) error {
+// SetServicePreimage stores a preimage for a given hash
+func SetServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte, preimage []byte) error {
 	dbKey := makePreimageKey(serviceIndex, hash)
-	return SetStateKV(batch, dbKey, preimage)
+	return SetStateKV(tx, dbKey, preimage)
 }
 
-// DeletePreimage deletes a preimage for a given hash
-func DeletePreimage(batch *pebble.Batch, serviceIndex types.ServiceIndex, hash [32]byte) error {
+// DeleteServicePreimage deletes a preimage for a given hash
+func DeleteServicePreimage(tx *TrackedTx, serviceIndex types.ServiceIndex, hash [32]byte) error {
 	dbKey := makePreimageKey(serviceIndex, hash)
-	return DeleteStateKV(batch, dbKey)
+	return DeleteStateKV(tx, dbKey)
+}
+
+// SetWorkReportBySegmentRoot stores a work report by segment root
+func SetWorkReportBySegmentRoot(tx *TrackedTx, segmentRoot [32]byte, workReportData []byte) error {
+	key := append([]byte("sr:"), segmentRoot[:]...)
+	return setKV(tx, "workreport", key, workReportData)
+}
+
+// SetWorkReportIndex stores a work package hash -> segment root mapping
+func SetWorkReportIndex(tx *TrackedTx, workPackageHash [32]byte, segmentRoot [32]byte) error {
+	key := append([]byte("wph:"), workPackageHash[:]...)
+	return setKV(tx, "workreport", key, segmentRoot[:])
+}
+
+// GetWorkReportBySegmentRoot retrieves a work report by segment root
+func GetWorkReportBySegmentRoot(tx *TrackedTx, segmentRoot [32]byte) ([]byte, bool, error) {
+	key := append([]byte("sr:"), segmentRoot[:]...)
+	return getKV(tx, "workreport", key)
+}
+
+// GetWorkReportIndex retrieves segment root by work package hash
+func GetWorkReportIndex(tx *TrackedTx, workPackageHash [32]byte) ([]byte, bool, error) {
+	key := append([]byte("wph:"), workPackageHash[:]...)
+	return getKV(tx, "workreport", key)
 }
 
 // GetPreimageLookupHistoricalStatus retrieves historical status for a preimage lookup
-func GetPreimageLookupHistoricalStatus(batch *pebble.Batch, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool, error) {
+func GetPreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) ([]types.Timeslot, bool, error) {
 	dbKey := makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage)
-	value, err := GetStateKV(batch, dbKey)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
+	value, exists, err := GetStateKV(tx, dbKey)
 	if err != nil {
 		return nil, false, err
 	}
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
+	if !exists {
+		return nil, false, nil
+	}
 
 	var status []types.Timeslot
-	if err := serializer.Deserialize(result, &status); err != nil {
+	if err := serializer.Deserialize(value, &status); err != nil {
 		return nil, false, err
 	}
 	return status, true, nil
 }
 
 // SetPreimageLookupHistoricalStatus stores historical status for a preimage lookup
-func SetPreimageLookupHistoricalStatus(batch *pebble.Batch, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
+func SetPreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte, status []types.Timeslot) error {
 	dbKey := makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage)
 	serializedStatus := serializer.Serialize(status)
-	return SetStateKV(batch, dbKey, serializedStatus)
+	return SetStateKV(tx, dbKey, serializedStatus)
 }
 
 // DeletePreimageLookupHistoricalStatus deletes historical status for a preimage lookup
-func DeletePreimageLookupHistoricalStatus(batch *pebble.Batch, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) error {
+func DeletePreimageLookupHistoricalStatus(tx *TrackedTx, serviceIndex types.ServiceIndex, blobLength uint32, hashedPreimage [32]byte) error {
 	dbKey := makeHistoricalStatusKey(serviceIndex, blobLength, hashedPreimage)
-	return DeleteStateKV(batch, dbKey)
+	return DeleteStateKV(tx, dbKey)
 }
 
-// NewIterator creates an iterator with "state:" prefix filtering
-func NewIterator(batch *pebble.Batch) (*pebble.Iterator, error) {
-	opts := &pebble.IterOptions{
-		LowerBound: []byte("state:"),
-		UpperBound: []byte("state;"), // Next ASCII character after ':'
-	}
-	return NewIter(batch, opts)
-}
-
-// addStatePrefix adds the "state:" prefix to a key
-func addStatePrefix(key [31]byte) []byte {
-	return append([]byte("state:"), key[:]...)
-}
-
-// GetBlock retrieves block data with automatic "block:" prefixing
-func GetBlock(batch *pebble.Batch, key []byte) ([]byte, io.Closer, error) {
-	prefixedKey := addBlockPrefix(key)
-	return get(batch, prefixedKey)
-}
-
-// addBlockPrefix adds the "block:" prefix to a key
-func addBlockPrefix(key []byte) []byte {
-	return append([]byte("block:"), key...)
-}
-
-func GetTip(batch *pebble.Batch) ([]byte, io.Closer, error) {
-	return get(batch, []byte("meta:chaintip"))
-}
-
-// GetRaw retrieves a value using the exact key without any prefixing
-func GetRaw(batch *pebble.Batch, key []byte) ([]byte, io.Closer, error) {
-	return get(batch, key)
-}
-
-// DeleteRaw deletes a value using the exact key without any prefixing
-func DeleteRaw(batch *pebble.Batch, key []byte) error {
-	return delete(batch, key)
-}
-
-// GetPreimageByHash retrieves a preimage by its hash with automatic "preimage:" prefixing
-func GetPreimageByHash(batch *pebble.Batch, hash [32]byte) ([]byte, bool, error) {
-	prefixedKey := addPreimagePrefix(hash[:])
-	value, closer, err := get(batch, prefixedKey)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
+func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
+	value, exists, err := GetTreeNodeData(tx, hash)
 	if err != nil {
 		return nil, false, err
 	}
-	defer closer.Close()
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
-}
-
-// SetPreimageByHash stores a preimage by its hash with automatic "preimage:" prefixing
-func SetPreimageByHash(batch *pebble.Batch, hash [32]byte, preimage []byte) error {
-	prefixedKey := addPreimagePrefix(hash[:])
-	return set(batch, prefixedKey, preimage)
-}
-
-// addPreimagePrefix adds the "preimage:" prefix to a key
-func addPreimagePrefix(key []byte) []byte {
-	return append([]byte("preimage:"), key...)
-}
-
-// GetWorkReport retrieves a work report with automatic "workreport:" prefixing
-func GetWorkReport(batch *pebble.Batch, key []byte) ([]byte, bool, error) {
-	prefixedKey := addWorkReportPrefix(key)
-	value, closer, err := get(batch, prefixedKey)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
+	if !exists {
+		return nil, false, nil // Node not found
 	}
-	if err != nil {
+
+	var node Node
+	if err := serializer.Deserialize(value, &node); err != nil {
 		return nil, false, err
 	}
-	defer closer.Close()
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
-}
-
-// SetWorkReportBySegmentRoot stores a work report by segment root
-func SetWorkReportBySegmentRoot(batch *pebble.Batch, segmentRoot [32]byte, workReportData []byte) error {
-	key := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	return set(batch, key, workReportData)
-}
-
-// SetWorkReportIndex stores a work package hash -> segment root mapping
-func SetWorkReportIndex(batch *pebble.Batch, workPackageHash [32]byte, segmentRoot [32]byte) error {
-	key := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	return set(batch, key, segmentRoot[:])
-}
-
-// GetWorkReportBySegmentRoot retrieves a work report by segment root
-func GetWorkReportBySegmentRoot(batch *pebble.Batch, segmentRoot [32]byte) ([]byte, bool, error) {
-	key := append([]byte("workreport:sr:"), segmentRoot[:]...)
-	value, closer, err := get(batch, key)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	defer closer.Close()
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
-}
-
-// GetWorkReportIndex retrieves segment root by work package hash
-func GetWorkReportIndex(batch *pebble.Batch, workPackageHash [32]byte) ([]byte, bool, error) {
-	key := append([]byte("workreport:wph:"), workPackageHash[:]...)
-	value, closer, err := get(batch, key)
-	if err == pebble.ErrNotFound {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	defer closer.Close()
-
-	// Make a copy since value is only valid until closer.Close()
-	result := make([]byte, len(value))
-	copy(result, value)
-	return result, true, nil
-}
-
-// addWorkReportPrefix adds the "workreport:" prefix to a key
-func addWorkReportPrefix(key []byte) []byte {
-	return append([]byte("workreport:"), key...)
-}
-
-var treePrefix = []byte("tree:")
-
-func addTreeNodePrefix(key []byte) []byte {
-	result := make([]byte, len(treePrefix)+len(key))
-	copy(result, treePrefix)
-	copy(result[len(treePrefix):], key)
-	return result
-}
-
-// GetStateRoot retrieves the current Merkle root
-func GetStateRoot(batch *pebble.Batch) ([32]byte, error) {
-	root, err := GetTreeNode(batch, []byte{})
-	if err != nil {
-		return [32]byte{}, err
-	}
-	return root.Hash, nil
+	return &node, true, nil
 }
 
 // GetAllKeysFromTree extracts all keys from the tree by traversing leaf nodes
-func GetAllKeysFromTree(batch *pebble.Batch) ([][31]byte, error) {
+func GetAllKeysFromTree(tx *TrackedTx) ([][31]byte, error) {
 	var keys [][31]byte
 
-	// Create iterator for all tree nodes
-	iter, err := NewIter(batch, &pebble.IterOptions{
-		LowerBound: []byte("tree:"),
-		UpperBound: []byte("tree;"), // Next ASCII character after ':'
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tree iterator: %w", err)
+	// Get the tree bucket
+	bucket := tx.Bucket([]byte("tree"))
+	if bucket == nil {
+		return keys, nil // Empty tree if bucket doesn't exist
 	}
-	defer iter.Close()
+
+	// Create cursor to iterate through all key-value pairs in tree bucket
+	cursor := bucket.Cursor()
 
 	// Iterate through all tree nodes and collect leaves
-	for iter.First(); iter.Valid(); iter.Next() {
-		key := iter.Key()
-		// Remove "tree:" prefix to get path and make a copy to avoid iterator memory reuse
-		pathSlice := key[5:] // len("tree:") = 5
-		path := make([]byte, len(pathSlice))
-		copy(path, pathSlice)
+	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+		// Make copies since BoltDB data is only valid during transaction
+		path := make([]byte, len(k))
+		copy(path, k)
 
-		nodeData := iter.Value()
+		value := make([]byte, len(v))
+		copy(value, v)
+
 		node := &Node{}
-		if err := serializer.Deserialize(nodeData, node); err != nil {
+		if err := serializer.Deserialize(value, node); err != nil {
 			continue // Skip invalid nodes
 		}
 
@@ -655,166 +708,122 @@ func GetAllKeysFromTree(batch *pebble.Batch) ([][31]byte, error) {
 		}
 	}
 
-	if err := iter.Error(); err != nil {
-		return nil, fmt.Errorf("iterator error: %w", err)
-	}
-
 	return keys, nil
 }
 
-// PrintTreeStructure prints the entire tree structure for debugging
-func PrintTreeStructure(batch *pebble.Batch) error {
-	fmt.Println("=== TREE STRUCTURE ===")
-
-	// Create iterator for all tree nodes
-	iter, err := NewIter(batch, &pebble.IterOptions{
-		LowerBound: []byte("tree:"),
-		UpperBound: []byte("tree;"), // Next ASCII character after ':'
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create tree iterator: %w", err)
-	}
-	defer iter.Close()
-
-	// Collect all nodes first to sort by path
-	type nodeInfo struct {
-		path []byte
-		node *Node
-	}
-	var nodes []nodeInfo
-
-	for iter.First(); iter.Valid(); iter.Next() {
-		key := iter.Key()
-		// Remove "tree:" prefix to get path and make a copy to avoid iterator memory reuse
-		pathSlice := key[5:] // len("tree:") = 5
-		path := make([]byte, len(pathSlice))
-		copy(path, pathSlice)
-
-		nodeData := iter.Value()
-		node := &Node{}
-		if err := serializer.Deserialize(nodeData, node); err != nil {
-			fmt.Printf("ERROR deserializing node at path %x: %v\n", path, err)
-			continue
-		}
-
-		nodes = append(nodes, nodeInfo{path: path, node: node})
-	}
-
-	// Sort nodes by path length (root first, then by path)
-	for i := 0; i < len(nodes); i++ {
-		for j := i + 1; j < len(nodes); j++ {
-			if len(nodes[i].path) > len(nodes[j].path) ||
-				(len(nodes[i].path) == len(nodes[j].path) && string(nodes[i].path) > string(nodes[j].path)) {
-				nodes[i], nodes[j] = nodes[j], nodes[i]
-			}
-		}
-	}
-
-	// Print each node
-	for _, nodeInfo := range nodes {
-		path := nodeInfo.path
-		node := nodeInfo.node
-
-		indent := strings.Repeat("  ", len(path))
-		var pathStr string
-		if len(path) == 0 {
-			pathStr = "ROOT"
-		} else {
-			// Convert binary path to bit string (0s and 1s)
-			pathStr = ""
-			for _, b := range path {
-				if b == 0 {
-					pathStr += "0"
-				} else {
-					pathStr += "1"
-				}
-			}
-		}
-
-		if node.IsLeaf() {
-			// Leaf node
-			fmt.Printf("%s%s: LEAF hash=%x key=%x\n",
-				indent, pathStr, node.Hash[:8], node.OriginalKey[:8])
-		} else {
-			// Internal node
-			fmt.Printf("%s%s: INTERNAL hash=%x\n",
-				indent, pathStr, node.Hash[:8])
-		}
-	}
-
-	fmt.Println("=== END TREE STRUCTURE ===")
-	return nil
+// IterOptions represents iteration options (simplified from Pebble)
+type IterOptions struct {
+	LowerBound []byte
+	UpperBound []byte
 }
 
-func ApplyMerkleTreeUpdates(batch *pebble.Batch) error {
-	repr := batch.Repr()
-	reader, count := pebble.ReadBatch(repr)
+type Iterator interface {
+	First() ([]byte, []byte)
+	Next() ([]byte, []byte)
+	Valid() bool
+	Close() error
+}
 
-	if count == 0 {
-		return nil // Return if batch is empty
+// BoltIterator wraps bolt cursor for iteration
+type BoltIterator struct {
+	cursor     *bolt.Cursor
+	bucket     *bolt.Bucket
+	lowerBound []byte
+	upperBound []byte
+	valid      bool
+}
+
+func (iter *BoltIterator) First() ([]byte, []byte) {
+	var k, v []byte
+	if iter.lowerBound != nil {
+		k, v = iter.cursor.Seek(iter.lowerBound)
+		iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
+	} else {
+		k, v = iter.cursor.First()
+		iter.valid = k != nil
+	}
+	return k, v
+}
+
+func (iter *BoltIterator) Next() ([]byte, []byte) {
+	k, v := iter.cursor.Next()
+	iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
+	return k, v
+}
+
+func (iter *BoltIterator) Valid() bool {
+	return iter.valid
+}
+
+func (iter *BoltIterator) Close() error {
+	return nil // Bolt cursors don't need explicit closing
+}
+
+// NewIter creates a new iterator for the given bucket
+func NewIter(tx *TrackedTx, bucketName string, opts *IterOptions) (Iterator, error) {
+	bucket := tx.Bucket([]byte(bucketName))
+	if bucket == nil {
+		return nil, fmt.Errorf("%s bucket not found", bucketName)
 	}
 
-	statePrefix := []byte("state:")
+	cursor := bucket.Cursor()
 
-	// Track final operation per key (last-writer-wins) and process in single pass
-	finalOps := make(map[string]struct {
-		kind  pebble.InternalKeyKind
-		key   [31]byte
-		value []byte
-	})
-
-	// First pass: identify final operations
-	for {
-		kind, key, value, ok, err := reader.Next()
-		if err != nil {
-			return fmt.Errorf("failed to read batch operation: %w", err)
-		}
-		if !ok {
-			break // No more operations
-		}
-
-		// Only process state operations
-		if !bytes.HasPrefix(key, statePrefix) {
-			continue // Skip non-state operations
-		}
-
-		// Extract the actual state key (remove "state:" prefix)
-		if len(key) < 6 {
-			return fmt.Errorf("invalid state key length: %d", len(key))
-		}
-		stateKeyBytes := key[6:] // Remove "state:" prefix (6 bytes)
-		if len(stateKeyBytes) != 31 {
-			return fmt.Errorf("invalid state key length after prefix removal: expected 31, got %d", len(stateKeyBytes))
-		}
-
-		var stateKey [31]byte
-		copy(stateKey[:], stateKeyBytes)
-
-		keyStr := string(key)
-		finalOps[keyStr] = struct {
-			kind  pebble.InternalKeyKind
-			key   [31]byte
-			value []byte
-		}{
-			kind:  kind,
-			key:   stateKey,
-			value: append([]byte{}, value...), // Copy value
-		}
+	iter := &BoltIterator{
+		cursor: cursor,
+		bucket: bucket,
+		valid:  false,
 	}
 
-	// Second pass: apply Merkle tree updates for final operations only
-	for _, op := range finalOps {
-		switch op.kind {
-		case pebble.InternalKeyKindSet:
-			if err := updateMerkleTreeForSet(batch, op.key, op.value); err != nil {
-				return fmt.Errorf("failed to update Merkle tree for set: %w", err)
-			}
-		case pebble.InternalKeyKindDelete:
-			if err := updateMerkleTreeForDelete(batch, op.key); err != nil {
-				return fmt.Errorf("failed to update Merkle tree for delete: %w", err)
-			}
-		default:
-			return fmt.Errorf("unsupported operation type: %d", op.kind)
+	if opts != nil {
+		iter.lowerBound = opts.LowerBound
+		iter.upperBound = opts.UpperBound
+	}
+
+	return iter, nil
+}
+
+func PrintTreeStructure(tx *TrackedTx) error {
+	fmt.Println("=== TREE STRUCTURE ===")
+
+	if tx.stateRoot == [32]byte{} {
+		fmt.Println("Empty tree (no state root)")
+		return nil
+	}
+
+	return printNodeRecursive(tx, tx.stateRoot, 0, "ROOT")
+}
+
+// PrintTreeStructure prints the entire tree structure for debugging
+func printNodeRecursive(tx *TrackedTx, hash [32]byte, depth int, pathStr string) error {
+	if hash == [32]byte{} {
+		return nil // Empty child
+	}
+
+	node, exists, err := GetTreeNode(tx, hash)
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	if !exists {
+		fmt.Printf("%sNOT FOUND: hash=%x\n", strings.Repeat("  ", depth), hash[:8])
+		return nil
+	}
+
+	indent := strings.Repeat("  ", depth)
+
+	if node.IsLeaf() {
+		fmt.Printf("%s%s: LEAF hash=%x key=%x value=%x\n",
+			indent, pathStr, hash[:8], node.OriginalKey[:8], node.OriginalValue[:8])
+	} else {
+		fmt.Printf("%s%s: INTERNAL hash=%x\n",
+			indent, pathStr, hash[:8])
+
+		// Recursively print children
+		if err := printNodeRecursive(tx, node.LeftHash, depth+1, pathStr+"0"); err != nil {
+			return err
+		}
+		if err := printNodeRecursive(tx, node.RightHash, depth+1, pathStr+"1"); err != nil {
+			return err
 		}
 	}
 

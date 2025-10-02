@@ -2,7 +2,10 @@ package header
 
 import (
 	"jam/pkg/constants"
+	"jam/pkg/serializer"
 	"jam/pkg/types"
+
+	"golang.org/x/crypto/blake2b"
 )
 
 // UnsignedHeader contains all header fields except the BlockSeal
@@ -21,6 +24,10 @@ type UnsignedHeader struct {
 type Header struct {
 	UnsignedHeader
 	BlockSeal types.BandersnatchVRFSignature // s
+}
+
+func (h Header) Hash() [32]byte {
+	return blake2b.Sum256(serializer.Serialize(&h))
 }
 
 type EpochMarker struct {

@@ -8,14 +8,14 @@ import (
 	"jam/pkg/constants"
 	"jam/pkg/errors"
 	"jam/pkg/serviceaccount"
+	"jam/pkg/staterepository"
 	"jam/pkg/types"
 	"jam/pkg/workreport"
 
-	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(batch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var gas types.GasValue
 	operandTuples := make([]OperandTuple, 0)
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
@@ -37,7 +37,7 @@ func SingleServiceAccumulation(batch *pebble.Batch, accumulationStateComponents 
 			}
 		}
 	}
-	return Accumulate(batch, accumulationStateComponents, timeslot, serviceIndex, gas, operandTuples, posteriorEntropyAccumulator)
+	return Accumulate(tx, accumulationStateComponents, serviceIndex, timeslot, gas, operandTuples, posteriorEntropyAccumulator)
 }
 
 type BEEFYCommitment struct {
@@ -45,7 +45,7 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -95,20 +95,9 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 		GasUsed      types.GasValue
 	}
 	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
-	n := make(serviceaccount.ServiceAccounts)
 
 	// Collect errors from goroutines
 	var accumulationErrors []error
-
-	// m will store the union of (original keys - result keys) for all service indices
-	// This represents all keys that were present in the original set but missing in at least one result
-	m := make(map[types.ServiceIndex]struct{})
-
-	// Keep track of original keys for reference
-	originalKeys := make(map[types.ServiceIndex]struct{})
-	for serviceIndex := range accumulationStateComponents.ServiceAccounts {
-		originalKeys[serviceIndex] = struct{}{}
-	}
 
 	// Map to store deferred transfers by service index
 	transfersByServiceIndex := make(map[types.ServiceIndex][]DeferredTransfer)
@@ -120,12 +109,26 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 
 	newServiceIndexCollisionDetected := false
 
+	var childTransactions []*staterepository.TrackedTx
+	var childTxMutex sync.Mutex
+
+	tx.SetMemoryMode(true)
+
 	for _, sIndex := range serviceIndicesWithPrivileged {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
+
+			// Create child transaction for this goroutine
+			childTx := tx.CreateChild()
+
+			// Store child transaction for later merging
+			childTxMutex.Lock()
+			childTransactions = append(childTransactions, childTx)
+			childTxMutex.Unlock()
+
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
-				batch,
+				childTx, // Use child transaction instead of parent
 				accumulationStateComponents,
 				timeslot,
 				workReports,
@@ -168,27 +171,25 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 				// Store transfers by service index
 				transfersByServiceIndex[sIndex] = transfers
 
-				// Add relevant service accounts to n
-				for serviceIndex, serviceAccount := range components.ServiceAccounts {
-					_, ok := accumulationStateComponents.ServiceAccounts[serviceIndex]
-					if serviceIndex == sIndex || !ok {
-						n[serviceIndex] = serviceAccount
-					}
-				}
-
-				// For each original key, check if it's missing in this result
-				// If missing, add it to m (the union of missing keys)
-				for origKey := range originalKeys {
-					if _, exists := components.ServiceAccounts[origKey]; !exists {
-						m[origKey] = struct{}{}
-					}
-				}
 			}
 
 			mu.Unlock()
 		}(sIndex)
 	}
 	wg.Wait()
+
+	tx.SetMemoryMode(false)
+
+	// Merge all child transactions back into parent after concurrent processing
+	for _, childTx := range childTransactions {
+		for key, val := range childTx.GetMemoryContents() {
+			if val == nil {
+				staterepository.DeleteStateKV(tx, key)
+			} else {
+				staterepository.SetStateKV(tx, key, val)
+			}
+		}
+	}
 
 	// Process special service results after all parallel work is complete
 
@@ -215,7 +216,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 
 	// Now process manager service
 	posteriorPrivilegedServices, err := ResolveManagerAccumulationResultPrivilegedServices(
-		batch,
+		tx,
 		accumulationStateComponents,
 		timeslot,
 		workReports,
@@ -243,21 +244,6 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 	// 3. Remove keys in m (keys that disappeared in at least one result)
 	finalServiceAccounts := make(serviceaccount.ServiceAccounts)
 
-	// First, add all original accounts
-	for serviceIndex, serviceAccount := range accumulationStateComponents.ServiceAccounts {
-		finalServiceAccounts[serviceIndex] = serviceAccount
-	}
-
-	// Then add/override with accounts from n
-	for serviceIndex, serviceAccount := range n {
-		finalServiceAccounts[serviceIndex] = serviceAccount
-	}
-
-	// Finally, remove any keys in m (keys that disappeared in at least one result)
-	for serviceIndex := range m {
-		delete(finalServiceAccounts, serviceIndex)
-	}
-
 	// Provisions preimage integration done below
 
 	for preimageProvision := range allPreimageProvisions {
@@ -267,16 +253,15 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 		}
 		blob := []byte(preimageProvision.BlobString)
 		preimage := blake2b.Sum256(blob)
-		if err := serviceAccount.SetPreimageLookupHistoricalStatus(batch, uint32(len(blob)), preimage, []types.Timeslot{timeslot}); err != nil {
+		if err := serviceAccount.SetPreimageLookupHistoricalStatus(tx, uint32(len(blob)), preimage, []types.Timeslot{timeslot}); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
-		if err := serviceAccount.SetPreimageForHash(batch, preimage, blob); err != nil {
+		if err := serviceAccount.SetPreimageForHash(tx, preimage, blob); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
 	}
 
 	return AccumulationStateComponents{
-		ServiceAccounts:          finalServiceAccounts,
 		UpcomingValidatorKeysets: posteriorUpcomingValidatorKeysets,
 		AuthorizersQueue:         posteriorAuthorizersQueue,
 		PrivilegedServices:       posteriorPrivilegedServices,
@@ -287,7 +272,7 @@ func ParallelizedAccumulation(batch *pebble.Batch, accumulationStateComponents *
 // and returns the updated privileged services configuration.
 // This function handles the designate service and assign services in parallel.
 func ResolveManagerAccumulationResultPrivilegedServices(
-	batch *pebble.Batch,
+	tx *staterepository.TrackedTx,
 	accumulationStateComponents *AccumulationStateComponents,
 	timeslot types.Timeslot,
 	workReports []workreport.WorkReport,
@@ -319,14 +304,18 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	// 2. exist in accumulation state components
 	for serviceIndex := range uniqueServiceIndices {
 		if _, exists := resultsByServiceIndex[serviceIndex]; !exists {
-			if _, exists := accumulationStateComponents.ServiceAccounts[serviceIndex]; !exists {
+			_, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
+			if err != nil {
+				return types.PrivilegedServices{}, err
+			}
+			if !exists {
 				continue
 			}
 			wg.Add(1)
 			go func(sIndex types.ServiceIndex) {
 				defer wg.Done()
 				result, _, _, _, _, err := SingleServiceAccumulation(
-					batch,
+					tx,
 					accumulationStateComponents,
 					timeslot,
 					workReports,
@@ -376,7 +365,7 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	}, nil
 }
 
-func OuterAccumulation(batch *pebble.Batch, gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
+func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -421,7 +410,7 @@ func OuterAccumulation(batch *pebble.Batch, gas types.GasValue, timeslot types.T
 
 		// Process this batch
 		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage, err := ParallelizedAccumulation(
-			batch,
+			tx,
 			&currentStateComponents,
 			timeslot,
 			workReports[startIdx:batchEndIdx],

@@ -56,5 +56,6 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/klauspost/reedsolomon v1.12.5
 	github.com/quic-go/quic-go v0.54.0
+	go.etcd.io/bbolt v1.4.3
 	golang.org/x/sys v0.35.0 // indirect
 )

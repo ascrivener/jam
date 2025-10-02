@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -383,7 +382,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 		t.Logf("Block %d imported in %v", i, importDuration)
 
 		if resp.StateRoot == nil {
-			t.Errorf("No state root returned from ImportBlock for %s", fileName)
+			t.Errorf("No state root returned from ImportBlock for %s: %s", fileName, *resp.Error)
 			failedTests = append(failedTests, fileName)
 			continue
 		}
@@ -395,8 +394,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 			failedTests = append(failedTests, fileName)
 			t.Errorf("State root mismatch for %s: expected %x, got %x", fileName, testVector.PostState.StateRoot, *resp.StateRoot)
 
-			headerHash := sha256.Sum256(serializer.Serialize(&testVector.Block.Header))
-			getState := fuzzinterface.GetState(headerHash)
+			getState := fuzzinterface.GetState(testVector.Block.Header.Hash())
 			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {
 				t.Errorf("Failed to send GetState message for %s: %v", fileName, err)
@@ -430,7 +428,13 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 			// Also compare tree KVs to verify tree structure
-			treeKeys, err := staterepository.GetAllKeysFromTree(nil)
+			readTx, err := staterepository.NewTrackedTx(*resp.StateRoot)
+			if err != nil {
+				t.Errorf("Failed to create read transaction: %v", err)
+				return
+			}
+			defer readTx.Rollback()
+			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
 			} else {
@@ -443,7 +447,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 				compareTreeKeys(t, expectedKeys, treeKeys)
 				// Print tree structure for debugging
 				fmt.Println("=== DEBUGGING TREE STRUCTURE ===")
-				if err := staterepository.PrintTreeStructure(nil); err != nil {
+				if err := staterepository.PrintTreeStructure(readTx); err != nil {
 					t.Errorf("Failed to print tree structure: %v", err)
 				}
 			}
@@ -484,7 +488,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 	for _, testDir := range testDirs {
 		//"1756548459"
 		// "1757421101"
-		// if !strings.Contains(testDir, "1757421101") {
+		// if !strings.Contains(testDir, "1756548667") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)
@@ -624,8 +628,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 		if *resp.StateRoot != testVector.PostState.StateRoot {
 			t.Errorf("State root mismatch for %s: %x != %x", testFileName, *resp.StateRoot, testVector.PostState.StateRoot)
-			headerHash := sha256.Sum256(serializer.Serialize(&testVector.Block.Header))
-			getState := fuzzinterface.GetState(headerHash)
+			getState := fuzzinterface.GetState(testVector.Block.Header.Hash())
 			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
 			if err != nil {
 				t.Errorf("Failed to send GetState message for %s: %v", testFileName, err)
@@ -659,7 +662,13 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 			// Also compare tree KVs to verify tree structure
-			treeKeys, err := staterepository.GetAllKeysFromTree(nil)
+			readTx, err := staterepository.NewTrackedTx(*resp.StateRoot)
+			if err != nil {
+				t.Errorf("Failed to create read transaction: %v", err)
+				return
+			}
+			defer readTx.Rollback()
+			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
 			} else {
