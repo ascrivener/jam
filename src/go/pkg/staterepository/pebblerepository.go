@@ -34,6 +34,18 @@ func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
 		// Disable WAL (write-ahead log) for tests
 		opts.WALBytesPerSync = 0
 
+		opts.DisableWAL = true
+
+		// Reduce compaction overhead
+		opts.MaxConcurrentCompactions = func() int { return 1 }
+
+		// Increase L0 thresholds to reduce background work
+		opts.L0CompactionThreshold = 32
+		opts.L0StopWritesThreshold = 64
+
+		// Disable table property collectors
+		opts.TablePropertyCollectors = nil
+
 		// More aggressive caching
 		opts.Cache = pebble.NewCache(64 << 20) // 64MB cache
 		defer opts.Cache.Unref()

@@ -515,7 +515,7 @@ func (tx *TrackedTx) Commit() error {
 	if repo == nil {
 		return fmt.Errorf("global repository not initialized")
 	}
-	return repo.db.Apply(tx.batch, nil)
+	return repo.db.Apply(tx.batch, &pebble.WriteOptions{Sync: false})
 }
 
 func (tx *TrackedTx) GetStateRoot() [32]byte {
