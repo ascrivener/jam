@@ -471,7 +471,7 @@ func setKV(tx *TrackedTx, bucketName string, key, value []byte) error {
 
 	prefixedKey := append([]byte(bucketName+":"), key...)
 
-	return tx.batch.Set(prefixedKey, value, nil)
+	return tx.batch.Set(prefixedKey, value, &pebble.WriteOptions{Sync: false})
 }
 
 func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {

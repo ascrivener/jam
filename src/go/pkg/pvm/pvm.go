@@ -276,7 +276,10 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 			len := uint64(pvm.State.Registers[8])
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, start, len, ram.NoWrap) {
 				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap, false)
-				return types.NewExecutionExitReasonBlob(blob), gasUsed, nil
+				// IMPORTANT: copy blob here to avoid returning a reference to RAM's internal storage
+				blobCopy := make([]byte, len)
+				copy(blobCopy, blob)
+				return types.NewExecutionExitReasonBlob(blobCopy), gasUsed, nil
 			} else {
 				return types.NewExecutionExitReasonBlob([]byte{}), gasUsed, nil
 			}
