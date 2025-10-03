@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/ed25519"
+	"golang.org/x/sync/errgroup"
 )
 
 type Block struct {
@@ -456,53 +457,97 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 	// Calculate time slot position within epoch (shared between both verification paths)
 	slotIndexInEpoch := b.Header.TimeSlot % types.Timeslot(constants.NumTimeslotsPerEpoch)
 	authorKey := postState.ValidatorKeysetsActive[b.Header.BandersnatchBlockAuthorIndex].ToBandersnatchPublicKey()
-	actualVRFOutput, err := bandersnatch.BandersnatchVRFSignatureOutput(b.Header.BlockSeal)
 
-	if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
-		// (6.15)
-		// Verify block seal matches the expected ticket's VRF output
-		expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
+	var g errgroup.Group
+	var vrfGroup errgroup.Group // Separate group for VRF dependency
+	var actualVRFOutput [32]byte
+
+	// VRF extraction and validation
+	vrfGroup.Go(func() error {
+		output, err := bandersnatch.BandersnatchVRFSignatureOutput(b.Header.BlockSeal)
 		if err != nil {
-			return errors.WrapProtocolError(err, "failed to extract VRF output from block seal")
+			return err
 		}
+		actualVRFOutput = output
 
-		if expectedTicket.VerifiablyRandomIdentifier != actualVRFOutput {
-			return errors.ProtocolErrorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
+		if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
+			expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
+			if expectedTicket.VerifiablyRandomIdentifier != actualVRFOutput {
+				return errors.ProtocolErrorf("block seal VRF output does not match the expected ticket's identifier in sealing key sequence")
+			}
 		}
+		return nil
+	})
 
-		verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
-		if err != nil {
-			return errors.WrapProtocolError(err, "failed to verify block seal")
+	// Block seal verification
+	g.Go(func() error {
+		if postState.SafroleBasicState.SealingKeySequence.IsSealKeyTickets() {
+			expectedTicket := postState.SafroleBasicState.SealingKeySequence.SealKeyTickets[slotIndexInEpoch]
+			verified, err := bandersnatch.VerifySignature(authorKey, append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[3][:]...), byte(expectedTicket.EntryIndex)), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
+			if err != nil {
+				return errors.WrapProtocolError(err, "failed to verify block seal")
+			}
+			if !verified {
+				return errors.ProtocolErrorf("block seal verification failed")
+			}
+			return nil
+		} else {
+			expectedKey := postState.SafroleBasicState.SealingKeySequence.BandersnatchKeys[slotIndexInEpoch]
+			if expectedKey != authorKey {
+				return errors.ProtocolErrorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
+			}
+			verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
+			if err != nil {
+				return errors.WrapProtocolError(err, "failed to verify block seal")
+			}
+			if !verified {
+				return errors.ProtocolErrorf("block seal verification failed")
+			}
+			return nil
 		}
-		if !verified {
-			return errors.ProtocolErrorf("block seal verification failed")
-		}
-	} else {
-		// (6.16)
-		// Verify block author matches the expected Bandersnatch key
-		expectedKey := postState.SafroleBasicState.SealingKeySequence.BandersnatchKeys[slotIndexInEpoch]
+	})
 
-		if expectedKey != authorKey {
-			return errors.ProtocolErrorf("block author's Bandersnatch key does not match the expected key in sealing key sequence")
-		}
+	// (6.29)
+	for _, ticket := range b.Extrinsics.Tickets {
+		g.Go(func(t extrinsics.Ticket) func() error {
+			return func() error {
+				if t.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+					return errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
+				}
 
-		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_fallback_seal"), postState.EntropyAccumulator[3][:]...), serializer.Serialize(&b.Header.UnsignedHeader), b.Header.BlockSeal)
-		if err != nil {
-			return errors.WrapProtocolError(err, "failed to verify block seal")
-		}
-		if !verified {
-			return errors.ProtocolErrorf("block seal verification failed")
-		}
+				verified, err := bandersnatch.VerifyRingSignature(
+					postState.SafroleBasicState.EpochTicketSubmissionsRoot,
+					append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(t.EntryIndex)),
+					[]byte{},
+					t.ValidityProof,
+				)
+				if err != nil {
+					return err
+				}
+				if !verified {
+					return errors.ProtocolErrorf("ticket signature verification failed")
+				}
+				return nil
+			}
+		}(ticket))
+	}
+
+	// Wait for vrf goroutine and return first error (if any)
+	if err := vrfGroup.Wait(); err != nil {
+		return err
 	}
 
 	// (6.17)
-	verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_entropy"), actualVRFOutput[:]...), []byte{}, b.Header.VRFSignature)
-	if err != nil {
-		return errors.WrapProtocolError(err, "failed to verify block VRF signature")
-	}
-	if !verified {
-		return errors.ProtocolErrorf("block VRF signature verification failed")
-	}
+	g.Go(func() error {
+		verified, err := bandersnatch.VerifySignature(authorKey, append([]byte("jam_entropy"), actualVRFOutput[:]...), []byte{}, b.Header.VRFSignature)
+		if err != nil {
+			return errors.WrapProtocolError(err, "failed to verify block VRF signature")
+		}
+		if !verified {
+			return errors.ProtocolErrorf("block VRF signature verification failed")
+		}
+		return nil
+	})
 
 	// (6.27)
 	if b.Header.TimeSlot.EpochIndex() > priorState.MostRecentBlockTimeslot.EpochIndex() {
@@ -547,41 +592,6 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 	} else {
 		if b.Header.WinningTicketsMarker != nil {
 			return errors.ProtocolErrorf("winning tickets marker should be nil")
-		}
-	}
-	// (6.29)
-	errChan := make(chan error, len(b.Extrinsics.Tickets))
-
-	for _, ticket := range b.Extrinsics.Tickets {
-		go func(t extrinsics.Ticket) {
-			if t.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
-				errChan <- errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
-				return
-			}
-
-			verified, err := bandersnatch.VerifyRingSignature(
-				postState.SafroleBasicState.EpochTicketSubmissionsRoot,
-				append(append([]byte("jam_ticket_seal"), postState.EntropyAccumulator[2][:]...), byte(t.EntryIndex)),
-				[]byte{},
-				t.ValidityProof,
-			)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			if !verified {
-				errChan <- errors.ProtocolErrorf("ticket signature verification failed")
-				return
-			}
-
-			errChan <- nil
-		}(ticket)
-	}
-
-	// Check results
-	for i := 0; i < len(b.Extrinsics.Tickets); i++ {
-		if err := <-errChan; err != nil {
-			return err
 		}
 	}
 
@@ -670,6 +680,11 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 			}
 		}
 	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
