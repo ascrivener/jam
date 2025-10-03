@@ -95,9 +95,6 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[instruction.Ra] + instruction.Vx)
-		if fileLogger != nil {
-			fileLogger.Printf("jump_ind: targetAddr=%d, ra=%d, vx=%d", targetAddr, pvm.State.Registers[instruction.Ra], instruction.Vx)
-		}
 		return djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.InstructionSlice)
 	case 51: // load_imm
 		pvm.State.Registers[instruction.Ra] = instruction.Vx
@@ -541,16 +538,7 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 	case 211: // xor
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] ^ pvm.State.Registers[instruction.Rb]
 	case 212: // or
-		oldRd := pvm.State.Registers[instruction.Rd]
-		operandA := pvm.State.Registers[instruction.Ra] // Capture before operation
-		operandB := pvm.State.Registers[instruction.Rb] // Capture before operation
-
-		pvm.State.Registers[instruction.Rd] = operandA | operandB
-
-		if fileLogger != nil {
-			fileLogger.Printf("or: reg[%d] = 0x%x (reg[%d]=0x%x | reg[%d]=0x%x) [was 0x%x]",
-				instruction.Rd, pvm.State.Registers[instruction.Rd], instruction.Ra, operandA, instruction.Rb, operandB, oldRd)
-		}
+		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] | pvm.State.Registers[instruction.Rb]
 	case 213: // mul_upper_s_s
 		pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(
 			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])),
@@ -670,22 +658,12 @@ func handleStoreIndU64(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.RAM.MutateRange(addr, 8, ram.Wrap, true, func(dest []byte) {
 		binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 	})
-
-	if fileLogger != nil {
-		fileLogger.Printf("store_ind_u64: RAM[%d:%d] = 0x%x (from reg[%d]=%d, base reg[%d]=%d + offset=%d)",
-			addr, addr+8, pvm.State.Registers[instruction.Ra], instruction.Ra, pvm.State.Registers[instruction.Ra], instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
-	}
 }
 
 func handleLoadIndU8(pvm *PVM, instruction ParsedInstruction) {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
 	value := pvm.State.RAM.Inspect(addr, ram.Wrap, true)
 	pvm.State.Registers[instruction.Ra] = types.Register(value)
-
-	if fileLogger != nil {
-		fileLogger.Printf("load_ind_u8: reg[%d] = RAM[%d] = 0x%x (from reg[%d]=%d + offset=%d)",
-			instruction.Ra, addr, value, instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
-	}
 }
 
 func handleLoadIndI8(pvm *PVM, instruction ParsedInstruction) {
@@ -720,11 +698,6 @@ func handleLoadIndU64(pvm *PVM, instruction ParsedInstruction) {
 	data := pvm.State.RAM.InspectRange(addr, 8, ram.Wrap, true)
 	value := types.Register(binary.LittleEndian.Uint64(data))
 	pvm.State.Registers[instruction.Ra] = value
-
-	if fileLogger != nil {
-		fileLogger.Printf("load_ind_u64: reg[%d] = RAM[%d:%d] = 0x%x (from reg[%d]=%d + offset=%d)",
-			instruction.Ra, addr, addr+8, value, instruction.Rb, pvm.State.Registers[instruction.Rb], instruction.Vx)
-	}
 }
 
 func handleAddImm32(pvm *PVM, instruction ParsedInstruction) {
@@ -830,16 +803,10 @@ func handleMulImm64(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleShloLImm64(pvm *PVM, instruction ParsedInstruction) {
-	oldValue := pvm.State.Registers[instruction.Rb]
 	shiftAmount := instruction.Vx % 64
 	shifted := uint64(pvm.State.Registers[instruction.Rb] << shiftAmount)
 	result := signExtendImmediate(8, shifted)
 	pvm.State.Registers[instruction.Ra] = result
-
-	if fileLogger != nil {
-		fileLogger.Printf("shlo_l_imm_64: reg[%d] = 0x%x (reg[%d]=0x%x << %d) [shifted=0x%x, sign_extended=0x%x]",
-			instruction.Ra, result, instruction.Rb, oldValue, shiftAmount, shifted, result)
-	}
 }
 
 func handleShloRImm64(pvm *PVM, instruction ParsedInstruction) {

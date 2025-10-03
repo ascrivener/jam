@@ -3,7 +3,6 @@ package pvm
 import (
 	"log"
 	"math/bits"
-	"os"
 
 	"jam/pkg/constants"
 	"jam/pkg/ram"
@@ -28,18 +27,6 @@ type InstructionInfo struct {
 var dispatchTable [256]*InstructionInfo
 
 var terminationOpcodes [256]bool
-
-var fileLogger *log.Logger
-
-func InitFileLogger(filename string) error {
-	// Open the file with TRUNC flag instead of APPEND to clear existing content
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-	if err != nil {
-		return err
-	}
-	fileLogger = log.New(file, "", log.LstdFlags)
-	return nil
-}
 
 func signExtendImmediate(n int, x uint64) types.Register {
 	// Special case for n=0: no sign extension needed
@@ -90,44 +77,25 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 }
 
 func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, parsedInstructions []ParsedInstruction) (ExitReason, types.Register) {
-	if fileLogger != nil {
-		fileLogger.Printf("djump: a=%d, defaultNextPC=%d, dynamicJumpTableLen=%d", a, defaultNextInstructionCounter, len(dynamicJumpTable))
-	}
 
 	if a == (1<<32)-(1<<16) { // ??
-		if fileLogger != nil {
-			fileLogger.Printf("djump: HALT condition (a == %d)", (1<<32)-(1<<16))
-		}
 		return ExitReasonHalt, defaultNextInstructionCounter
 	}
 
 	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
-		if fileLogger != nil {
-			fileLogger.Printf("djump: Invalid jump address a=%d", a)
-		}
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
 	index := (a / uint32(constants.DynamicAddressAlignmentFactor)) - 1
 	target := dynamicJumpTable[index]
 
-	if fileLogger != nil {
-		fileLogger.Printf("djump: index=%d, target=%d", index, target)
-	}
-
 	if int(target) >= len(parsedInstructions) {
-		if fileLogger != nil {
-			fileLogger.Printf("djump: Target %d is out of range", target)
-		}
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
 	targetInstruction := parsedInstructions[target]
 
 	if !targetInstruction.IsBeginningBasicBlock {
-		if fileLogger != nil {
-			fileLogger.Printf("djump: Target %d is not a valid basic block start", target)
-		}
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 

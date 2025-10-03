@@ -221,7 +221,10 @@ func Write(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, se
 		} else {
 			// Write the value to the account storage
 			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
-			if err := serviceAccount.SetServiceStorageItem(tx, keyBytes, valueBytes); err != nil {
+			// IMPORTANT: make sure to copy because valueBytes is an alias to page memory which is cleared later
+			valueCopy := make([]byte, len(valueBytes))
+			copy(valueCopy, valueBytes)
+			if err := serviceAccount.SetServiceStorageItem(tx, keyBytes, valueCopy); err != nil {
 				return ExitReason{}, err
 			}
 		}

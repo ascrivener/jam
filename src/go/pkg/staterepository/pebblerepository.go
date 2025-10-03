@@ -3,9 +3,9 @@ package staterepository
 import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
-	"os"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -15,20 +15,34 @@ type PebbleStateRepository struct {
 }
 
 func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
-	if dbPath == "" {
-		// Create a temporary directory for in-memory-like database
-		tmpDir, err := os.MkdirTemp("", "jam_temp_*")
-		if err != nil {
-			return nil, err
-		}
-		dbPath = tmpDir
-	}
-
-	db, err := pebble.Open(dbPath, &pebble.Options{
+	opts := &pebble.Options{
 		MemTableSize: 64 << 20,
 		MaxOpenFiles: 1000,
-	})
+	}
 
+	if dbPath == "" {
+		// Use in-memory filesystem for tests
+		opts.FS = vfs.NewMem()
+		dbPath = "/" // Root path for in-memory FS
+
+		// Disable background compactions
+		opts.DisableAutomaticCompactions = true
+
+		// Larger memory tables (more writes before flush)
+		opts.MemTableSize = 128 << 20 // 128MB instead of 64MB
+
+		// Disable WAL (write-ahead log) for tests
+		opts.WALBytesPerSync = 0
+
+		// More aggressive caching
+		opts.Cache = pebble.NewCache(64 << 20) // 64MB cache
+		defer opts.Cache.Unref()
+
+		// Disable bloom filters
+		opts.Filters = nil
+	}
+
+	db, err := pebble.Open(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}

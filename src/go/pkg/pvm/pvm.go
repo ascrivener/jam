@@ -20,7 +20,6 @@ type ParsedInstruction struct {
 }
 
 type PVM struct {
-	Instructions       []byte
 	InstructionsLength int
 	InstructionCounter types.Register
 	DynamicJumpTable   []types.Register
@@ -37,7 +36,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	instructionSlice := formParsedInstructions(instructions, opcodes)
 
 	return &PVM{
-		Instructions:       instructions,
 		InstructionsLength: len(instructions),
 		InstructionCounter: instructionCounter,
 		DynamicJumpTable:   dynamicJumpTable,

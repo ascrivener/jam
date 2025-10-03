@@ -228,9 +228,7 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAcc
 
 	if isSinglePage {
 		page := r.getOrCreatePage(pageNum)
-		result := make([]byte, length)
-		copy(result, page[pageOffset:pageOffset+length])
-		return result
+		return page[pageOffset : pageOffset+length]
 	} else {
 		slices := r.pageIterator(index, length, mode)
 
