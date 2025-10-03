@@ -236,7 +236,7 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			tx.Rollback()
+			tx.Close()
 		}
 	}()
 	if err := (&initialize.State).OverwriteCurrentState(tx); err != nil {
@@ -309,7 +309,7 @@ func (s *Server) handleGetState(getStateData []byte) (ResponseMessage, error) {
 	if err != nil {
 		return ResponseMessage{}, err
 	}
-	defer readTx.Rollback()
+	defer readTx.Close()
 	block, err := block.Get(readTx, getState)
 	if err != nil {
 		return ResponseMessage{}, err

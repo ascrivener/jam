@@ -81,7 +81,6 @@ func GetStateFromKVs(kvs merklizer.State) (*State, error) {
 // dataSource interface abstracts where we get state data from
 type dataSource interface {
 	getValue(key [31]byte) ([]byte, bool, error)
-	iterateServiceAccounts() (staterepository.Iterator, error)
 }
 
 // repositoryDataSource reads from the repository or batch
@@ -91,16 +90,6 @@ type repositoryDataSource struct {
 
 func (ds *repositoryDataSource) getValue(key [31]byte) ([]byte, bool, error) {
 	return staterepository.GetStateKV(ds.tx, key)
-}
-
-func (ds *repositoryDataSource) iterateServiceAccounts() (staterepository.Iterator, error) {
-	iter, err := staterepository.NewIter(ds.tx, "state", &staterepository.IterOptions{
-		LowerBound: []byte{255},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return iter, nil
 }
 
 // kvDataSource reads from a key-value map
@@ -114,54 +103,6 @@ func (ds *kvDataSource) getValue(key [31]byte) ([]byte, bool, error) {
 	}
 	// Return nil for missing keys (this is fine for test vectors)
 	return nil, false, nil
-}
-
-func (ds *kvDataSource) iterateServiceAccounts() (staterepository.Iterator, error) {
-	return &kvIterator{
-		kvMap: ds.kvMap,
-		keys:  nil, // will be populated on first call
-		index: -1,
-	}, nil
-}
-
-// kvIterator iterates over service account keys in a KV map
-type kvIterator struct {
-	kvMap map[[31]byte][]byte
-	keys  [][31]byte // all keys
-	index int
-}
-
-func (ki *kvIterator) First() ([]byte, []byte) {
-	if ki.keys == nil {
-		// Build all keys list on first access
-		ki.keys = make([][31]byte, 0)
-		for key := range ki.kvMap {
-			ki.keys = append(ki.keys, key)
-		}
-	}
-
-	ki.index = 0
-	if len(ki.keys) == 0 {
-		return nil, nil
-	}
-	return ki.keys[ki.index][:], ki.kvMap[ki.keys[ki.index]]
-}
-
-func (ki *kvIterator) Valid() bool {
-	return ki.index >= 0 && ki.index < len(ki.keys)
-}
-
-func (ki *kvIterator) Next() ([]byte, []byte) {
-	ki.index++
-	if !ki.Valid() {
-		return nil, nil
-	}
-	return ki.keys[ki.index][:], ki.kvMap[ki.keys[ki.index]]
-}
-
-func (ki *kvIterator) Close() error {
-	// No resources to clean up for in-memory iterator
-	return nil
 }
 
 func getStateFromDataSource(ds dataSource) (*State, error) {

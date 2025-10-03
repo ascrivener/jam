@@ -5,7 +5,7 @@ import (
 )
 
 var (
-	globalRepo     *BoltStateRepository
+	globalRepo     *PebbleStateRepository
 	globalRepoOnce sync.Once
 	globalRepoMu   sync.RWMutex
 )
@@ -15,14 +15,14 @@ var (
 func InitializeGlobalRepository(dbPath string) error {
 	var err error
 	globalRepoOnce.Do(func() {
-		globalRepo, err = newBoltStateRepository(dbPath)
+		globalRepo, err = newPebbleStateRepository(dbPath)
 	})
 	return err
 }
 
 // GetGlobalRepository returns the global repository instance
 // Returns nil if the repository hasn't been initialized
-func GetGlobalRepository() *BoltStateRepository {
+func GetGlobalRepository() *PebbleStateRepository {
 	globalRepoMu.RLock()
 	defer globalRepoMu.RUnlock()
 	return globalRepo
@@ -50,7 +50,7 @@ func CloseGlobalRepository() error {
 
 // SetGlobalRepository allows setting the global repository instance
 // This is primarily for testing purposes
-func SetGlobalRepository(repo *BoltStateRepository) {
+func SetGlobalRepository(repo *PebbleStateRepository) {
 	globalRepoMu.Lock()
 	defer globalRepoMu.Unlock()
 	globalRepo = repo

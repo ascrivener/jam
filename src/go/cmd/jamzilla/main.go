@@ -111,7 +111,7 @@ func main() {
 	defer func() {
 		if !txSuccess {
 			// Rollback if not marked successful
-			tx.Rollback()
+			tx.Close()
 		}
 	}()
 

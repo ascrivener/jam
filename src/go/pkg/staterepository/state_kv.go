@@ -10,7 +10,7 @@ import (
 
 	"maps"
 
-	bolt "go.etcd.io/bbolt"
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -440,15 +440,25 @@ func getKV(tx *TrackedTx, bucketName string, key []byte) ([]byte, bool, error) {
 	if tx == nil {
 		return nil, false, fmt.Errorf("transaction cannot be nil")
 	}
-	bucket := tx.Bucket([]byte(bucketName))
-	if bucket == nil {
-		return nil, false, fmt.Errorf("%s bucket not found", bucketName)
+
+	repo := GetGlobalRepository()
+	if repo == nil {
+		return nil, false, fmt.Errorf("global repository not initialized")
 	}
-	val := bucket.Get(key)
-	if val == nil {
+
+	// Create prefixed key: "bucketName:key"
+	prefixedKey := append([]byte(bucketName+":"), key...)
+
+	val, closer, err := repo.db.Get(prefixedKey)
+	if err == pebble.ErrNotFound {
 		return nil, false, nil // Key not found
 	}
-	// Make a copy since BoltDB values are only valid during transaction
+	if err != nil {
+		return nil, false, err
+	}
+	defer closer.Close()
+
+	// Make a copy since Pebble values are only valid until closer.Close()
 	dataCopy := make([]byte, len(val))
 	copy(dataCopy, val)
 	return dataCopy, true, nil
@@ -458,27 +468,25 @@ func setKV(tx *TrackedTx, bucketName string, key, value []byte) error {
 	if tx == nil {
 		return fmt.Errorf("transaction cannot be nil")
 	}
-	bucket := tx.Bucket([]byte(bucketName))
-	if bucket == nil {
-		return fmt.Errorf("%s bucket not found", bucketName)
-	}
-	return bucket.Put(key, value)
+
+	prefixedKey := append([]byte(bucketName+":"), key...)
+
+	return tx.batch.Set(prefixedKey, value, nil)
 }
 
 func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
 	if tx == nil {
 		return fmt.Errorf("transaction cannot be nil")
 	}
-	bucket := tx.Bucket([]byte(bucketName))
-	if bucket == nil {
-		return fmt.Errorf("%s bucket not found", bucketName)
-	}
-	return bucket.Delete(key)
+
+	prefixedKey := append([]byte(bucketName+":"), key...)
+
+	return tx.batch.Delete(prefixedKey, nil)
 }
 
-// TrackedTx wraps bolt.Tx and tracks state changes
+// TrackedTx wraps pebble.Batch and tracks state changes
 type TrackedTx struct {
-	*bolt.Tx
+	batch     *pebble.Batch
 	stateRoot [32]byte
 	memory    map[[31]byte][]byte
 	treeNodes map[[32]byte]*Node
@@ -490,16 +498,24 @@ func NewTrackedTx(stateRoot [32]byte) (*TrackedTx, error) {
 	if repo == nil {
 		return nil, fmt.Errorf("global repository not initialized")
 	}
-	tx, err := repo.db.Begin(true) // writable transaction
-	if err != nil {
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
 	return &TrackedTx{
-		Tx:        tx,
+		batch:     repo.db.NewBatch(),
 		stateRoot: stateRoot,
 		memory:    make(map[[31]byte][]byte),
 		treeNodes: make(map[[32]byte]*Node),
 	}, nil
+}
+
+func (tx *TrackedTx) Close() error {
+	return tx.batch.Close()
+}
+
+func (tx *TrackedTx) Commit() error {
+	repo := GetGlobalRepository()
+	if repo == nil {
+		return fmt.Errorf("global repository not initialized")
+	}
+	return repo.db.Apply(tx.batch, nil)
 }
 
 func (tx *TrackedTx) GetStateRoot() [32]byte {
@@ -512,7 +528,7 @@ func (tx *TrackedTx) SetStateRoot(stateRoot [32]byte) {
 
 func (tx *TrackedTx) CreateChild() *TrackedTx {
 	child := &TrackedTx{
-		Tx:        tx.Tx,
+		batch:     tx.batch,
 		stateRoot: tx.stateRoot,
 		memory:    make(map[[31]byte][]byte),
 	}
@@ -735,23 +751,30 @@ func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
 func GetAllKeysFromTree(tx *TrackedTx) ([][31]byte, error) {
 	var keys [][31]byte
 
-	// Get the tree bucket
-	bucket := tx.Bucket([]byte("tree"))
-	if bucket == nil {
-		return keys, nil // Empty tree if bucket doesn't exist
+	repo := GetGlobalRepository()
+	if repo == nil {
+		return keys, fmt.Errorf("global repository not initialized")
 	}
 
-	// Create cursor to iterate through all key-value pairs in tree bucket
-	cursor := bucket.Cursor()
+	// Create iterator for "tree:" prefixed keys
+	prefix := []byte("tree:")
+	iter, err := repo.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: append(prefix, 0xff), // End of "tree:" range
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
 
 	// Iterate through all tree nodes and collect leaves
-	for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-		// Make copies since BoltDB data is only valid during transaction
-		path := make([]byte, len(k))
-		copy(path, k)
+	for iter.First(); iter.Valid(); iter.Next() {
+		// Make copies since Pebble data is only valid during iteration
+		key := make([]byte, len(iter.Key()))
+		copy(key, iter.Key())
 
-		value := make([]byte, len(v))
-		copy(value, v)
+		value := make([]byte, len(iter.Value()))
+		copy(value, iter.Value())
 
 		node := &Node{}
 		if err := serializer.Deserialize(value, node); err != nil {
@@ -764,7 +787,7 @@ func GetAllKeysFromTree(tx *TrackedTx) ([][31]byte, error) {
 		}
 	}
 
-	return keys, nil
+	return keys, iter.Error()
 }
 
 // IterOptions represents iteration options (simplified from Pebble)
@@ -778,64 +801,6 @@ type Iterator interface {
 	Next() ([]byte, []byte)
 	Valid() bool
 	Close() error
-}
-
-// BoltIterator wraps bolt cursor for iteration
-type BoltIterator struct {
-	cursor     *bolt.Cursor
-	bucket     *bolt.Bucket
-	lowerBound []byte
-	upperBound []byte
-	valid      bool
-}
-
-func (iter *BoltIterator) First() ([]byte, []byte) {
-	var k, v []byte
-	if iter.lowerBound != nil {
-		k, v = iter.cursor.Seek(iter.lowerBound)
-		iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
-	} else {
-		k, v = iter.cursor.First()
-		iter.valid = k != nil
-	}
-	return k, v
-}
-
-func (iter *BoltIterator) Next() ([]byte, []byte) {
-	k, v := iter.cursor.Next()
-	iter.valid = k != nil && (iter.upperBound == nil || bytes.Compare(k, iter.upperBound) < 0)
-	return k, v
-}
-
-func (iter *BoltIterator) Valid() bool {
-	return iter.valid
-}
-
-func (iter *BoltIterator) Close() error {
-	return nil // Bolt cursors don't need explicit closing
-}
-
-// NewIter creates a new iterator for the given bucket
-func NewIter(tx *TrackedTx, bucketName string, opts *IterOptions) (Iterator, error) {
-	bucket := tx.Bucket([]byte(bucketName))
-	if bucket == nil {
-		return nil, fmt.Errorf("%s bucket not found", bucketName)
-	}
-
-	cursor := bucket.Cursor()
-
-	iter := &BoltIterator{
-		cursor: cursor,
-		bucket: bucket,
-		valid:  false,
-	}
-
-	if opts != nil {
-		iter.lowerBound = opts.LowerBound
-		iter.upperBound = opts.UpperBound
-	}
-
-	return iter, nil
 }
 
 func PrintTreeStructure(tx *TrackedTx) error {

@@ -259,7 +259,7 @@ func (n *Node) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create read transaction: %w", err)
 	}
-	defer readTx.Rollback()
+	defer readTx.Close()
 	state, err := state.GetState(readTx)
 	if err != nil {
 		return fmt.Errorf("failed to get state: %w", err)

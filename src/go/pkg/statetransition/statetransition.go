@@ -69,7 +69,7 @@ func STF(curBlock block.Block) ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
 	}
 	// Use a separate txErr variable to track transaction errors
-	defer tx.Rollback()
+	defer tx.Close()
 
 	parentBlock, err := block.Get(tx, curBlock.Header.ParentHash)
 	// (5.2) implicitly, there is no block whose header hash is equal to b.Header.ParentHash

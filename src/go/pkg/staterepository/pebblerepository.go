@@ -5,80 +5,38 @@ import (
 	"jam/pkg/types"
 	"os"
 
-	bolt "go.etcd.io/bbolt"
+	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
 )
 
-// BoltStateRepository implements StateRepository using BoltDB
-type BoltStateRepository struct {
-	db *bolt.DB
+// PebbleStateRepository implements StateRepository using PebbleDB
+type PebbleStateRepository struct {
+	db *pebble.DB
 }
 
-// newBoltStateRepository creates a new BoltDB-backed repository
-func newBoltStateRepository(dbPath string) (*BoltStateRepository, error) {
-	var db *bolt.DB
-	var err error
-
+func newPebbleStateRepository(dbPath string) (*PebbleStateRepository, error) {
 	if dbPath == "" {
-		// Create a temporary file for in-memory-like database
-		tmpFile, err := os.CreateTemp("", "jam_temp_*.db")
+		// Create a temporary directory for in-memory-like database
+		tmpDir, err := os.MkdirTemp("", "jam_temp_*")
 		if err != nil {
 			return nil, err
 		}
-		tmpFile.Close() // Close the file handle, BoltDB will open it
-		dbPath = tmpFile.Name()
-
-		// Optionally, schedule cleanup
-		defer os.Remove(dbPath) // Remove when done
+		dbPath = tmpDir
 	}
 
-	db, err = bolt.Open(dbPath, 0600, &bolt.Options{
-		NoSync: true,
+	db, err := pebble.Open(dbPath, &pebble.Options{
+		MemTableSize: 64 << 20,
+		MaxOpenFiles: 1000,
 	})
 
 	if err != nil {
 		return nil, err
 	}
 
-	// Create required buckets
-	err = db.Update(func(tx *bolt.Tx) error {
-		// Create state bucket for key-value storage
-		if _, err := tx.CreateBucketIfNotExists([]byte("state")); err != nil {
-			return err
-		}
-		// Create tree bucket for Merkle tree nodes
-		if _, err := tx.CreateBucketIfNotExists([]byte("tree")); err != nil {
-			return err
-		}
-		// Create blocks bucket for block storage
-		if _, err := tx.CreateBucketIfNotExists([]byte("blocks")); err != nil {
-			return err
-		}
-		// Create meta bucket for metadata (chain tip, etc.)
-		if _, err := tx.CreateBucketIfNotExists([]byte("meta")); err != nil {
-			return err
-		}
-		// Create preimage bucket for preimage storage
-		if _, err := tx.CreateBucketIfNotExists([]byte("preimage")); err != nil {
-			return err
-		}
-		// Create workreport bucket for work report storage
-		if _, err := tx.CreateBucketIfNotExists([]byte("workreport")); err != nil {
-			return err
-		}
-		return nil
-	})
-
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	return &BoltStateRepository{
+	return &PebbleStateRepository{
 		db: db,
 	}, nil
 }
-
 func MakeComponentKey(i uint8) [31]byte {
 	return stateKeyConstructor(i, types.ServiceIndex(0))
 }
@@ -154,7 +112,7 @@ func makeHistoricalStatusKey(serviceIndex types.ServiceIndex, blobLength uint32,
 }
 
 // Close closes the database
-func (r *BoltStateRepository) Close() error {
+func (r *PebbleStateRepository) Close() error {
 	if r.db != nil {
 		return r.db.Close()
 	}

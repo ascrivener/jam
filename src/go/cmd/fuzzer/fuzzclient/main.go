@@ -433,7 +433,7 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 				t.Errorf("Failed to create read transaction: %v", err)
 				return
 			}
-			defer readTx.Rollback()
+			defer readTx.Close()
 			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
@@ -667,7 +667,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 				t.Errorf("Failed to create read transaction: %v", err)
 				return
 			}
-			defer readTx.Rollback()
+			defer readTx.Close()
 			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
 			if err != nil {
 				t.Errorf("Failed to get tree KVs: %v", err)
