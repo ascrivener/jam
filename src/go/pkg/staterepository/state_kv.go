@@ -78,7 +78,7 @@ func createInternalNodeWithBit(tx *TrackedTx, curNode *Node, hash [32]byte, key 
 	}
 	internalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
 
-	setTreeNode(tx, internalNodeHash, internalNode)
+	setFlushCache(tx, internalNodeHash, internalNode)
 
 	return internalNodeHash, nil
 }
@@ -102,7 +102,7 @@ func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newV
 	existingLeafHash := calculateLeafHash(existingLeaf.OriginalKey, existingLeaf.OriginalValue)
 
 	// Store new leaf
-	setTreeNode(tx, newLeafHash, newLeaf)
+	setFlushCache(tx, newLeafHash, newLeaf)
 
 	var currentHash [32]byte
 
@@ -141,7 +141,7 @@ func splitLeafCollision(tx *TrackedTx, existingLeaf *Node, newKey [31]byte, newV
 			RightHash:     rightHash,
 		}
 
-		setTreeNode(tx, currentHash, internalNode)
+		setFlushCache(tx, currentHash, internalNode)
 	}
 
 	return currentHash, nil
@@ -193,7 +193,7 @@ func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, 
 			RightHash:     [32]byte{},
 		}
 		newHash := calculateLeafHash(key, value)
-		setTreeNode(tx, newHash, newLeaf)
+		setFlushCache(tx, newHash, newLeaf)
 		return newHash, nil
 	}
 	if curNode.IsLeaf() {
@@ -208,7 +208,7 @@ func upsertLeafHelper(tx *TrackedTx, key [31]byte, value []byte, hash [32]byte, 
 				RightHash:     [32]byte{},
 			}
 			newHash := calculateLeafHash(key, value)
-			setTreeNode(tx, newHash, newLeaf)
+			setFlushCache(tx, newHash, newLeaf)
 			return newHash, nil
 		}
 		return splitLeafCollision(tx, curNode, key, value, depth)
@@ -302,7 +302,7 @@ func deleteLeafHelper(tx *TrackedTx, key [31]byte, hash [32]byte, depth int) ([3
 		RightHash:     rightHash,
 	}
 	newInternalNodeHash := calculateInternalNodeHash(leftHash, rightHash)
-	setTreeNode(tx, newInternalNodeHash, newInternalNode)
+	setFlushCache(tx, newInternalNodeHash, newInternalNode)
 	return newInternalNodeHash, false, nil
 }
 
@@ -375,8 +375,8 @@ func DeleteStateKV(tx *TrackedTx, key [31]byte) {
 	tx.memory[key] = nil
 }
 
-func setTreeNode(tx *TrackedTx, hash [32]byte, value *Node) {
-	tx.treeNodes[hash] = value
+func setFlushCache(tx *TrackedTx, hash [32]byte, value *Node) {
+	tx.flushCache[hash] = value
 }
 
 func SetTreeNodeDB(tx *TrackedTx, hash [32]byte, value *Node) error {
@@ -486,10 +486,10 @@ func deleteKV(tx *TrackedTx, bucketName string, key []byte) error {
 
 // TrackedTx wraps pebble.Batch and tracks state changes
 type TrackedTx struct {
-	batch     *pebble.Batch
-	stateRoot [32]byte
-	memory    map[[31]byte][]byte
-	treeNodes map[[32]byte]*Node
+	batch      *pebble.Batch
+	stateRoot  [32]byte
+	memory     map[[31]byte][]byte
+	flushCache map[[32]byte]*Node
 }
 
 // NewTrackedTx creates a new tracked transaction wrapper
@@ -499,10 +499,10 @@ func NewTrackedTx(stateRoot [32]byte) (*TrackedTx, error) {
 		return nil, fmt.Errorf("global repository not initialized")
 	}
 	return &TrackedTx{
-		batch:     repo.db.NewBatch(),
-		stateRoot: stateRoot,
-		memory:    make(map[[31]byte][]byte),
-		treeNodes: make(map[[32]byte]*Node),
+		batch:      repo.db.NewBatch(),
+		stateRoot:  stateRoot,
+		memory:     make(map[[31]byte][]byte),
+		flushCache: nil,
 	}, nil
 }
 
@@ -549,6 +549,9 @@ func (tx *TrackedTx) Apply(childTx *TrackedTx) error {
 }
 
 func (tx *TrackedTx) FlushMemoryToDB() error {
+	tx.flushCache = make(map[[32]byte]*Node)
+	defer func() { tx.flushCache = nil }() // Clean up after
+
 	for key, val := range tx.GetMemoryContents() {
 		if val == nil {
 			if err := DeleteLeaf(tx, key); err != nil {
@@ -586,20 +589,20 @@ func (tx *TrackedTx) PruneUnreachableNodes() map[[32]byte]*Node {
 	tx.markReachableNodes(tx.GetStateRoot(), reachable)
 
 	// Remove unreachable nodes from treeNodes map
-	for hash := range tx.treeNodes {
+	for hash := range tx.flushCache {
 		if !reachable[hash] {
-			delete(tx.treeNodes, hash)
+			delete(tx.flushCache, hash)
 		}
 	}
 
-	return tx.treeNodes
+	return tx.flushCache
 }
 
 func (tx *TrackedTx) markReachableNodes(hash [32]byte, reachable map[[32]byte]bool) {
 	if reachable[hash] {
 		return
 	}
-	if node, exists := tx.treeNodes[hash]; exists {
+	if node, exists := tx.flushCache[hash]; exists {
 		reachable[hash] = true
 		if node.LeftHash != ([32]byte{}) {
 			tx.markReachableNodes(node.LeftHash, reachable)
@@ -713,8 +716,10 @@ var (
 
 func GetTreeNode(tx *TrackedTx, hash [32]byte) (*Node, bool, error) {
 	// 1. Check tx-level cache first
-	if node, exists := tx.treeNodes[hash]; exists {
-		return node, true, nil
+	if tx.flushCache != nil {
+		if node, exists := tx.flushCache[hash]; exists {
+			return node, true, nil
+		}
 	}
 
 	// 2. Check global cache

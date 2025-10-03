@@ -91,37 +91,12 @@ func STF(curBlock block.Block) ([32]byte, error) {
 	// 	return fmt.Errorf("block timestamp is in the future relative to current time")
 	// }
 
-	// If current tip is not the parent block, we need to reorganize
-	if curBlock.Header.PriorStateRoot != parentBlock.Info.PosteriorStateRoot {
-		panic("not handling reorganization yet")
-		// // 1. Find latest snapshot before parent block
-		// latestSnapshot, err := block.FindLatestSnapshotBefore(parentBlock)
-		// if err != nil {
-		// 	return [32]byte{}, fmt.Errorf("failed to find latest snapshot: %w", err)
-		// }
-
-		// // 2. Load snapshot state
-		// if err := staterepository.LoadSnapshot(tx, latestSnapshot.StateRoot); err != nil {
-		// 	return [32]byte{}, fmt.Errorf("failed to load snapshot: %w", err)
-		// }
-
-		// // 3. Replay forward changes from snapshot to parent
-		// pathFromSnapshot, err := parentBlock.GetPathFromAncestor(tx, latestSnapshot)
-		// if err != nil {
-		// 	return [32]byte{}, fmt.Errorf("failed to get path from snapshot: %w", err)
-		// }
-
-		// if err := block.ReplayPath(tx, pathFromSnapshot); err != nil {
-		// 	return [32]byte{}, err
-		// }
-	}
-
 	// 5.8
 	if curBlock.Header.PriorStateRoot != parentBlock.Info.PosteriorStateRoot {
 		return [32]byte{}, fmt.Errorf("parent block state root does not match merklized state")
 	}
 
-	// Run state transition function on globalBatch (so it sees the parentBlock state)
+	// Run state transition function
 	if err := stfHelper(tx, curBlock); err != nil {
 		return [32]byte{}, err
 	}
