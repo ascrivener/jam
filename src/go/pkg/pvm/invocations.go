@@ -474,7 +474,6 @@ func OnTransfer(tx *staterepository.TrackedTx, timeslot types.Timeslot, serviceI
 		serviceAccount.Balance += deferredTransfer.BalanceTransfer
 		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
 	}
-	serviceaccount.SetServiceAccount(tx, serviceAccount)
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
 		return serviceAccount, 0, err

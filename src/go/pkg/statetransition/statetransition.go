@@ -703,7 +703,11 @@ func accumulateAndIntegrate(
 	}
 
 	for serviceIndex, deferredTransfers := range deferredTransfersForServiceIndex {
-		_, gasUsed, err := pvm.OnTransfer(tx, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, deferredTransfers)
+		serviceAccount, gasUsed, err := pvm.OnTransfer(tx, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, deferredTransfers)
+		if serviceAccount != nil {
+			serviceaccount.SetServiceAccount(tx, serviceAccount)
+		}
+
 		if err != nil {
 			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
 		}

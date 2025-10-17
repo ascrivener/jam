@@ -206,11 +206,11 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/fallback"
             }
         },
         {
-            "name": "Debug Fuzzclient Test with CPU Profile",
+            "name": "Debug Fuzzclient Test Traces in-process",
             "type": "go",
             "request": "launch",
             "mode": "test",

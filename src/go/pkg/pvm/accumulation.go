@@ -330,13 +330,10 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	wg.Wait()
 
 	// Extract results for designate service
-	designateServiceIndex := managerPrivilegedServices.DesignateServiceIndex
-	if _, exists := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex]; exists {
-		designateServiceIndex = resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
-	}
+	posteriorDesignateServiceIndex := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
 
 	// Extract results for assign service
-	assignServiceIndices := managerPrivilegedServices.AssignServiceIndices
+	assignServiceIndices := [2]types.ServiceIndex{}
 	for coreIdx, serviceIndex := range managerPrivilegedServices.AssignServiceIndices {
 		assignServiceIndices[coreIdx] = resultsByServiceIndex[serviceIndex].PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIdx)]
 	}
@@ -349,7 +346,7 @@ func ResolveManagerAccumulationResultPrivilegedServices(
 	// Return the updated privileged services configuration
 	return types.PrivilegedServices{
 		ManagerServiceIndex:             managerPrivilegedServices.ManagerServiceIndex,
-		DesignateServiceIndex:           designateServiceIndex,
+		DesignateServiceIndex:           posteriorDesignateServiceIndex,
 		AssignServiceIndices:            assignServiceIndices,
 		AlwaysAccumulateServicesWithGas: managerPrivilegedServices.AlwaysAccumulateServicesWithGas,
 	}, nil

@@ -21,6 +21,7 @@ import (
 	"jam/pkg/fuzzinterface"
 	"jam/pkg/merklizer"
 	"jam/pkg/serializer"
+	"jam/pkg/serviceaccount"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
 
@@ -427,30 +428,6 @@ func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
 			}
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
-			// Also compare tree KVs to verify tree structure
-			readTx, err := staterepository.NewTrackedTx(*resp.StateRoot)
-			if err != nil {
-				t.Errorf("Failed to create read transaction: %v", err)
-				return
-			}
-			defer readTx.Close()
-			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
-			if err != nil {
-				t.Errorf("Failed to get tree KVs: %v", err)
-			} else {
-				t.Logf("Tree contains %d KV pairs", len(treeKeys))
-				// Convert expected state to comparable format
-				expectedKeys := make([][31]byte, len(testVector.PostState.State))
-				for i, kv := range testVector.PostState.State {
-					expectedKeys[i] = kv.OriginalKey
-				}
-				compareTreeKeys(t, expectedKeys, treeKeys)
-				// Print tree structure for debugging
-				fmt.Println("=== DEBUGGING TREE STRUCTURE ===")
-				if err := staterepository.PrintTreeStructure(readTx); err != nil {
-					t.Errorf("Failed to print tree structure: %v", err)
-				}
-			}
 		} else {
 			t.Logf("State root verified for %s: %x", fileName, *resp.StateRoot)
 		}
@@ -486,9 +463,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		//"1756548459"
-		// "1757421101"
-		// if !strings.Contains(testDir, "1756548667") {
+		// if !strings.Contains(testDir, "1758708840") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)
@@ -661,25 +636,6 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 			}
 			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
-			// Also compare tree KVs to verify tree structure
-			readTx, err := staterepository.NewTrackedTx(*resp.StateRoot)
-			if err != nil {
-				t.Errorf("Failed to create read transaction: %v", err)
-				return
-			}
-			defer readTx.Close()
-			treeKeys, err := staterepository.GetAllKeysFromTree(readTx)
-			if err != nil {
-				t.Errorf("Failed to get tree KVs: %v", err)
-			} else {
-				t.Logf("Tree contains %d KV pairs", len(treeKeys))
-				// Convert expected state to comparable format
-				expectedKeys := make([][31]byte, len(testVector.PostState.State))
-				for i, kv := range testVector.PostState.State {
-					expectedKeys[i] = kv.OriginalKey
-				}
-				compareTreeKeys(t, expectedKeys, treeKeys)
-			}
 		} else {
 			t.Logf("Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
 		}
@@ -761,6 +717,41 @@ func (fc *FuzzerClient) testFuzzerVersion(t *testing.T, dir string) {
 	}
 }
 
+// parseServiceIndexKey checks if a key matches the service index pattern:
+// ff + little-endian uint32 service index + zeros
+// Returns the service index and true if it matches, 0 and false otherwise
+func parseServiceIndexKey(key [31]byte) (uint32, bool) {
+	// Check if key starts with 0xff
+	if key[0] != 0xff {
+		return 0, false
+	}
+
+	// Check if the pattern matches: ff, n0, 0, n1, 0, n2, 0, n3, 0, 0...
+	// where n0,n1,n2,n3 are the little-endian bytes of a uint32 service index
+	if len(key) < 9 { // Need at least ff + 4 service index bytes + 4 zero bytes
+		return 0, false
+	}
+
+	// Check the pattern: every other byte after ff should be 0
+	for i := 2; i < len(key) && i < 9; i += 2 {
+		if key[i] != 0 {
+			return 0, false
+		}
+	}
+
+	// Check that remaining bytes are all zeros
+	for i := 9; i < len(key); i++ {
+		if key[i] != 0 {
+			return 0, false
+		}
+	}
+
+	// Extract the service index from positions 1, 3, 5, 7 (little-endian)
+	serviceIndex := uint32(key[1]) | (uint32(key[3]) << 8) | (uint32(key[5]) << 16) | (uint32(key[7]) << 24)
+
+	return serviceIndex, true
+}
+
 func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 	// Compare the underlying KVs to show any differences
 	expectedKVsMap := make(map[[31]byte][]byte)
@@ -816,8 +807,26 @@ func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 		t.Errorf("Keys with different values:")
 		for _, key := range differentValues {
 			t.Errorf("~ %x:", key)
-			t.Errorf("  Expected: %x", expectedKVsMap[key])
-			t.Errorf("  Actual:   %x", actualKVsMap[key])
+			expectedValue := expectedKVsMap[key]
+			actualValue := actualKVsMap[key]
+			// Check if this key matches the service index pattern
+			if serviceIndex, isServiceKey := parseServiceIndexKey(key); isServiceKey {
+				fmt.Printf("Service index key mismatch detected: %d\n", serviceIndex)
+				expectedServiceAccount := serviceaccount.ServiceAccountData{}
+				if err := serializer.Deserialize(expectedValue, &expectedServiceAccount); err != nil {
+					fmt.Printf("Failed to deserialize expected service account: %v\n", err)
+				}
+				actualServiceAccount := serviceaccount.ServiceAccountData{}
+				if err := serializer.Deserialize(actualValue, &actualServiceAccount); err != nil {
+					fmt.Printf("Failed to deserialize actual service account: %v\n", err)
+				}
+				if diff := cmp.Diff(expectedServiceAccount, actualServiceAccount); diff != "" {
+					fmt.Printf("Service account mismatch (-expected +actual):\n%s", diff)
+				}
+			} else {
+				fmt.Printf("  Expected: %x\n", expectedValue)
+				fmt.Printf("  Actual:   %x\n", actualValue)
+			}
 		}
 	}
 
@@ -825,73 +834,6 @@ func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 		t.Logf("KV comparison passed: KVs are identical")
 	} else {
 		t.Errorf("KV comparison failed")
-	}
-}
-
-func compareTreeKeys(t *testing.T, expectedKeys, actualKeys [][31]byte) {
-	// Compare the underlying KVs to show any differences
-	expectedKeysMap := make(map[[31]byte][]byte)
-	for _, key := range expectedKeys {
-		expectedKeysMap[key] = nil
-	}
-
-	actualKeysMap := make(map[[31]byte][]byte)
-	for _, key := range actualKeys {
-		actualKeysMap[key] = nil
-	}
-
-	missingKeys := make([][31]byte, 0)
-	extraKeys := make([][31]byte, 0)
-	differentValues := make([][31]byte, 0)
-
-	for key := range expectedKeysMap {
-		if _, ok := actualKeysMap[key]; !ok {
-			missingKeys = append(missingKeys, key)
-		}
-	}
-
-	for key := range actualKeysMap {
-		if _, ok := expectedKeysMap[key]; !ok {
-			extraKeys = append(extraKeys, key)
-		}
-	}
-
-	// Check for keys with different values
-	for key, expectedValue := range expectedKeysMap {
-		if actualValue, exists := actualKeysMap[key]; exists {
-			if !bytes.Equal(expectedValue, actualValue) {
-				differentValues = append(differentValues, key)
-			}
-		}
-	}
-
-	if len(missingKeys) > 0 {
-		t.Errorf("Missing KVs:")
-		for _, key := range missingKeys {
-			t.Errorf("- %x", key)
-		}
-	}
-
-	if len(extraKeys) > 0 {
-		t.Errorf("Extra KVs:")
-		for _, key := range extraKeys {
-			t.Errorf("+ %x", key)
-		}
-	}
-
-	if len(differentValues) > 0 {
-		t.Errorf("Keys with different values:")
-		for _, key := range differentValues {
-			t.Errorf("~ %x:", key)
-			t.Errorf("  Expected: %x", expectedKeysMap[key])
-			t.Errorf("  Actual:   %x", actualKeysMap[key])
-		}
-	}
-
-	if len(missingKeys) == 0 && len(extraKeys) == 0 && len(differentValues) == 0 {
-		t.Logf("Tree KV comparison passed: KVs are identical")
-	} else {
-		t.Errorf("Tree KV comparison failed")
 	}
 }
 

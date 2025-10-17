@@ -152,7 +152,7 @@ type PrivilegedServices struct {
 	ManagerServiceIndex             ServiceIndex                     // m
 	AssignServiceIndices            [constants.NumCores]ServiceIndex // a
 	DesignateServiceIndex           ServiceIndex                     // v
-	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue        // g
+	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue        // z
 }
 
 func (p PrivilegedServices) TotalAlwaysAccumulateGas() GasValue {

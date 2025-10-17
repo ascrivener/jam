@@ -600,7 +600,6 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason,
 }
 
 func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-	ctx.State.Gas -= types.SignedGasValue(ctx.State.Registers[9])
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
 		amount := types.Balance(ctx.State.Registers[8])                // a - amount to transfer
@@ -662,7 +661,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
 		return ExitReasonGo, nil
-	})
+	}, types.GasValue(ctx.State.Registers[9]))
 }
 
 func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepository.TrackedTx, timeslot types.Timeslot) (ExitReason, error) {
@@ -1618,11 +1617,24 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 func withGasCheck[T any](
 	ctx *HostFunctionContext[T],
 	fn func(*HostFunctionContext[T]) (ExitReason, error),
+	additionalGasUsage ...types.GasValue,
 ) (ExitReason, error) {
-	ctx.State.Gas -= types.SignedGasValue(GasUsage)
-	if ctx.State.Gas < 0 {
+	// Extract additional gas usage (default to 0 if not provided)
+	var extraGas types.GasValue = 0
+	if len(additionalGasUsage) > 0 {
+		extraGas = additionalGasUsage[0]
+	}
+
+	if types.GasValue(ctx.State.Gas) < GasUsage {
+		ctx.State.Gas = 0
 		return ExitReasonOutOfGas, nil
 	}
+	ctx.State.Gas -= types.SignedGasValue(GasUsage)
+	if types.GasValue(ctx.State.Gas) < extraGas {
+		ctx.State.Gas = 0
+		return ExitReasonOutOfGas, nil
+	}
+	ctx.State.Gas -= types.SignedGasValue(extraGas)
 	return fn(ctx)
 }
 
