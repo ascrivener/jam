@@ -177,8 +177,8 @@ type OperandTuple struct { // O
 }
 
 type PreimageProvisions map[struct {
-	ServiceIndex types.ServiceIndex
-	BlobString   string
+	ServiceIndex types.ServiceIndex // s
+	BlobString   string             // i
 }]struct{}
 
 type AccumulationResultContext struct { // X

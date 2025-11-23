@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"jam/pkg/constants"
-	"jam/pkg/errors"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
@@ -45,74 +44,65 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
 	// Use a map to collect unique service indices to process
-	originalServiceIndicesMap := make(map[types.ServiceIndex]struct{})
+	baseServiceIndices := make(map[types.ServiceIndex]struct{})
 
 	// Add regular service indices
 	for idx := range freeAccumulationServices {
-		originalServiceIndicesMap[idx] = struct{}{}
+		baseServiceIndices[idx] = struct{}{}
 	}
 	for _, report := range workReports {
 		for _, workDigest := range report.WorkDigests {
-			originalServiceIndicesMap[workDigest.ServiceIndex] = struct{}{}
+			baseServiceIndices[workDigest.ServiceIndex] = struct{}{}
 		}
+	}
+	for _, transfer := range deferredTransfers {
+		baseServiceIndices[transfer.ReceiverServiceIndex] = struct{}{}
 	}
 
 	// Add privileged service indices
-	serviceIndicesMapWithPrivileged := make(map[types.ServiceIndex]struct{})
-	for idx := range originalServiceIndicesMap {
-		serviceIndicesMapWithPrivileged[idx] = struct{}{}
-	}
-	managerServiceIndex := accumulationStateComponents.PrivilegedServices.ManagerServiceIndex
-	designateServiceIndex := accumulationStateComponents.PrivilegedServices.DesignateServiceIndex
-	assignServiceIndices := accumulationStateComponents.PrivilegedServices.AssignServiceIndices
-
-	serviceIndicesMapWithPrivileged[managerServiceIndex] = struct{}{}
-	serviceIndicesMapWithPrivileged[designateServiceIndex] = struct{}{}
-	for _, idx := range assignServiceIndices {
-		serviceIndicesMapWithPrivileged[idx] = struct{}{}
-	}
-
 	// Convert map keys to a slice for deterministic processing order
-	serviceIndicesWithPrivileged := make([]types.ServiceIndex, 0, len(serviceIndicesMapWithPrivileged))
-	for idx := range serviceIndicesMapWithPrivileged {
-		serviceIndicesWithPrivileged = append(serviceIndicesWithPrivileged, idx)
+	allServiceIndices := make(map[types.ServiceIndex]struct{}, len(baseServiceIndices))
+	for idx := range baseServiceIndices {
+		allServiceIndices[idx] = struct{}{}
 	}
-
-	// Sort service indices for deterministic processing order
-	sort.Slice(serviceIndicesWithPrivileged, func(i, j int) bool {
-		return serviceIndicesWithPrivileged[i] < serviceIndicesWithPrivileged[j]
-	})
+	allServiceIndices[accumulationStateComponents.PrivilegedServices.ManagerServiceIndex] = struct{}{}
+	for _, idx := range accumulationStateComponents.PrivilegedServices.AssignServiceIndices {
+		allServiceIndices[idx] = struct{}{}
+	}
+	allServiceIndices[accumulationStateComponents.PrivilegedServices.DesignateServiceIndex] = struct{}{}
+	allServiceIndices[accumulationStateComponents.PrivilegedServices.RegistrarServiceIndex] = struct{}{}
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var serviceGasUsage []struct {
+	serviceGasUsage := make([]struct {
 		ServiceIndex types.ServiceIndex
 		GasUsed      types.GasValue
-	}
+	}, 0)
 	accumulationOutputPairings := make(map[BEEFYCommitment]struct{})
 
 	// Collect errors from goroutines
 	var accumulationErrors []error
 
 	// Map to store deferred transfers by service index
-	transfersByServiceIndex := make(map[types.ServiceIndex][]DeferredTransfer)
+	allTransfers := make([]struct {
+		ServiceIndex types.ServiceIndex
+		Transfers    []DeferredTransfer
+	}, 0)
 
 	// Map to store preimage provisions by service index
 	allPreimageProvisions := make(PreimageProvisions)
 
 	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
 
-	newServiceIndexCollisionDetected := false
-
 	var childTransactions []*staterepository.TrackedTx
 	var childTxMutex sync.Mutex
 
-	for _, sIndex := range serviceIndicesWithPrivileged {
+	for sIndex := range allServiceIndices {
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
@@ -143,14 +133,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			mu.Lock()
 
 			resultsByServiceIndex[sIndex] = components
-			if _, exists := originalServiceIndicesMap[sIndex]; exists {
-
-				if preimageResult != nil {
-					accumulationOutputPairings[BEEFYCommitment{
-						ServiceIndex:   sIndex,
-						PreimageResult: *preimageResult,
-					}] = struct{}{}
-				}
+			if _, exists := baseServiceIndices[sIndex]; exists {
 
 				// Record gas usage
 				serviceGasUsage = append(serviceGasUsage, struct {
@@ -161,13 +144,26 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 					GasUsed:      gasUsed,
 				})
 
+				if preimageResult != nil {
+					accumulationOutputPairings[BEEFYCommitment{
+						ServiceIndex:   sIndex,
+						PreimageResult: *preimageResult,
+					}] = struct{}{}
+				}
+
 				// Store preimage provisions
 				for k, v := range provisions {
 					allPreimageProvisions[k] = v
 				}
 
 				// Store transfers by service index
-				transfersByServiceIndex[sIndex] = transfers
+				allTransfers = append(allTransfers, struct {
+					ServiceIndex types.ServiceIndex
+					Transfers    []DeferredTransfer
+				}{
+					ServiceIndex: sIndex,
+					Transfers:    transfers,
+				})
 
 			}
 
@@ -183,68 +179,78 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		}
 	}
 
-	// Process special service results after all parallel work is complete
-
-	// Process manager result - ensure it exists before using
-	managerResult := resultsByServiceIndex[managerServiceIndex]
-
-	// Process designate service
-	posteriorUpcomingValidatorKeysets := resultsByServiceIndex[designateServiceIndex].UpcomingValidatorKeysets
-
-	// Process assign services
-	var posteriorAuthorizersQueue [constants.NumCores][constants.AuthorizerQueueLength][32]byte
-	for coreIndex, assignServiceIndex := range assignServiceIndices {
-		posteriorAuthorizersQueue[coreIndex] = resultsByServiceIndex[assignServiceIndex].AuthorizersQueue[coreIndex]
-	}
-
 	// Check if any errors occurred during accumulation
 	if len(accumulationErrors) > 0 {
 		return AccumulationStateComponents{}, nil, nil, nil, accumulationErrors[0]
 	}
 
-	if newServiceIndexCollisionDetected {
-		return AccumulationStateComponents{}, nil, nil, nil, errors.ProtocolErrorf("new service index collision detected")
+	// sort service gas usage by service index
+	sort.Slice(serviceGasUsage, func(i, j int) bool {
+		return serviceGasUsage[i].ServiceIndex < serviceGasUsage[j].ServiceIndex
+	})
+
+	// sort all transfers by service index and then flatten
+	sort.Slice(allTransfers, func(i, j int) bool {
+		return allTransfers[i].ServiceIndex < allTransfers[j].ServiceIndex
+	})
+	allTransfersOrdered := make([]DeferredTransfer, 0)
+	for _, transfer := range allTransfers {
+		allTransfersOrdered = append(allTransfersOrdered, transfer.Transfers...)
 	}
 
-	// Now process manager service
-	posteriorPrivilegedServices, err := ResolveManagerAccumulationResultPrivilegedServices(
-		tx,
-		accumulationStateComponents,
-		timeslot,
-		workReports,
-		freeAccumulationServices,
-		managerResult.PrivilegedServices,
-		posteriorEntropyAccumulator,
-		resultsByServiceIndex, // Pass existing results
-	)
+	managerResult := resultsByServiceIndex[accumulationStateComponents.PrivilegedServices.ManagerServiceIndex]
 
-	if err != nil {
-		return AccumulationStateComponents{}, nil, nil, nil, err
+	designateServiceResult := resultsByServiceIndex[accumulationStateComponents.PrivilegedServices.DesignateServiceIndex]
+
+	// Process designate service
+	posteriorDesignateServiceIndex := R(accumulationStateComponents.PrivilegedServices.DesignateServiceIndex, managerResult.PrivilegedServices.DesignateServiceIndex, designateServiceResult.PrivilegedServices.DesignateServiceIndex)
+
+	var posteriorAssignServiceIndices [constants.NumCores]types.ServiceIndex
+	posteriorAuthorizersQueue := [constants.NumCores][constants.AuthorizerQueueLength][32]byte{}
+	for coreIndex := range posteriorAssignServiceIndices {
+		// Process assign services
+		assignServiceIndex := accumulationStateComponents.PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIndex)]
+		assignServiceResult := resultsByServiceIndex[assignServiceIndex]
+		posteriorAssignServiceIndices[coreIndex] = R(assignServiceIndex, managerResult.PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIndex)], assignServiceResult.PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIndex)])
+
+		// Process authorizers queue
+		posteriorAuthorizersQueue[coreIndex] = assignServiceResult.AuthorizersQueue[coreIndex]
 	}
 
-	// Now combine the deferred transfers in service index order
-	deferredTransfers := make([]DeferredTransfer, 0)
-	for _, sIndex := range serviceIndicesWithPrivileged {
-		if transfers, ok := transfersByServiceIndex[sIndex]; ok {
-			deferredTransfers = append(deferredTransfers, transfers...)
-		}
+	// Process registrar service
+	registrarServiceResult := resultsByServiceIndex[accumulationStateComponents.PrivilegedServices.RegistrarServiceIndex]
+	posteriorRegistrarServiceIndex := R(accumulationStateComponents.PrivilegedServices.RegistrarServiceIndex, managerResult.PrivilegedServices.RegistrarServiceIndex, registrarServiceResult.PrivilegedServices.RegistrarServiceIndex)
+
+	posteriorPrivilegedServices := types.PrivilegedServices{
+		ManagerServiceIndex:             managerResult.PrivilegedServices.ManagerServiceIndex,
+		DesignateServiceIndex:           posteriorDesignateServiceIndex,
+		AssignServiceIndices:            posteriorAssignServiceIndices,
+		RegistrarServiceIndex:           posteriorRegistrarServiceIndex,
+		AlwaysAccumulateServicesWithGas: managerResult.PrivilegedServices.AlwaysAccumulateServicesWithGas,
 	}
 
-	// Create final service accounts:
-	// 1. Start with original service accounts
-	// 2. Union with n (accounts from individual service processing)
-	// 3. Remove keys in m (keys that disappeared in at least one result)
-	finalServiceAccounts := make(serviceaccount.ServiceAccounts)
+	// Process designate service
+	posteriorUpcomingValidatorKeysets := designateServiceResult.UpcomingValidatorKeysets
 
 	// Provisions preimage integration done below
 
 	for preimageProvision := range allPreimageProvisions {
-		serviceAccount, ok := finalServiceAccounts[preimageProvision.ServiceIndex]
-		if !ok {
+		serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, preimageProvision.ServiceIndex)
+		if err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
+		}
+		if !exists {
 			continue
 		}
 		blob := []byte(preimageProvision.BlobString)
 		preimage := blake2b.Sum256(blob)
+		preimageLookupHistoricalStatus, exists, err := serviceAccount.GetPreimageLookupHistoricalStatus(tx, uint32(len(blob)), preimage)
+		if err != nil {
+			return AccumulationStateComponents{}, nil, nil, nil, err
+		}
+		if !exists || len(preimageLookupHistoricalStatus) > 0 {
+			continue
+		}
 		if err := serviceAccount.SetPreimageLookupHistoricalStatus(tx, uint32(len(blob)), preimage, []types.Timeslot{timeslot}); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
@@ -255,111 +261,23 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		UpcomingValidatorKeysets: posteriorUpcomingValidatorKeysets,
 		AuthorizersQueue:         posteriorAuthorizersQueue,
 		PrivilegedServices:       posteriorPrivilegedServices,
-	}, deferredTransfers, accumulationOutputPairings, serviceGasUsage, nil
+	}, allTransfersOrdered, accumulationOutputPairings, serviceGasUsage, nil
 }
 
-// ResolveManagerAccumulationResultPrivilegedServices processes the privileged services based on the manager result
-// and returns the updated privileged services configuration.
-// This function handles the designate service and assign services in parallel.
-func ResolveManagerAccumulationResultPrivilegedServices(
-	tx *staterepository.TrackedTx,
-	accumulationStateComponents *AccumulationStateComponents,
-	timeslot types.Timeslot,
-	workReports []workreport.WorkReport,
-	freeAccumulationServices map[types.ServiceIndex]types.GasValue,
-	managerPrivilegedServices types.PrivilegedServices,
-	posteriorEntropyAccumulator [4][32]byte,
-	existingResults map[types.ServiceIndex]AccumulationStateComponents, // Reuse existing results
-) (types.PrivilegedServices, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	// Collect unique service indices to avoid redundant computation
-	uniqueServiceIndices := make(map[types.ServiceIndex]struct{})
-	uniqueServiceIndices[managerPrivilegedServices.DesignateServiceIndex] = struct{}{}
-	for _, idx := range managerPrivilegedServices.AssignServiceIndices {
-		uniqueServiceIndices[idx] = struct{}{}
+func R(o, a, b types.ServiceIndex) types.ServiceIndex {
+	if a == o {
+		return b
 	}
-
-	// Map to store results by service index (start with existing results)
-	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
-	for k, v := range existingResults {
-		resultsByServiceIndex[k] = v
-	}
-
-	var accumulationErrors []error
-
-	// Only process service indices that
-	// 1. don't already have results
-	// 2. exist in accumulation state components
-	for serviceIndex := range uniqueServiceIndices {
-		if _, exists := resultsByServiceIndex[serviceIndex]; !exists {
-			_, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
-			if err != nil {
-				return types.PrivilegedServices{}, err
-			}
-			if !exists {
-				continue
-			}
-			wg.Add(1)
-			go func(sIndex types.ServiceIndex) {
-				defer wg.Done()
-				result, _, _, _, _, err := SingleServiceAccumulation(
-					tx,
-					accumulationStateComponents,
-					timeslot,
-					workReports,
-					freeAccumulationServices,
-					sIndex,
-					posteriorEntropyAccumulator,
-				)
-				if err != nil {
-					mu.Lock()
-					accumulationErrors = append(accumulationErrors, err)
-					mu.Unlock()
-					return
-				}
-				mu.Lock()
-				resultsByServiceIndex[sIndex] = result
-				mu.Unlock()
-			}(serviceIndex)
-		}
-	}
-
-	// Wait for all parallel processing to complete
-	wg.Wait()
-
-	// Extract results for designate service
-	posteriorDesignateServiceIndex := resultsByServiceIndex[managerPrivilegedServices.DesignateServiceIndex].PrivilegedServices.DesignateServiceIndex
-
-	// Extract results for assign service
-	assignServiceIndices := [2]types.ServiceIndex{}
-	for coreIdx, serviceIndex := range managerPrivilegedServices.AssignServiceIndices {
-		assignServiceIndices[coreIdx] = resultsByServiceIndex[serviceIndex].PrivilegedServices.AssignServiceIndices[types.CoreIndex(coreIdx)]
-	}
-
-	// Check if any errors occurred during accumulation
-	if len(accumulationErrors) > 0 {
-		return types.PrivilegedServices{}, accumulationErrors[0]
-	}
-
-	// Return the updated privileged services configuration
-	return types.PrivilegedServices{
-		ManagerServiceIndex:             managerPrivilegedServices.ManagerServiceIndex,
-		DesignateServiceIndex:           posteriorDesignateServiceIndex,
-		AssignServiceIndices:            assignServiceIndices,
-		AlwaysAccumulateServicesWithGas: managerPrivilegedServices.AlwaysAccumulateServicesWithGas,
-	}, nil
+	return a
 }
 
-func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timeslot types.Timeslot, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []DeferredTransfer, []BEEFYCommitment, []struct {
+func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timeslot types.Timeslot, deferredTransfers []DeferredTransfer, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []BEEFYCommitment, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
 	// Initialize return values
 	totalProcessedReports := 0
 	currentStateComponents := *accumulationStateComponents
-	allDeferredTransfers := make([]DeferredTransfer, 0)
 	allOutputPairings := make(map[BEEFYCommitment]struct{}, 0)
 	allServiceGasUsage := make([]struct {
 		ServiceIndex types.ServiceIndex
@@ -390,33 +308,34 @@ func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timesl
 			gasPrioritizationRatioSum += batchGas
 		}
 
-		// If we can't process even one report, break
-		if batchEndIdx == startIdx {
+		reportsProcessed := batchEndIdx - startIdx
+
+		// If we can't process any reports, break
+		if reportsProcessed+len(deferredTransfers)+len(freeAccumulationServices) == 0 {
 			break
 		}
 
 		// Process this batch
-		newStateComponents, batchTransfers, batchPairings, batchServiceGasUsage, err := ParallelizedAccumulation(
+		newStateComponents, newDeferredTransfers, batchPairings, batchServiceGasUsage, err := ParallelizedAccumulation(
 			tx,
 			&currentStateComponents,
-			timeslot,
+			deferredTransfers,
 			workReports[startIdx:batchEndIdx],
 			freeAccumulationServices,
+			timeslot,
 			posteriorEntropyAccumulator,
 		)
 
 		if err != nil {
-			return -1, AccumulationStateComponents{}, nil, nil, nil, err
+			return -1, AccumulationStateComponents{}, nil, nil, err
 		}
 
-		// Update our state for the next iteration
-		var batchGasUsed types.GasValue
+		deferredTransfers = newDeferredTransfers
+
 		for _, serviceGas := range batchServiceGasUsage {
-			batchGasUsed += serviceGas.GasUsed
+			remainingGas -= serviceGas.GasUsed
 		}
-		remainingGas -= batchGasUsed
 		currentStateComponents = newStateComponents
-		allDeferredTransfers = append(allDeferredTransfers, batchTransfers...)
 		allServiceGasUsage = append(allServiceGasUsage, batchServiceGasUsage...)
 
 		// Merge the output pairings
@@ -425,7 +344,7 @@ func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timesl
 		}
 
 		// Update the count of reports processed
-		totalProcessedReports += (batchEndIdx - startIdx)
+		totalProcessedReports += reportsProcessed
 
 		// Move to next batch
 		startIdx = batchEndIdx
@@ -447,5 +366,5 @@ func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timesl
 		return bytes.Compare(allOutputPairingsSlice[i].PreimageResult[:], allOutputPairingsSlice[j].PreimageResult[:]) < 0
 	})
 
-	return totalProcessedReports, currentStateComponents, allDeferredTransfers, allOutputPairingsSlice, allServiceGasUsage, nil
+	return totalProcessedReports, currentStateComponents, allOutputPairingsSlice, allServiceGasUsage, nil
 }

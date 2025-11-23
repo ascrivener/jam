@@ -152,6 +152,7 @@ type PrivilegedServices struct {
 	ManagerServiceIndex             ServiceIndex                     // m
 	AssignServiceIndices            [constants.NumCores]ServiceIndex // a
 	DesignateServiceIndex           ServiceIndex                     // v
+	RegistrarServiceIndex           ServiceIndex                     // r
 	AlwaysAccumulateServicesWithGas map[ServiceIndex]GasValue        // z
 }
 
