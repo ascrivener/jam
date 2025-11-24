@@ -14,17 +14,23 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var gas types.GasValue
-	operandTuples := make([]OperandTuple, 0)
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
 		gas = g
+	}
+	accumulationInputs := make([]types.AccumulationInput, 0)
+	for _, transfer := range deferredTransfers {
+		if transfer.ReceiverServiceIndex == serviceIndex {
+			gas += transfer.GasLimit
+			accumulationInputs = append(accumulationInputs, types.NewAccumulationInputFromDeferredTransfer(transfer))
+		}
 	}
 	for _, report := range workReports {
 		for _, workDigest := range report.WorkDigests {
 			if workDigest.ServiceIndex == serviceIndex {
 				gas += workDigest.AccumulateGasLimit
-				operandTuples = append(operandTuples, OperandTuple{
+				accumulationInputs = append(accumulationInputs, types.NewAccumulationInputFromOperandTuple(types.OperandTuple{
 					WorkPackageHash:       report.WorkPackageSpecification.WorkPackageHash,
 					SegmentRoot:           report.WorkPackageSpecification.SegmentRoot,
 					AuthorizerHash:        report.AuthorizerHash,
@@ -32,11 +38,11 @@ func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateC
 					WorkResultPayloadHash: workDigest.PayloadHash,
 					GasLimit:              types.GenericNum(workDigest.AccumulateGasLimit),
 					ExecutionExitReason:   workDigest.WorkResult,
-				})
+				}))
 			}
 		}
 	}
-	return Accumulate(tx, accumulationStateComponents, serviceIndex, timeslot, gas, operandTuples, posteriorEntropyAccumulator)
+	return Accumulate(tx, accumulationStateComponents, timeslot, serviceIndex, gas, accumulationInputs, posteriorEntropyAccumulator)
 }
 
 type BEEFYCommitment struct {
@@ -44,7 +50,7 @@ type BEEFYCommitment struct {
 	PreimageResult [32]byte
 }
 
-func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
+func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []types.DeferredTransfer, map[BEEFYCommitment]struct{}, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -91,7 +97,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	// Map to store deferred transfers by service index
 	allTransfers := make([]struct {
 		ServiceIndex types.ServiceIndex
-		Transfers    []DeferredTransfer
+		Transfers    []types.DeferredTransfer
 	}, 0)
 
 	// Map to store preimage provisions by service index
@@ -118,10 +124,11 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
 				childTx, // Use child transaction instead of parent
 				accumulationStateComponents,
-				timeslot,
+				deferredTransfers,
 				workReports,
 				freeAccumulationServices,
 				sIndex,
+				timeslot,
 				posteriorEntropyAccumulator,
 			)
 			if err != nil {
@@ -159,7 +166,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 				// Store transfers by service index
 				allTransfers = append(allTransfers, struct {
 					ServiceIndex types.ServiceIndex
-					Transfers    []DeferredTransfer
+					Transfers    []types.DeferredTransfer
 				}{
 					ServiceIndex: sIndex,
 					Transfers:    transfers,
@@ -193,7 +200,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	sort.Slice(allTransfers, func(i, j int) bool {
 		return allTransfers[i].ServiceIndex < allTransfers[j].ServiceIndex
 	})
-	allTransfersOrdered := make([]DeferredTransfer, 0)
+	allTransfersOrdered := make([]types.DeferredTransfer, 0)
 	for _, transfer := range allTransfers {
 		allTransfersOrdered = append(allTransfersOrdered, transfer.Transfers...)
 	}
@@ -271,7 +278,7 @@ func R(o, a, b types.ServiceIndex) types.ServiceIndex {
 	return a
 }
 
-func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timeslot types.Timeslot, deferredTransfers []DeferredTransfer, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []BEEFYCommitment, []struct {
+func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, workReports []workreport.WorkReport, accumulationStateComponents *AccumulationStateComponents, freeAccumulationServices map[types.ServiceIndex]types.GasValue, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (int, AccumulationStateComponents, []BEEFYCommitment, []struct {
 	ServiceIndex types.ServiceIndex
 	GasUsed      types.GasValue
 }, error) {
@@ -289,6 +296,8 @@ func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, timesl
 
 	// Start index for the next batch of reports to process
 	startIdx := 0
+
+	deferredTransfers := make([]types.DeferredTransfer, 0)
 
 	// Continue processing batches until we run out of gas or reports
 	for startIdx < len(workReports) && remainingGas > 0 {

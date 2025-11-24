@@ -642,7 +642,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		}
 
 		// Create transfer object
-		transfer := DeferredTransfer{
+		transfer := types.DeferredTransfer{
 			SenderServiceIndex:   ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex,
 			ReceiverServiceIndex: destServiceIndex,
 			BalanceTransfer:      amount,
@@ -949,7 +949,7 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 	})
 }
 
-func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) (ExitReason, error) {
+func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepository.TrackedTx) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		// Extract offset o from register reg8
 		o := ctx.State.Registers[8] // Offset
@@ -961,16 +961,16 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterep
 
 		i := ctx.State.RAM.InspectRange(uint64(o), uint64(z), ram.NoWrap, false)
 
-		sStar := ctx.State.Registers[7]
-		if sStar == types.Register(^uint64(0)) {
-			sStar = types.Register(serviceIndex)
+		serviceIndex := ctx.State.Registers[7]
+		if serviceIndex == types.Register(^uint64(0)) {
+			serviceIndex = types.Register(ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex)
 		}
 
-		serviceAccount, ok, err := serviceaccount.GetServiceAccount(tx, types.ServiceIndex(sStar))
+		serviceAccount, ok, err := serviceaccount.GetServiceAccount(tx, types.ServiceIndex(serviceIndex))
 		if err != nil {
 			return ExitReason{}, err
 		}
-		if sStar > types.Register(^uint32(0)) || !ok {
+		if serviceIndex > types.Register(^uint32(0)) || !ok {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return ExitReasonGo, nil
 		}
@@ -989,7 +989,7 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterep
 			ServiceIndex types.ServiceIndex
 			BlobString   string
 		}{
-			ServiceIndex: types.ServiceIndex(sStar),
+			ServiceIndex: types.ServiceIndex(serviceIndex),
 			BlobString:   string(i),
 		}
 
@@ -1030,7 +1030,7 @@ func serializeWorkItemForFetch(i wp.WorkItem) []byte {
 	})
 }
 
-func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, operandTuples *[]OperandTuple, deferredTransfers *[]DeferredTransfer) (ExitReason, error) {
+func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[32]byte, authorizerOutput *[]byte, importSegmentsIndex *int, importSegments *[][][constants.SegmentSize]byte, blobsIntroduced *[][][]byte, accumulationInputs *[]types.AccumulationInput) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[T]) (ExitReason, error) {
 		var preimage []byte
 		w11 := ctx.State.Registers[11]
@@ -1146,33 +1146,18 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			}
 			preimage = workPackage.WorkItems[int(w11)].Payload
 		case 14:
-			if operandTuples == nil {
+			if accumulationInputs == nil {
 				break
 			}
-			preimage = serializer.Serialize(*operandTuples)
+			preimage = serializer.Serialize(*accumulationInputs)
 		case 15:
-			if operandTuples == nil {
+			if accumulationInputs == nil {
 				break
 			}
-			if w11 >= types.Register(len(*operandTuples)) {
+			if w11 >= types.Register(len(*accumulationInputs)) {
 				break
 			}
-			serialized := serializer.Serialize((*operandTuples)[int(w11)])
-			preimage = serialized
-		case 16:
-			if deferredTransfers == nil {
-				break
-			}
-			serialized := serializer.Serialize(*deferredTransfers)
-			preimage = serialized
-		case 17:
-			if deferredTransfers == nil {
-				break
-			}
-			if w11 >= types.Register(len(*deferredTransfers)) {
-				break
-			}
-			serialized := serializer.Serialize((*deferredTransfers)[int(w11)])
+			serialized := serializer.Serialize((*accumulationInputs)[int(w11)])
 			preimage = serialized
 		}
 

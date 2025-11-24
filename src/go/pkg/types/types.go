@@ -171,3 +171,72 @@ type GenericNum uint64
 type Register uint64
 
 const MaxRegister Register = (1 << 64) - 1
+
+type OperandTuple struct { // U
+	WorkPackageHash       [32]byte            // p
+	SegmentRoot           [32]byte            // e
+	AuthorizerHash        [32]byte            // a
+	WorkResultPayloadHash [32]byte            // y
+	GasLimit              GenericNum          // g
+	ExecutionExitReason   ExecutionExitReason // l
+	WorkReportOutput      []byte              // t
+}
+
+type DeferredTransfer struct { // X
+	SenderServiceIndex   ServiceIndex                     // s
+	ReceiverServiceIndex ServiceIndex                     // d
+	BalanceTransfer      Balance                          // a
+	Memo                 [constants.TransferMemoSize]byte // m
+	GasLimit             GasValue                         // g
+}
+
+// DeepCopy creates a deep copy of DeferredTransfer
+func (t DeferredTransfer) DeepCopy() DeferredTransfer {
+	// Create a new instance with all fields copied
+	return DeferredTransfer{
+		SenderServiceIndex:   t.SenderServiceIndex,
+		ReceiverServiceIndex: t.ReceiverServiceIndex,
+		BalanceTransfer:      t.BalanceTransfer,
+		Memo:                 t.Memo,
+		GasLimit:             t.GasLimit,
+	}
+}
+
+type AccumulationInput struct { // I
+	OperandTuple     *OperandTuple
+	DeferredTransfer *DeferredTransfer
+}
+
+func NewAccumulationInputFromOperandTuple(operand OperandTuple) AccumulationInput {
+	return AccumulationInput{
+		OperandTuple: &operand,
+	}
+}
+
+func NewAccumulationInputFromDeferredTransfer(transfer DeferredTransfer) AccumulationInput {
+	return AccumulationInput{
+		DeferredTransfer: &transfer,
+	}
+}
+
+func (u AccumulationInput) IsOperandTuple() bool {
+	return u.OperandTuple != nil
+}
+
+func (u AccumulationInput) IsDeferredTransfer() bool {
+	return u.DeferredTransfer != nil
+}
+
+func (u AccumulationInput) GetOperandTuple() *OperandTuple {
+	if u.IsOperandTuple() {
+		return u.OperandTuple
+	}
+	return nil
+}
+
+func (u AccumulationInput) GetDeferredTransfer() *DeferredTransfer {
+	if u.IsDeferredTransfer() {
+		return u.DeferredTransfer
+	}
+	return nil
+}

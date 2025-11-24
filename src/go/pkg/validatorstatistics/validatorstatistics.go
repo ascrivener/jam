@@ -60,5 +60,4 @@ type ServiceStatistics struct {
 	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
 	NumExtrinsicsUsed            types.GenericNum              // x
 	AccumulationStatistics       ServiceAccumulationStatistics // a
-	DeferredTransferStatistics   ServiceTransferStatistics     // t
 }

@@ -23,7 +23,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 		case GasID:
 			return Gas(ctx)
 		case FetchID:
-			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil, nil)
+			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil)
 		case LogID:
 			return Log(ctx)
 		default:
@@ -69,7 +69,7 @@ func Refine(tx *staterepository.TrackedTx, workItemIndex int, workPackage wp.Wor
 		case FetchID:
 			panic("not implemented")
 			// TODO: Figure out how to compute the blobs introduced for a work item
-			return Fetch(ctx, &workPackage, &[32]byte{}, &authorizerOutput, &workItemIndex, &importSegments, nil, nil, nil)
+			return Fetch(ctx, &workPackage, &[32]byte{}, &authorizerOutput, &workItemIndex, &importSegments, nil, nil)
 		case ExportID:
 			return Export(ctx, exportSegmentOffset)
 		case GasID:
@@ -136,46 +136,6 @@ func Refine(tx *staterepository.TrackedTx, workItemIndex int, workPackage wp.Wor
 	return r, integratedPVMsAndExportSequence.ExportSequence, nil
 }
 
-type DeferredTransfer struct { // T
-	SenderServiceIndex   types.ServiceIndex               // s
-	ReceiverServiceIndex types.ServiceIndex               // d
-	BalanceTransfer      types.Balance                    // a
-	Memo                 [constants.TransferMemoSize]byte // m
-	GasLimit             types.GasValue                   // g
-}
-
-// DeepCopy creates a deep copy of DeferredTransfer
-func (t DeferredTransfer) DeepCopy() DeferredTransfer {
-	// Create a new instance with all fields copied
-	return DeferredTransfer{
-		SenderServiceIndex:   t.SenderServiceIndex,
-		ReceiverServiceIndex: t.ReceiverServiceIndex,
-		BalanceTransfer:      t.BalanceTransfer,
-		Memo:                 t.Memo,
-		GasLimit:             t.GasLimit,
-	}
-}
-
-func SelectDeferredTransfers(deferredTransfers []DeferredTransfer, serviceIndex types.ServiceIndex) []DeferredTransfer {
-	selectedDeferredTransfers := make([]DeferredTransfer, 0)
-	for _, deferredTransfer := range deferredTransfers {
-		if deferredTransfer.ReceiverServiceIndex == serviceIndex {
-			selectedDeferredTransfers = append(selectedDeferredTransfers, deferredTransfer)
-		}
-	}
-	return selectedDeferredTransfers
-}
-
-type OperandTuple struct { // O
-	WorkPackageHash       [32]byte                  // p
-	SegmentRoot           [32]byte                  // e
-	AuthorizerHash        [32]byte                  // a
-	WorkResultPayloadHash [32]byte                  // y
-	GasLimit              types.GenericNum          // g
-	ExecutionExitReason   types.ExecutionExitReason // l
-	WorkReportOutput      []byte                    // t
-}
-
 type PreimageProvisions map[struct {
 	ServiceIndex types.ServiceIndex // s
 	BlobString   string             // i
@@ -185,7 +145,7 @@ type AccumulationResultContext struct { // X
 	AccumulatingServiceAccount *serviceaccount.ServiceAccount // s
 	StateComponents            AccumulationStateComponents    // d
 	DerivedServiceIndex        types.ServiceIndex             // i
-	DeferredTransfers          []DeferredTransfer             // t
+	DeferredTransfers          []types.DeferredTransfer       // t
 	PreimageResult             *[32]byte                      // y
 	PreimageProvisions         PreimageProvisions             // p
 	Tx                         *staterepository.TrackedTx
@@ -212,9 +172,9 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 		}
 	}
 
-	// Deep copy DeferredTransfers slice
+	// Deep copy types.DeferredTransfers slice
 	if ctx.DeferredTransfers != nil {
-		contextCheckpoint.DeferredTransfers = make([]DeferredTransfer, len(ctx.DeferredTransfers))
+		contextCheckpoint.DeferredTransfers = make([]types.DeferredTransfer, len(ctx.DeferredTransfers))
 		for i, transfer := range ctx.DeferredTransfers {
 			contextCheckpoint.DeferredTransfers[i] = transfer.DeepCopy()
 		}
@@ -257,7 +217,7 @@ func AccumulationResultContextFromAccumulationStateComponents(tx *staterepositor
 		AccumulatingServiceAccount: serviceAccount,
 		StateComponents:            *stateComponents,
 		DerivedServiceIndex:        derivedServiceIndex,
-		DeferredTransfers:          []DeferredTransfer{},
+		DeferredTransfers:          []types.DeferredTransfer{},
 		PreimageResult:             nil,
 		PreimageProvisions:         PreimageProvisions{},
 		Tx:                         childTx,
@@ -295,7 +255,7 @@ type AccumulateInvocationContext struct {
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, serviceIndex types.ServiceIndex, timeslot types.Timeslot, gas types.GasValue, operandTuples []OperandTuple, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, accumulationInputs []types.AccumulationInput, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		switch n {
 		case ReadID:
@@ -319,7 +279,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 				Argument: &struct{}{},
 			})
 		case FetchID:
-			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, &operandTuples, nil)
+			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, &accumulationInputs)
 		case InfoID:
 			return Info(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -349,7 +309,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		case YieldID:
 			return Yield(ctx)
 		case ProvideID:
-			return Provide(ctx, ctx.Argument.AccumulationResultContext.Tx, ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex)
+			return Provide(ctx, ctx.Argument.AccumulationResultContext.Tx)
 		case LogID:
 			return Log(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -364,18 +324,18 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}
 	serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
 	if err != nil {
-		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
+		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
 	if !exists {
-		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(tx, accumulationStateComponents, serviceAccount, timeslot, posteriorEntropyAccumulator)
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
-		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
+		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
-		return AccumulationStateComponents{}, []DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
 	// Create two separate context objects
 	exceptionalContext := normalContext.DeepCopy()
@@ -390,7 +350,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}{
 		Timeslot:         types.GenericNum(timeslot),
 		ServiceIndex:     types.GenericNum(serviceIndex),
-		OperandTuplesLen: types.GenericNum(len(operandTuples)),
+		OperandTuplesLen: types.GenericNum(len(accumulationInputs)),
 	})
 	executionExitReason, gasUsed, err := RunWithArgs(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
@@ -415,83 +375,4 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, &preimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
 	}
 	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
-}
-
-func OnTransfer(tx *staterepository.TrackedTx, timeslot types.Timeslot, serviceIndex types.ServiceIndex, posteriorEntropyAccumulator [4][32]byte, deferredTransfers []DeferredTransfer) (*serviceaccount.ServiceAccount, types.GasValue, error) {
-	var hf HostFunction[serviceaccount.ServiceAccount] = func(n HostFunctionIdentifier, ctx *HostFunctionContext[serviceaccount.ServiceAccount]) (ExitReason, error) {
-		switch n {
-		case LookupID:
-			return Lookup(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			}, tx, ctx.Argument)
-		case ReadID:
-			return Read(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			}, tx, ctx.Argument, ctx.Argument.ServiceIndex)
-		case WriteID:
-			return Write(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			}, tx, ctx.Argument)
-		case GasID:
-			return Gas(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			})
-		case FetchID:
-			return Fetch(ctx, nil, &posteriorEntropyAccumulator[0], nil, nil, nil, nil, nil, &deferredTransfers)
-		case InfoID:
-			return Info(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			}, tx, ctx.Argument)
-		case LogID:
-			return Log(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			})
-		default:
-			return Default(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			})
-		}
-	}
-	serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !exists {
-		return nil, 0, nil
-	}
-	if len(deferredTransfers) == 0 {
-		return serviceAccount, 0, nil
-	}
-	DeferredTransferGasLimitTotal := types.GasValue(0)
-	for _, deferredTransfer := range deferredTransfers {
-		serviceAccount.Balance += deferredTransfer.BalanceTransfer
-		DeferredTransferGasLimitTotal += deferredTransfer.GasLimit
-	}
-	_, code, err := serviceAccount.MetadataAndCode(tx)
-	if err != nil {
-		return serviceAccount, 0, err
-	}
-	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
-		return serviceAccount, 0, nil
-	}
-	_, remainingGas, err := RunWithArgs(*code, 10, DeferredTransferGasLimitTotal, serializer.Serialize(struct {
-		Timeslot             types.GenericNum
-		ServiceIndex         types.GenericNum
-		DeferredTransfersLen types.GenericNum
-	}{
-		Timeslot:             types.GenericNum(timeslot),
-		ServiceIndex:         types.GenericNum(serviceIndex),
-		DeferredTransfersLen: types.GenericNum(len(deferredTransfers)),
-	}), hf, serviceAccount)
-	if err != nil {
-		return serviceAccount, 0, err
-	}
-	return serviceAccount, remainingGas, nil
 }
