@@ -663,23 +663,47 @@ func accumulateAndIntegrate(
 	}
 
 	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
+
+	// Build map of work digests by service index
 	workDigestsForServiceIndex := map[types.ServiceIndex][]workreport.WorkDigest{}
 	for _, workReport := range accumulatableWorkReports[:n] {
 		for _, workDigest := range workReport.WorkDigests {
 			workDigestsForServiceIndex[workDigest.ServiceIndex] = append(workDigestsForServiceIndex[workDigest.ServiceIndex], workDigest)
 		}
 	}
-	for serviceIndex, digests := range workDigestsForServiceIndex {
-		var gasUsed types.GasValue
-		for _, serviceAndGasUsage := range serviceGasUsage {
-			if serviceAndGasUsage.ServiceIndex != serviceIndex {
-				continue
-			}
-			gasUsed += serviceAndGasUsage.GasUsed
+
+	// Aggregate gas usage and work items by service index
+	// serviceGasUsage can have multiple entries for the same service, so we need to sum them
+	for _, serviceAndGasUsage := range serviceGasUsage {
+		if serviceAndGasUsage.GasUsed == 0 {
+			continue
 		}
-		accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
-			NumberOfWorkItems: types.GenericNum(len(digests)),
-			GasUsed:           types.GenericNum(gasUsed),
+		digests := workDigestsForServiceIndex[serviceAndGasUsage.ServiceIndex]
+		if existing, exists := accumulationStatistics[serviceAndGasUsage.ServiceIndex]; exists {
+			// Aggregate with existing entry - only add gas, not work items (already counted)
+			accumulationStatistics[serviceAndGasUsage.ServiceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: existing.NumberOfWorkItems,
+				GasUsed:           existing.GasUsed + types.GenericNum(serviceAndGasUsage.GasUsed),
+			}
+		} else {
+			// First entry for this service - count work items
+			accumulationStatistics[serviceAndGasUsage.ServiceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: types.GenericNum(len(digests)),
+				GasUsed:           types.GenericNum(serviceAndGasUsage.GasUsed),
+			}
+		}
+	}
+	// Add any services that have work digests but weren't in serviceGasUsage
+	// (is this possible?)
+	for serviceIndex, digests := range workDigestsForServiceIndex {
+		if len(digests) == 0 {
+			continue
+		}
+		if _, exists := accumulationStatistics[serviceIndex]; !exists {
+			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: types.GenericNum(len(digests)),
+				GasUsed:           0, // No gas usage
+			}
 		}
 	}
 

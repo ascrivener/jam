@@ -206,7 +206,7 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/fallback"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces/storage"
             }
         },
         {
@@ -225,7 +225,7 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.0/traces"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.1/traces"
             }
         },
         {

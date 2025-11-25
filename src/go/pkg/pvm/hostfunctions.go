@@ -494,15 +494,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 
 func Checkpoint(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
-		// Close the previous exceptional context batch if it exists
-		if ctx.Argument.ExceptionalAccumulationResultContext.Tx != nil {
-			if err := ctx.Argument.ExceptionalAccumulationResultContext.Tx.Apply(ctx.Argument.AccumulationResultContext.Tx); err != nil {
-				return ExitReasonPanic, err
-			}
-		}
-
 		ctx.Argument.ExceptionalAccumulationResultContext = *ctx.Argument.AccumulationResultContext.DeepCopy()
-
 		ctx.State.Registers[7] = types.Register(ctx.State.Gas)
 		return ExitReasonGo, nil
 	})

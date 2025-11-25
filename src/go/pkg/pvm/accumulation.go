@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
 	var gas types.GasValue
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
 		gas = g
@@ -103,7 +103,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	// Map to store preimage provisions by service index
 	allPreimageProvisions := make(PreimageProvisions)
 
-	resultsByServiceIndex := make(map[types.ServiceIndex]AccumulationStateComponents)
+	resultsByServiceIndex := make(map[types.ServiceIndex]*AccumulationStateComponents)
 
 	var childTransactions []*staterepository.TrackedTx
 	var childTxMutex sync.Mutex
@@ -121,9 +121,12 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			childTransactions = append(childTransactions, childTx)
 			childTxMutex.Unlock()
 
+			// Create a deep copy of state components for this goroutine to prevent race conditions
+			stateComponentsCopy := accumulationStateComponents.DeepCopy()
+
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
 				childTx, // Use child transaction instead of parent
-				accumulationStateComponents,
+				stateComponentsCopy,
 				deferredTransfers,
 				workReports,
 				freeAccumulationServices,
@@ -300,7 +303,7 @@ func OuterAccumulation(tx *staterepository.TrackedTx, gas types.GasValue, workRe
 	deferredTransfers := make([]types.DeferredTransfer, 0)
 
 	// Continue processing batches until we run out of gas or reports
-	for startIdx < len(workReports) && remainingGas > 0 {
+	for {
 		// Calculate how many reports we can process with current gas
 		batchEndIdx := startIdx
 		gasPrioritizationRatioSum := types.GasValue(0)
