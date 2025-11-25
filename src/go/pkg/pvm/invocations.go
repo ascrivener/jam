@@ -143,7 +143,7 @@ type PreimageProvisions map[struct {
 
 type AccumulationResultContext struct { // X
 	AccumulatingServiceAccount *serviceaccount.ServiceAccount // s
-	StateComponents            AccumulationStateComponents    // d
+	StateComponents            AccumulationStateComponents    // e
 	DerivedServiceIndex        types.ServiceIndex             // i
 	DeferredTransfers          []types.DeferredTransfer       // t
 	PreimageResult             *[32]byte                      // y
@@ -208,7 +208,7 @@ func AccumulationResultContextFromAccumulationStateComponents(tx *staterepositor
 		Entropy:      posteriorEntropyAccumulator[0],
 		Timeslot:     types.GenericNum(timeslot),
 	}))
-	derivedServiceIndex, err := check(tx, types.ServiceIndex((1<<8)+serializer.DecodeLittleEndian(hash[:4])%(1<<32-1<<9)))
+	derivedServiceIndex, err := check(tx, types.ServiceIndex(constants.MinPublicServiceIndex+serializer.DecodeLittleEndian(hash[:4])%(1<<32-constants.MinPublicServiceIndex-1<<8)))
 	if err != nil {
 		return nil
 	}

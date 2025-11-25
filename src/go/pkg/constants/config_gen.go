@@ -81,6 +81,7 @@ var additionalConstants = map[string]map[string]string{
 	"MaxExportsInWorkPackage":         {"type": "uint32", "value": "3072", "comment": "W_X"},
 	"JamCommonEraStartUnixTime":       {"type": "int64", "value": "1735732800", "comment": "JCE epoch (2025-01-01 12:00 UTC)"},
 	"AuthorizerQueueLength":           {"type": "uint16", "value": "80", "comment": "Q"},
+	"MinPublicServiceIndex":           {"type": "uint64", "value": "1 << 16", "comment": "S"},
 	"MaxItemsInAuthorizationsPool":    {"type": "uint16", "value": "8", "comment": "O"},
 }
 

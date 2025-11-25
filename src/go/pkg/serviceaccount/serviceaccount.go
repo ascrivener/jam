@@ -47,6 +47,7 @@ type PreimageLookupHistoricalStatusKey struct {
 }
 
 type ServiceAccountData struct {
+	Version                        uint8              // v
 	CodeHash                       [32]byte           // c
 	Balance                        types.Balance      // b
 	MinimumGasForAccumulate        types.GasValue     // g

@@ -338,8 +338,9 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		mainIndex := ctx.State.Registers[7]         // m - Main service index
 		authIndicesOffset := ctx.State.Registers[8] // a - Authorization service index
 		validIndex := ctx.State.Registers[9]        // v - Validation service index
-		offset := ctx.State.Registers[10]           // o - Memory offset
-		numEntries := ctx.State.Registers[11]       // n - Number of entries
+		registrarIndex := ctx.State.Registers[10]   // r - Registrar service index
+		offset := ctx.State.Registers[11]           // o - Memory offset
+		numEntries := ctx.State.Registers[12]       // n - Number of entries
 
 		// Check if memory range is accessible
 		entrySize := uint64(12) // Each entry is 12 bytes (4 for service index, 8 for gas value)
@@ -353,12 +354,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 			return ExitReasonPanic, nil
 		}
 
-		if ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex != ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.ManagerServiceIndex {
-			ctx.State.Registers[7] = types.Register(HostCallHuh)
-			return ExitReasonGo, nil
-		}
-
-		if mainIndex > types.Register(^uint32(0)) || validIndex > types.Register(^uint32(0)) {
+		if mainIndex > types.Register(^uint32(0)) || validIndex > types.Register(^uint32(0)) || registrarIndex > types.Register(^uint32(0)) {
 			ctx.State.Registers[7] = types.Register(HostCallWho)
 			return ExitReasonGo, nil
 		}
@@ -395,6 +391,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 			ManagerServiceIndex:             types.ServiceIndex(mainIndex),
 			AssignServiceIndices:            assignIndices,
 			DesignateServiceIndex:           types.ServiceIndex(validIndex),
+			RegistrarServiceIndex:           types.ServiceIndex(registrarIndex),
 			AlwaysAccumulateServicesWithGas: serviceGasMap,
 		}
 		ctx.State.Registers[7] = types.Register(HostCallOK)
@@ -513,6 +510,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		minGasForAccumulate := ctx.State.Registers[9]  // g - minimum gas for accumulate
 		minGasForOnTransfer := ctx.State.Registers[10] // m - minimum gas for on transfer
 		gratisStorageOffset := ctx.State.Registers[11] // f - gratis storage offset
+		desiredID := ctx.State.Registers[12]           // d - desired ID
 
 		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) || labelLength > types.Register(^uint32(0)) {
 			return ExitReasonPanic, nil
@@ -530,8 +528,8 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 
 		// Create new service account
 		newAccount := &serviceaccount.ServiceAccount{
-			ServiceIndex: ctx.Argument.AccumulationResultContext.DerivedServiceIndex,
 			ServiceAccountData: serviceaccount.ServiceAccountData{
+				Version:                        0,
 				CodeHash:                       codeHash,
 				MinimumGasForAccumulate:        types.GasValue(minGasForAccumulate),
 				MinimumGasForOnTransfer:        types.GasValue(minGasForOnTransfer),
@@ -541,10 +539,14 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 				ParentServiceIndex:             ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.ServiceIndex,
 			},
 		}
-		if err := newAccount.SetPreimageLookupHistoricalStatus(tx, uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
-			return ExitReason{}, err
-		}
+
+		// Kind of ugly, but we need to simulate what the threshold balance needed WOULD be if we set the historical status
+		// Dont actually set it til we definitely want to add the new account to the state
+		newAccount.TotalItemsUsedInStorage += 2
+		newAccount.TotalOctetsUsedInStorage += 81 + uint64(labelLength)
 		newAccount.Balance = newAccount.ThresholdBalanceNeeded()
+		newAccount.TotalItemsUsedInStorage -= 2
+		newAccount.TotalOctetsUsedInStorage -= 81 + uint64(labelLength)
 
 		accumulatingServiceAccount := ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount
 		// Check if source has enough balance after the transfer (sb < (xs)t check)
@@ -552,21 +554,41 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		// 1. Its own threshold balance needs
 		// 2. The transfer amount to the new account
 		if accumulatingServiceAccount.Balance-newAccount.Balance < accumulatingServiceAccount.ThresholdBalanceNeeded() {
-			if err := newAccount.DeletePreimageLookupHistoricalStatus(tx, uint32(labelLength), codeHash); err != nil {
-				return ExitReason{}, err
-			}
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return ExitReasonGo, nil
 		}
-		accumulatingServiceAccount.Balance -= newAccount.Balance
 
-		// store new account
-		serviceaccount.SetServiceAccount(tx, newAccount)
+		// Helper function to finalize new service account creation
+		finalizeNewAccount := func(serviceIndex types.ServiceIndex) (ExitReason, error) {
+			newAccount.ServiceIndex = serviceIndex
+			if err := newAccount.SetPreimageLookupHistoricalStatus(tx, uint32(labelLength), codeHash, []types.Timeslot{}); err != nil {
+				return ExitReason{}, err
+			}
+			serviceaccount.SetServiceAccount(tx, newAccount)
+			accumulatingServiceAccount.Balance -= newAccount.Balance
+			ctx.State.Registers[7] = types.Register(serviceIndex)
+			return ExitReasonGo, nil
+		}
 
-		ctx.State.Registers[7] = types.Register(newAccount.ServiceIndex)
-		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = types.ServiceIndex((1 << 8) + ((uint64(newAccount.ServiceIndex) - (1 << 8) + 42 + (1<<32 - 1<<9)) % (1<<32 - 1<<9)))
+		// Check if registrar service is creating an account with desired ID
+		if accumulatingServiceAccount.ServiceIndex == ctx.Argument.AccumulationResultContext.StateComponents.PrivilegedServices.RegistrarServiceIndex && uint64(desiredID) < constants.MinPublicServiceIndex {
+			if _, exists, err := serviceaccount.GetServiceAccount(tx, types.ServiceIndex(desiredID)); err != nil {
+				return ExitReason{}, err
+			} else if exists {
+				ctx.State.Registers[7] = types.Register(HostCallFull)
+				return ExitReasonGo, nil
+			} else {
+				return finalizeNewAccount(types.ServiceIndex(desiredID))
+			}
+		}
 
-		return ExitReasonGo, nil
+		// Normal path: use derived service index
+		exitReason, err := finalizeNewAccount(ctx.Argument.AccumulationResultContext.DerivedServiceIndex)
+		if err != nil {
+			return ExitReason{}, err
+		}
+		ctx.Argument.AccumulationResultContext.DerivedServiceIndex = types.ServiceIndex(constants.MinPublicServiceIndex + (uint64(newAccount.ServiceIndex)-constants.MinPublicServiceIndex+42)%(1<<32-constants.MinPublicServiceIndex-1<<8))
+		return exitReason, nil
 	})
 }
 
@@ -1642,7 +1664,6 @@ func check(tx *staterepository.TrackedTx, i types.ServiceIndex) (types.ServiceIn
 		}
 
 		// Calculate the next index to try
-		// (i − 2^8 + 1) mod (2^32 − 2^9) + 2^8
-		currentIndex = types.ServiceIndex((1 << 8) + ((uint32(currentIndex) - (1 << 8) + 1) % (1<<32 - (1 << 9))))
+		currentIndex = types.ServiceIndex(constants.MinPublicServiceIndex + ((uint64(currentIndex) - constants.MinPublicServiceIndex + 1) % (1<<32 - (1 << 8) - constants.MinPublicServiceIndex)))
 	}
 }

@@ -34,15 +34,8 @@ type CoreStatistics struct {
 
 type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
 
-type TransferStatistics map[types.ServiceIndex]ServiceTransferStatistics
-
 type ServiceAccumulationStatistics struct {
 	NumberOfWorkItems types.GenericNum
-	GasUsed           types.GenericNum
-}
-
-type ServiceTransferStatistics struct {
-	NumberOfTransfers types.GenericNum
 	GasUsed           types.GenericNum
 }
 
