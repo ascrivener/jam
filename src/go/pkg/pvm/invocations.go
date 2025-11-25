@@ -190,13 +190,6 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 	return contextCheckpoint
 }
 
-func (ctx *AccumulationResultContext) ApplyChangesToTx(tx *staterepository.TrackedTx) error {
-	if err := tx.Apply(ctx.Tx); err != nil {
-		return fmt.Errorf("failed to apply nested batch: %w", err)
-	}
-	return nil
-}
-
 func AccumulationResultContextFromAccumulationStateComponents(tx *staterepository.TrackedTx, stateComponents *AccumulationStateComponents, serviceAccount *serviceaccount.ServiceAccount, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) *AccumulationResultContext {
 	hash := blake2b.Sum256(serializer.Serialize(struct {
 		ServiceIndex types.GenericNum
@@ -364,7 +357,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
 	}
 	if executionExitReason.IsError() {
-		if err := ctx.ExceptionalAccumulationResultContext.ApplyChangesToTx(tx); err != nil {
+		if err := tx.ReplaceMemoryWith(ctx.ExceptionalAccumulationResultContext.Tx); err != nil {
 			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
 		}
 		serviceaccount.SetServiceAccount(tx, ctx.ExceptionalAccumulationResultContext.AccumulatingServiceAccount)
@@ -372,7 +365,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}
 
 	// Success - apply changes to outer batch (merges changes into parent transaction)
-	if err := ctx.AccumulationResultContext.ApplyChangesToTx(tx); err != nil {
+	if err := tx.ReplaceMemoryWith(ctx.AccumulationResultContext.Tx); err != nil {
 		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
 

@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
+	"maps"
 	"strings"
 	"sync"
-
-	"maps"
 
 	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
@@ -558,9 +557,14 @@ func (tx *TrackedTx) DeepCopy() *TrackedTx {
 
 	// Deep copy the memory map
 	for k, v := range tx.memory {
-		valueCopy := make([]byte, len(v))
-		copy(valueCopy, v)
-		txCopy.memory[k] = valueCopy
+		if v == nil {
+			// Preserve nil (deletion marker)
+			txCopy.memory[k] = nil
+		} else {
+			valueCopy := make([]byte, len(v))
+			copy(valueCopy, v)
+			txCopy.memory[k] = valueCopy
+		}
 	}
 
 	// Deep copy the flush cache
@@ -569,6 +573,15 @@ func (tx *TrackedTx) DeepCopy() *TrackedTx {
 	}
 
 	return txCopy
+}
+
+func (tx *TrackedTx) ReplaceMemoryWith(otherTx *TrackedTx) error {
+	if otherTx == nil {
+		return fmt.Errorf("other transaction cannot be nil")
+	}
+
+	tx.memory = otherTx.memory
+	return nil
 }
 
 func (tx *TrackedTx) Apply(childTx *TrackedTx) error {

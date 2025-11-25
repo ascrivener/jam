@@ -25,9 +25,9 @@ type CoreStatistics struct {
 	OctetsIntroduced                               types.GenericNum // d
 	AvailabilityContributionsInAssurancesExtrinsic types.GenericNum // p
 	NumSegmentsImportedFrom                        types.GenericNum // i
-	NumSegmentsExportedInto                        types.GenericNum // e
-	SizeInOctetsOfExtrinsicsUsed                   types.GenericNum // z
 	NumExtrinsicsUsed                              types.GenericNum // x
+	SizeInOctetsOfExtrinsicsUsed                   types.GenericNum // z
+	NumSegmentsExportedInto                        types.GenericNum // e
 	WorkBundleLength                               types.GenericNum // b
 	ActualRefinementGasUsed                        types.GenericNum // u
 }
@@ -49,8 +49,8 @@ type ServiceStatistics struct {
 		Amount          types.GenericNum
 	} // r
 	NumSegmentsImportedFrom      types.GenericNum              // i
-	NumSegmentsExportedInto      types.GenericNum              // e
-	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
 	NumExtrinsicsUsed            types.GenericNum              // x
+	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
+	NumSegmentsExportedInto      types.GenericNum              // e
 	AccumulationStatistics       ServiceAccumulationStatistics // a
 }

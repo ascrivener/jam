@@ -550,7 +550,8 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		// The source account needs enough balance to cover both:
 		// 1. Its own threshold balance needs
 		// 2. The transfer amount to the new account
-		if accumulatingServiceAccount.Balance-newAccount.Balance < accumulatingServiceAccount.ThresholdBalanceNeeded() {
+		// Prevent underflow by checking balance is sufficient before subtraction
+		if accumulatingServiceAccount.Balance < newAccount.Balance || accumulatingServiceAccount.Balance-newAccount.Balance < accumulatingServiceAccount.ThresholdBalanceNeeded() {
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return ExitReasonGo, nil
 		}
@@ -651,14 +652,13 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		// Get source account
 		sourceAccount := ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount
 
-		// Calculate new balance
-		newBalance := sourceAccount.Balance - amount
-
-		// Check if source has enough balance after transfer
-		if newBalance < sourceAccount.ThresholdBalanceNeeded() {
+		// Check if source has enough balance (prevent underflow and ensure threshold is met)
+		if sourceAccount.Balance < amount || sourceAccount.Balance-amount < sourceAccount.ThresholdBalanceNeeded() {
 			ctx.State.Registers[7] = types.Register(HostCallCash)
 			return ExitReasonGo, nil
 		}
+
+		newBalance := sourceAccount.Balance - amount
 
 		// Create transfer object
 		transfer := types.DeferredTransfer{

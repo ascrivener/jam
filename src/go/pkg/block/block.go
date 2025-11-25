@@ -46,7 +46,7 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 		}
 	}
 	for _, ticket := range b.Extrinsics.Tickets {
-		if ticket.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+		if uint16(ticket.EntryIndex) >= uint16(constants.NumTicketEntries) {
 			return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
 		}
 	}
@@ -201,6 +201,9 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 	}
 	for _, fault := range b.Extrinsics.Disputes.Faults {
 		concatCulpritAndFaultKeys = append(concatCulpritAndFaultKeys, fault.ValidatorKey)
+	}
+	if len(concatCulpritAndFaultKeys) != len(b.Header.UnsignedHeader.OffendersMarker) {
+		return errors.ProtocolErrorf("offender key count does not match expected key count")
 	}
 	for index, key := range b.Header.UnsignedHeader.OffendersMarker {
 		if key != concatCulpritAndFaultKeys[index] {
@@ -511,7 +514,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 	for _, ticket := range b.Extrinsics.Tickets {
 		g.Go(func(t extrinsics.Ticket) func() error {
 			return func() error {
-				if t.EntryIndex >= types.GenericNum(constants.NumTicketEntries) {
+				if uint16(t.EntryIndex) >= constants.NumTicketEntries {
 					return errors.ProtocolErrorf("ticket entry index should be less than %d", constants.NumTicketEntries)
 				}
 

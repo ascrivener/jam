@@ -405,7 +405,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
-			EntryIndex:                 extrinsicTicket.EntryIndex,
+			EntryIndex:                 types.GenericNum(extrinsicTicket.EntryIndex),
 		})
 	}
 	for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {

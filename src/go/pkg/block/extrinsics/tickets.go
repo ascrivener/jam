@@ -7,6 +7,6 @@ import (
 type Tickets []Ticket
 
 type Ticket struct {
-	EntryIndex    types.GenericNum               // r
+	EntryIndex    uint8                          // r
 	ValidityProof types.BandersnatchRingVRFProof // p
 }
