@@ -58,6 +58,8 @@ const MaxTotalSizeWorkReportBlobs uint32 = 48 << 10 // W_R
 
 const MaxWorkItemsInPackage uint16 = 16 // I
 
+const MinPublicServiceIndex uint64 = 1 << 16 // S
+
 const RecentHistorySizeBlocks uint16 = 8 // H
 
 const ServiceCodeMaxSize uint32 = 4000000 // W_C

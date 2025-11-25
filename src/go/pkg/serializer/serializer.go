@@ -24,6 +24,7 @@ var (
 	workItemType             = reflect.TypeOf(workpackage.WorkItem{})
 	sealingKeySequenceType   = reflect.TypeOf(sealingkeysequence.SealingKeySequence{})
 	coreBitMaskType          = reflect.TypeOf(bitsequence.CoreBitMask{})
+	accumulationInputType    = reflect.TypeOf(types.AccumulationInput{})
 	genericNumType           = reflect.TypeOf(types.GenericNum(0))
 	emptyStructType          = reflect.TypeOf(struct{}{})
 	ticketArrayType          = reflect.TypeOf([constants.NumTimeslotsPerEpoch]ticket.Ticket{})
@@ -97,6 +98,16 @@ func serializeValue(v reflect.Value, buf *bytes.Buffer) {
 				serializeValue(reflect.ValueOf(*er.Blob), buf)
 			} else {
 				buf.Write([]byte{byte(*er.ExecutionError)})
+			}
+			return
+		case accumulationInputType:
+			ai := v.Interface().(types.AccumulationInput)
+			if ai.IsOperandTuple() {
+				buf.Write([]byte{0})
+				serializeValue(reflect.ValueOf(*ai.OperandTuple), buf)
+			} else {
+				buf.Write([]byte{1})
+				serializeValue(reflect.ValueOf(*ai.DeferredTransfer), buf)
 			}
 			return
 		case workItemType:
@@ -231,6 +242,28 @@ func deserializeValue(v reflect.Value, buf *bytes.Buffer) error {
 				er.ExecutionError = &errVal
 			}
 			v.Set(reflect.ValueOf(er))
+			return nil
+		case accumulationInputType:
+			tag, err := buf.ReadByte()
+			if err != nil {
+				return fmt.Errorf("failed to read AccumulationInput tag: %w", err)
+			}
+
+			ai := types.AccumulationInput{}
+			if tag == 0 {
+				ot := types.OperandTuple{}
+				if err := deserializeValue(reflect.ValueOf(&ot).Elem(), buf); err != nil {
+					return err
+				}
+				ai.OperandTuple = &ot
+			} else {
+				dt := types.DeferredTransfer{}
+				if err := deserializeValue(reflect.ValueOf(&dt).Elem(), buf); err != nil {
+					return err
+				}
+				ai.DeferredTransfer = &dt
+			}
+			v.Set(reflect.ValueOf(ai))
 			return nil
 		case workItemType:
 			panic("Cannot directly deserialize WorkItem")

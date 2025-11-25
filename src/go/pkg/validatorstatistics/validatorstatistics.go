@@ -25,24 +25,17 @@ type CoreStatistics struct {
 	OctetsIntroduced                               types.GenericNum // d
 	AvailabilityContributionsInAssurancesExtrinsic types.GenericNum // p
 	NumSegmentsImportedFrom                        types.GenericNum // i
-	NumSegmentsExportedInto                        types.GenericNum // e
-	SizeInOctetsOfExtrinsicsUsed                   types.GenericNum // z
 	NumExtrinsicsUsed                              types.GenericNum // x
+	SizeInOctetsOfExtrinsicsUsed                   types.GenericNum // z
+	NumSegmentsExportedInto                        types.GenericNum // e
 	WorkBundleLength                               types.GenericNum // b
 	ActualRefinementGasUsed                        types.GenericNum // u
 }
 
 type AccumulationStatistics map[types.ServiceIndex]ServiceAccumulationStatistics
 
-type TransferStatistics map[types.ServiceIndex]ServiceTransferStatistics
-
 type ServiceAccumulationStatistics struct {
 	NumberOfWorkItems types.GenericNum
-	GasUsed           types.GenericNum
-}
-
-type ServiceTransferStatistics struct {
-	NumberOfTransfers types.GenericNum
 	GasUsed           types.GenericNum
 }
 
@@ -56,9 +49,8 @@ type ServiceStatistics struct {
 		Amount          types.GenericNum
 	} // r
 	NumSegmentsImportedFrom      types.GenericNum              // i
-	NumSegmentsExportedInto      types.GenericNum              // e
-	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
 	NumExtrinsicsUsed            types.GenericNum              // x
+	SizeInOctetsOfExtrinsicsUsed types.GenericNum              // z
+	NumSegmentsExportedInto      types.GenericNum              // e
 	AccumulationStatistics       ServiceAccumulationStatistics // a
-	DeferredTransferStatistics   ServiceTransferStatistics     // t
 }

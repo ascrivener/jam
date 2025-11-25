@@ -463,7 +463,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "1758708840") {
+		// if !strings.Contains(testDir, "1763488081") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)
@@ -473,7 +473,6 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 	}
 }
 
-// testStateTransitions tests state transitions against test vectors
 func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	peerInfo := fuzzinterface.PeerInfo{
 		FuzzVersion: 0,
@@ -503,32 +502,67 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 	// Filter out report.bin and sort the remaining files
 	var testBinFiles []string
+	var genesisPath string
 	for _, file := range binFiles {
 		if !strings.HasSuffix(file, "report.bin") {
-			testBinFiles = append(testBinFiles, file)
+			if strings.HasSuffix(file, "genesis.bin") {
+				genesisPath = file
+			} else {
+				testBinFiles = append(testBinFiles, file)
+			}
 		}
 	}
 	sort.Strings(testBinFiles)
 
-	if len(testBinFiles) < 2 {
-		t.Logf("Need at least 2 test bin files, found %d", len(testBinFiles))
+	// Prioritize genesis.bin if it exists, otherwise use first sorted file
+	var warpVectorPath string
+	if genesisPath != "" {
+		warpVectorPath = genesisPath
+	} else if len(testBinFiles) > 0 {
+		warpVectorPath = testBinFiles[0]
+		// Remove it from testBinFiles since we're using it as warp vector
+		testBinFiles = testBinFiles[1:]
+	} else {
+		t.Logf("No test bin files found")
 		return
 	}
 
-	// Use first bin file for warp vector
-	warpVectorPath := testBinFiles[0]
+	if len(testBinFiles) < 1 {
+		t.Logf("Need at least 1 test bin file after warp vector, found %d", len(testBinFiles))
+		return
+	}
 	warpVectorData, err := os.ReadFile(warpVectorPath)
 	if err != nil {
-		t.Fatalf("Failed to load genesis vector file: %v", err)
+		t.Fatalf("Failed to load warp vector file: %v", err)
 	}
 
-	warpVector := TestVector{}
-	if err := serializer.Deserialize(warpVectorData, &warpVector); err != nil {
-		t.Logf("Failed to deserialize genesis vector: %v", err)
+	// Deserialize based on file type
+	var warpHeader header.Header
+	var warpState merklizer.State
+	var expectedStateRoot [32]byte
+
+	if strings.HasSuffix(warpVectorPath, "genesis.bin") {
+		// Genesis file uses GenesisVector format
+		genesisVector := GenesisVector{}
+		if err := serializer.Deserialize(warpVectorData, &genesisVector); err != nil {
+			t.Fatalf("Failed to deserialize genesis vector: %v", err)
+		}
+		warpHeader = genesisVector.Header
+		warpState = genesisVector.StateWithRoot.State
+		expectedStateRoot = genesisVector.StateWithRoot.StateRoot
+	} else {
+		// Regular test files use TestVector format
+		testVector := TestVector{}
+		if err := serializer.Deserialize(warpVectorData, &testVector); err != nil {
+			t.Fatalf("Failed to deserialize test vector: %v", err)
+		}
+		warpHeader = testVector.Block.Header
+		warpState = testVector.PostState.State
+		expectedStateRoot = testVector.PostState.StateRoot
 	}
 
 	t.Logf("Setting initial genesis state...")
-	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: warpVector.Block.Header, State: warpVector.PostState.State}})
+	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: warpHeader, State: warpState}})
 	if err != nil {
 		t.Fatalf("Failed to send Initialize message: %v", err)
 	}
@@ -539,8 +573,8 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 	t.Logf("State set successfully, state root: %x", *resp.StateRoot)
 
-	if *resp.StateRoot != warpVector.PostState.StateRoot {
-		t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, warpVector.PostState.StateRoot)
+	if *resp.StateRoot != expectedStateRoot {
+		t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, expectedStateRoot)
 	}
 
 	// Process all test files sequentially after the warp file
@@ -580,7 +614,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 
 		testVector := TestVector{}
 		if err := serializer.Deserialize(testVectorData, &testVector); err != nil {
-			t.Fatalf("Failed to deserialize test vector from %s", testVectorPath)
+			t.Fatalf("Failed to deserialize test vector from %s: %v", testVectorPath, err)
 		}
 
 		importBlock := fuzzinterface.ImportBlock(testVector.Block)

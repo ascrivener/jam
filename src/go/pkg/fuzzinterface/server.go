@@ -42,7 +42,7 @@ func NewServer() *Server {
 			JamVersion: Version{
 				Major: 0,
 				Minor: 7,
-				Patch: 0,
+				Patch: 1,
 			},
 			Name: []byte("jamzilla"),
 		},
@@ -273,16 +273,20 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 }
 
 // handleImportBlock handles an ImportBlock request
-func (s *Server) handleImportBlock(importBlockData []byte) (ResponseMessage, error) {
+func (s *Server) handleImportBlock(importBlockData []byte) (resp ResponseMessage, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("PANIC in handleImportBlock: %v", r)
 			debug.PrintStack()
+			// Return panic as error response
+			errorMsg := []byte(fmt.Sprintf("panic: %v", r))
+			resp = ResponseMessage{Error: &errorMsg}
+			err = nil
 		}
 	}()
 
 	var importBlock ImportBlock
-	err := serializer.Deserialize(importBlockData, &importBlock)
+	err = serializer.Deserialize(importBlockData, &importBlock)
 	if err != nil {
 		return ResponseMessage{}, err
 	}

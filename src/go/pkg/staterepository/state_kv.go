@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
+	"maps"
 	"strings"
 	"sync"
-
-	"maps"
 
 	"github.com/cockroachdb/pebble"
 	"golang.org/x/crypto/blake2b"
@@ -357,6 +356,7 @@ func calculateInternalNodeHash(leftHash, rightHash [32]byte) [32]byte {
 }
 
 func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
+	// Check this transaction's memory first
 	value, exists := tx.memory[key]
 	if exists {
 		if value == nil {
@@ -364,6 +364,13 @@ func GetStateKV(tx *TrackedTx, key [31]byte) ([]byte, bool, error) {
 		}
 		return value, true, nil
 	}
+
+	// Check parent transaction's memory if this is a child
+	if tx.parent != nil {
+		return GetStateKV(tx.parent, key)
+	}
+
+	// Finally, fall back to database
 	return getLeaf(tx, key)
 }
 
@@ -490,6 +497,7 @@ type TrackedTx struct {
 	stateRoot  [32]byte
 	memory     map[[31]byte][]byte
 	flushCache map[[32]byte]*Node
+	parent     *TrackedTx // Parent transaction for read-through in child transactions
 }
 
 // NewTrackedTx creates a new tracked transaction wrapper
@@ -531,11 +539,49 @@ func (tx *TrackedTx) CreateChild() *TrackedTx {
 		batch:     tx.batch,
 		stateRoot: tx.stateRoot,
 		memory:    make(map[[31]byte][]byte),
+		parent:    tx, // Keep reference to parent for read-through
 	}
 
-	maps.Copy(child.memory, tx.memory)
-
 	return child
+}
+
+// DeepCopy creates an exact copy of the TrackedTx with the same state
+func (tx *TrackedTx) DeepCopy() *TrackedTx {
+	txCopy := &TrackedTx{
+		batch:      tx.batch,
+		stateRoot:  tx.stateRoot,
+		memory:     make(map[[31]byte][]byte, len(tx.memory)),
+		flushCache: make(map[[32]byte]*Node, len(tx.flushCache)),
+		parent:     tx.parent,
+	}
+
+	// Deep copy the memory map
+	for k, v := range tx.memory {
+		if v == nil {
+			// Preserve nil (deletion marker)
+			txCopy.memory[k] = nil
+		} else {
+			valueCopy := make([]byte, len(v))
+			copy(valueCopy, v)
+			txCopy.memory[k] = valueCopy
+		}
+	}
+
+	// Deep copy the flush cache
+	for k, v := range tx.flushCache {
+		txCopy.flushCache[k] = v
+	}
+
+	return txCopy
+}
+
+func (tx *TrackedTx) ReplaceMemoryWith(otherTx *TrackedTx) error {
+	if otherTx == nil {
+		return fmt.Errorf("other transaction cannot be nil")
+	}
+
+	tx.memory = otherTx.memory
+	return nil
 }
 
 func (tx *TrackedTx) Apply(childTx *TrackedTx) error {

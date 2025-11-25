@@ -204,7 +204,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 
 	accumulatableWorkReports, queuedExecutionWorkReports := computeAccumulatableWorkReportsAndQueuedExecutionWorkReports(curBlock.Header, curBlock.Extrinsics.Assurances, availableReports, priorState.AccumulationHistory, priorState.AccumulationQueue)
 
-	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, err := accumulateAndIntegrate(
+	accumulationStateComponents, accumulationOutputSequence, posteriorAccumulationQueue, posteriorAccumulationHistory, accumulationStatistics, err := accumulateAndIntegrate(
 		tx,
 		priorState,
 		posteriorMostRecentBlockTimeslot,
@@ -245,7 +245,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 
 	authorizersPool := computeAuthorizersPool(curBlock.Header, curBlock.Extrinsics.Guarantees, priorState.AuthorizerQueue, priorState.AuthorizersPool)
 
-	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, deferredTransferStatistics, accumulationStatistics, posteriorEntropyAccumulator, posteriorDisputes)
+	validatorStatistics := computeValidatorStatistics(curBlock.Extrinsics.Guarantees, curBlock.Extrinsics.Preimages, curBlock.Extrinsics.Assurances, curBlock.Extrinsics.Tickets, priorState.MostRecentBlockTimeslot, posteriorValidatorKeysetsActive, posteriorValidatorKeysetsPriorEpoch, priorState.ValidatorStatistics, curBlock.Header, availableReports, accumulationStatistics, posteriorEntropyAccumulator, posteriorDisputes)
 
 	// Wait for Safrole computation to complete
 	safroleRes := <-safroleResultChan
@@ -405,7 +405,7 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		}
 		posteriorTicketAccumulator = append(posteriorTicketAccumulator, ticket.Ticket{
 			VerifiablyRandomIdentifier: vrfOutput,
-			EntryIndex:                 extrinsicTicket.EntryIndex,
+			EntryIndex:                 types.GenericNum(extrinsicTicket.EntryIndex),
 		})
 	}
 	for _, priorTicket := range priorSafroleBasicState.TicketAccumulator {
@@ -650,71 +650,73 @@ func accumulateAndIntegrate(
 	accumulatableWorkReports []workreport.WorkReport,
 	queuedExecutionWorkReports []workreport.WorkReportWithWorkPackageHashes,
 	posteriorEntropyAccumulator [4][32]byte,
-) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.TransferStatistics, validatorstatistics.AccumulationStatistics, error) {
+) (pvm.AccumulationStateComponents, []pvm.BEEFYCommitment, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes, state.AccumulationHistory, validatorstatistics.AccumulationStatistics, error) {
 	gas := max(types.GasValue(constants.AllAccumulationTotalGasAllocation), types.GasValue(constants.SingleAccumulationAllocatedGas*uint64(constants.NumCores))+priorState.PrivilegedServices.TotalAlwaysAccumulateGas())
-	n, o, deferredTransfers, C, serviceGasUsage, err := pvm.OuterAccumulation(tx, gas, posteriorMostRecentBlockTimeslot, accumulatableWorkReports, &pvm.AccumulationStateComponents{
+	n, e, C, serviceGasUsage, err := pvm.OuterAccumulation(tx, gas, accumulatableWorkReports, &pvm.AccumulationStateComponents{
 		UpcomingValidatorKeysets: priorState.ValidatorKeysetsStaging,
 		AuthorizersQueue:         priorState.AuthorizerQueue,
 		PrivilegedServices:       priorState.PrivilegedServices,
-	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorEntropyAccumulator)
+	}, priorState.PrivilegedServices.AlwaysAccumulateServicesWithGas, posteriorMostRecentBlockTimeslot, posteriorEntropyAccumulator)
 
 	if err != nil {
-		return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+		return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.AccumulationStatistics{}, err
 	}
 
 	var accumulationStatistics = validatorstatistics.AccumulationStatistics{}
+
+	// Build map of work digests by service index
 	workDigestsForServiceIndex := map[types.ServiceIndex][]workreport.WorkDigest{}
 	for _, workReport := range accumulatableWorkReports[:n] {
 		for _, workDigest := range workReport.WorkDigests {
 			workDigestsForServiceIndex[workDigest.ServiceIndex] = append(workDigestsForServiceIndex[workDigest.ServiceIndex], workDigest)
 		}
 	}
-	for serviceIndex, digests := range workDigestsForServiceIndex {
-		var gasUsed types.GasValue
-		for _, serviceAndGasUsage := range serviceGasUsage {
-			if serviceAndGasUsage.ServiceIndex != serviceIndex {
-				continue
-			}
-			gasUsed += serviceAndGasUsage.GasUsed
+
+	// Aggregate gas usage and work items by service index
+	// serviceGasUsage can have multiple entries for the same service, so we need to sum them
+	for _, serviceAndGasUsage := range serviceGasUsage {
+		if serviceAndGasUsage.GasUsed == 0 {
+			continue
 		}
-		accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
-			NumberOfWorkItems: types.GenericNum(len(digests)),
-			GasUsed:           types.GenericNum(gasUsed),
+		digests := workDigestsForServiceIndex[serviceAndGasUsage.ServiceIndex]
+		if existing, exists := accumulationStatistics[serviceAndGasUsage.ServiceIndex]; exists {
+			// Aggregate with existing entry - only add gas, not work items (already counted)
+			accumulationStatistics[serviceAndGasUsage.ServiceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: existing.NumberOfWorkItems,
+				GasUsed:           existing.GasUsed + types.GenericNum(serviceAndGasUsage.GasUsed),
+			}
+		} else {
+			// First entry for this service - count work items
+			accumulationStatistics[serviceAndGasUsage.ServiceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: types.GenericNum(len(digests)),
+				GasUsed:           types.GenericNum(serviceAndGasUsage.GasUsed),
+			}
+		}
+	}
+	// Add any services that have work digests but weren't in serviceGasUsage
+	// (is this possible?)
+	for serviceIndex, digests := range workDigestsForServiceIndex {
+		if len(digests) == 0 {
+			continue
+		}
+		if _, exists := accumulationStatistics[serviceIndex]; !exists {
+			accumulationStatistics[serviceIndex] = validatorstatistics.ServiceAccumulationStatistics{
+				NumberOfWorkItems: types.GenericNum(len(digests)),
+				GasUsed:           0, // No gas usage
+			}
 		}
 	}
 
 	for serviceIndex, _ := range accumulationStatistics {
 		serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
 		if err != nil {
-			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.AccumulationStatistics{}, err
 		}
 		if !exists {
-			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, nil
+			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.AccumulationStatistics{}, nil
 		}
 		serviceAccount.MostRecentAccumulationTimeslot = posteriorMostRecentBlockTimeslot
 		serviceaccount.SetServiceAccount(tx, serviceAccount)
-	}
-
-	var deferredTransferStatistics = validatorstatistics.TransferStatistics{}
-
-	var deferredTransfersForServiceIndex = make(map[types.ServiceIndex][]pvm.DeferredTransfer)
-	for _, deferredTransfer := range deferredTransfers {
-		deferredTransfersForServiceIndex[deferredTransfer.ReceiverServiceIndex] = append(deferredTransfersForServiceIndex[deferredTransfer.ReceiverServiceIndex], deferredTransfer)
-	}
-
-	for serviceIndex, deferredTransfers := range deferredTransfersForServiceIndex {
-		serviceAccount, gasUsed, err := pvm.OnTransfer(tx, posteriorMostRecentBlockTimeslot, serviceIndex, posteriorEntropyAccumulator, deferredTransfers)
-		if serviceAccount != nil {
-			serviceaccount.SetServiceAccount(tx, serviceAccount)
-		}
-
-		if err != nil {
-			return pvm.AccumulationStateComponents{}, nil, [constants.NumTimeslotsPerEpoch][]workreport.WorkReportWithWorkPackageHashes{}, state.AccumulationHistory{}, validatorstatistics.TransferStatistics{}, validatorstatistics.AccumulationStatistics{}, err
-		}
-		deferredTransferStatistics[serviceIndex] = validatorstatistics.ServiceTransferStatistics{
-			NumberOfTransfers: types.GenericNum(len(deferredTransfers)),
-			GasUsed:           types.GenericNum(gasUsed),
-		}
 	}
 
 	// Create a copy of the accumulation history before modifying it
@@ -743,7 +745,7 @@ func accumulateAndIntegrate(
 		}
 	}
 
-	return o, C, posteriorAccumulationQueue, posteriorAccumulationHistory, deferredTransferStatistics, accumulationStatistics, nil
+	return e, C, posteriorAccumulationQueue, posteriorAccumulationHistory, accumulationStatistics, nil
 }
 
 func computeMostRecentBlockTimeslot(blockHeader header.Header) types.Timeslot {
@@ -771,7 +773,7 @@ func computeDisputes(disputesExtrinsic extrinsics.Disputes, priorDisputes types.
 	return priorDisputes
 }
 
-func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics validatorstatistics.ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, deferredTransferStatistics validatorstatistics.TransferStatistics, accumulationStatistics validatorstatistics.AccumulationStatistics, posteriorEntropyAccumulator [4][32]byte, posteriorDisputes types.Disputes) validatorstatistics.ValidatorStatistics {
+func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extrinsics.Preimages, assurances extrinsics.Assurances, tickets extrinsics.Tickets, priorMostRecentBlockTimeslot types.Timeslot, posteriorValidatorKeysetsActive types.ValidatorKeysets, posteriorValidatorKeysetsPriorEpoch types.ValidatorKeysets, priorValidatorStatistics validatorstatistics.ValidatorStatistics, header header.Header, availableReports []workreport.WorkReport, accumulationStatistics validatorstatistics.AccumulationStatistics, posteriorEntropyAccumulator [4][32]byte, posteriorDisputes types.Disputes) validatorstatistics.ValidatorStatistics {
 	posteriorValidatorStatistics := priorValidatorStatistics
 	var a [constants.NumValidators]validatorstatistics.SingleValidatorStatistics
 	if header.TimeSlot.EpochIndex() == priorMostRecentBlockTimeslot.EpochIndex() {
@@ -849,9 +851,6 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 	for _, preimage := range preimages {
 		trackedServiceIndices[types.ServiceIndex(preimage.ServiceIndex)] = struct{}{}
 	}
-	for serviceIndex, _ := range deferredTransferStatistics {
-		trackedServiceIndices[serviceIndex] = struct{}{}
-	}
 	for serviceIndex, _ := range accumulationStatistics {
 		trackedServiceIndices[serviceIndex] = struct{}{}
 	}
@@ -877,9 +876,6 @@ func computeValidatorStatistics(guarantees extrinsics.Guarantees, preimages extr
 		}
 		if _, ok := accumulationStatistics[serviceIndex]; ok {
 			serviceStatistics.AccumulationStatistics = accumulationStatistics[serviceIndex]
-		}
-		if _, ok := deferredTransferStatistics[serviceIndex]; ok {
-			serviceStatistics.DeferredTransferStatistics = deferredTransferStatistics[serviceIndex]
 		}
 		posteriorValidatorStatistics.ServiceStatistics[types.ServiceIndex(serviceIndex)] = serviceStatistics
 	}
