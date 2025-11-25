@@ -179,16 +179,16 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	}
 	wg.Wait()
 
+	// Check if any errors occurred during accumulation
+	if len(accumulationErrors) > 0 {
+		return AccumulationStateComponents{}, nil, nil, nil, accumulationErrors[0]
+	}
+
 	// Merge all child transactions back into parent after concurrent processing
 	for _, childTx := range childTransactions {
 		if err := tx.Apply(childTx); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
-	}
-
-	// Check if any errors occurred during accumulation
-	if len(accumulationErrors) > 0 {
-		return AccumulationStateComponents{}, nil, nil, nil, accumulationErrors[0]
 	}
 
 	// sort service gas usage by service index

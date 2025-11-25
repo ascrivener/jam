@@ -426,6 +426,11 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 			return ExitReasonGo, nil
 		}
 
+		if assignServiceIndex > types.Register(^uint32(0)) {
+			ctx.State.Registers[7] = types.Register(HostCallWho)
+			return ExitReasonGo, nil
+		}
+
 		// Read the queue of authorizer hashes from memory
 		authorizerQueue := [constants.AuthorizerQueueLength][32]byte{}
 		for i := range queueLength {

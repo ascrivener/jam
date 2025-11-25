@@ -112,7 +112,7 @@ func (s *ServiceAccount) MetadataAndCode(tx *staterepository.TrackedTx) (*[]byte
 	offset := 0
 	L_m, n, ok := serializer.DecodeGeneralNatural(preimage[offset:])
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, fmt.Errorf("failed to decode metadata length from preimage for code hash %x", s.CodeHash)
 	}
 	offset += n
 	m := preimage[offset : offset+int(L_m)]

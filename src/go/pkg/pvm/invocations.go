@@ -194,7 +194,6 @@ func (ctx *AccumulationResultContext) ApplyChangesToTx(tx *staterepository.Track
 	if err := tx.Apply(ctx.Tx); err != nil {
 		return fmt.Errorf("failed to apply nested batch: %w", err)
 	}
-	serviceaccount.SetServiceAccount(tx, ctx.AccumulatingServiceAccount)
 	return nil
 }
 
@@ -329,12 +328,20 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	if !exists {
 		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
+	// Transfer the balances to the service account
+	for _, accumulationInput := range accumulationInputs {
+		if accumulationInput.IsDeferredTransfer() {
+			serviceAccount.Balance += types.Balance(accumulationInput.DeferredTransfer.BalanceTransfer)
+		}
+	}
+
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(tx, accumulationStateComponents, serviceAccount, timeslot, posteriorEntropyAccumulator)
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
 		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
 	}
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
+		serviceaccount.SetServiceAccount(tx, serviceAccount)
 		return AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
 	}
 	// Create two separate context objects
@@ -360,13 +367,16 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		if err := ctx.ExceptionalAccumulationResultContext.ApplyChangesToTx(tx); err != nil {
 			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
 		}
+		serviceaccount.SetServiceAccount(tx, ctx.ExceptionalAccumulationResultContext.AccumulatingServiceAccount)
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
 	}
 
 	// Success - apply changes to outer batch (merges changes into parent transaction)
 	if err := ctx.AccumulationResultContext.ApplyChangesToTx(tx); err != nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
+		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
+
+	serviceaccount.SetServiceAccount(tx, ctx.AccumulationResultContext.AccumulatingServiceAccount)
 
 	blob := *executionExitReason.Blob
 	if len(blob) == 32 {
