@@ -121,12 +121,9 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			childTransactions = append(childTransactions, childTx)
 			childTxMutex.Unlock()
 
-			// Create a deep copy of state components for this goroutine to prevent race conditions
-			stateComponentsCopy := accumulationStateComponents.DeepCopy()
-
 			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
 				childTx, // Use child transaction instead of parent
-				stateComponentsCopy,
+				accumulationStateComponents,
 				deferredTransfers,
 				workReports,
 				freeAccumulationServices,

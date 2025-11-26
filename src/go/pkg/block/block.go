@@ -45,6 +45,9 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 			return errors.ProtocolErrorf("extrinsics should have no tickets")
 		}
 	}
+	if b.Header.BandersnatchBlockAuthorIndex >= types.ValidatorIndex(constants.NumValidators) {
+		return errors.ProtocolErrorf("bandersnatch block author index is out of bounds: %d", b.Header.BandersnatchBlockAuthorIndex)
+	}
 	for _, ticket := range b.Extrinsics.Tickets {
 		if uint16(ticket.EntryIndex) >= uint16(constants.NumTicketEntries) {
 			return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
@@ -65,6 +68,11 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 		}
 		if len(guarantee.Credentials) != 2 && len(guarantee.Credentials) != 3 {
 			return errors.ProtocolErrorf("guarantee should have either 2 or 3 credentials")
+		}
+		for _, credential := range guarantee.Credentials {
+			if credential.ValidatorIndex >= types.ValidatorIndex(constants.NumValidators) {
+				return errors.ProtocolErrorf("credential validator index is out of bounds: %d", credential.ValidatorIndex)
+			}
 		}
 	}
 	if len(b.Extrinsics.Assurances) > int(constants.NumValidators) {
@@ -809,9 +817,4 @@ func GetTip(tx *staterepository.TrackedTx) (*BlockWithInfo, error) {
 
 	// Get the actual block using the header hash
 	return Get(tx, headerHash)
-}
-
-// Helper functions for key construction
-func makeBlockKey(headerHash [32]byte) []byte {
-	return append([]byte("block:"), headerHash[:]...)
 }
