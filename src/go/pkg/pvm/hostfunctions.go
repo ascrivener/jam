@@ -754,7 +754,6 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 				accumulatingServiceAccount.Balance += destinationAccount.Balance
 
 				// IMPORTANT: actually delete the service account and preimage from state as well
-				serviceaccount.DeleteServiceAccount(tx, destServiceIndex)
 				if err := destinationAccount.DeletePreimageLookupHistoricalStatus(tx, uint32(length), hash); err != nil {
 					return ExitReason{}, err
 				}
@@ -762,6 +761,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 
 				// Remove the entry from destination account
 				serviceaccount.DeleteServiceAccount(tx, destServiceIndex)
+				ctx.Argument.AccumulationResultContext.DeletedServices[destServiceIndex] = struct{}{}
 
 				// Set status to OK
 				ctx.State.Registers[7] = types.Register(HostCallOK)

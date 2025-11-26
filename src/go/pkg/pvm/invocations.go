@@ -142,12 +142,13 @@ type PreimageProvisions map[struct {
 }]struct{}
 
 type AccumulationResultContext struct { // X
-	AccumulatingServiceAccount *serviceaccount.ServiceAccount // s
-	StateComponents            *AccumulationStateComponents   // e
-	DerivedServiceIndex        types.ServiceIndex             // i
-	DeferredTransfers          []types.DeferredTransfer       // t
-	PreimageResult             *[32]byte                      // y
-	PreimageProvisions         PreimageProvisions             // p
+	AccumulatingServiceAccount *serviceaccount.ServiceAccount  // s
+	StateComponents            *AccumulationStateComponents    // e
+	DerivedServiceIndex        types.ServiceIndex              // i
+	DeferredTransfers          []types.DeferredTransfer        // t
+	PreimageResult             *[32]byte                       // y
+	PreimageProvisions         PreimageProvisions              // p
+	DeletedServices            map[types.ServiceIndex]struct{} // Track services deleted during accumulation
 	Tx                         *staterepository.TrackedTx
 }
 
@@ -163,6 +164,11 @@ func (ctx *AccumulationResultContext) DeepCopy() *AccumulationResultContext {
 
 	serviceAccountCopy := *ctx.AccumulatingServiceAccount
 	contextCheckpoint.AccumulatingServiceAccount = &serviceAccountCopy
+
+	if ctx.DeletedServices != nil {
+		contextCheckpoint.DeletedServices = make(map[types.ServiceIndex]struct{}, len(ctx.DeletedServices))
+		maps.Copy(contextCheckpoint.DeletedServices, ctx.DeletedServices)
+	}
 
 	// Deep copy PreimageProvisions
 	if ctx.PreimageProvisions != nil {
@@ -213,6 +219,7 @@ func AccumulationResultContextFromAccumulationStateComponents(tx *staterepositor
 		DeferredTransfers:          []types.DeferredTransfer{},
 		PreimageResult:             nil,
 		PreimageProvisions:         PreimageProvisions{},
+		DeletedServices:            make(map[types.ServiceIndex]struct{}),
 		Tx:                         tx.DeepCopy(),
 	}
 }
@@ -248,7 +255,7 @@ type AccumulateInvocationContext struct {
 
 type AccumulateHostFunction = HostFunction[AccumulateInvocationContext]
 
-func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, accumulationInputs []types.AccumulationInput, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, timeslot types.Timeslot, serviceIndex types.ServiceIndex, gas types.GasValue, accumulationInputs []types.AccumulationInput, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, map[types.ServiceIndex]struct{}, error) {
 	var hf AccumulateHostFunction = func(n HostFunctionIdentifier, ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, error) {
 		switch n {
 		case ReadID:
@@ -317,10 +324,10 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}
 	serviceAccount, exists, err := serviceaccount.GetServiceAccount(tx, serviceIndex)
 	if err != nil {
-		return &AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
+		return &AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), err
 	}
 	if !exists {
-		return accumulationStateComponents, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+		return accumulationStateComponents, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), nil
 	}
 	// Transfer the balances to the service account
 	for _, accumulationInput := range accumulationInputs {
@@ -330,11 +337,11 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	}
 	_, code, err := serviceAccount.MetadataAndCode(tx)
 	if err != nil {
-		return &AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, err
+		return &AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), err
 	}
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
 		serviceaccount.SetServiceAccount(tx, serviceAccount)
-		return accumulationStateComponents, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, nil
+		return accumulationStateComponents, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), nil
 	}
 	// Create two separate context objects with independent child transactions
 	normalContext := AccumulationResultContextFromAccumulationStateComponents(tx, accumulationStateComponents, serviceAccount, timeslot, posteriorEntropyAccumulator)
@@ -354,19 +361,19 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	})
 	executionExitReason, gasUsed, err := RunWithArgs(*code, 5, gas, serializedArguments, hf, &ctx)
 	if err != nil {
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, ctx.ExceptionalAccumulationResultContext.DeletedServices, err
 	}
 	if executionExitReason.IsError() {
 		if err := tx.ReplaceMemoryWith(ctx.ExceptionalAccumulationResultContext.Tx); err != nil {
-			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, err
+			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, ctx.ExceptionalAccumulationResultContext.DeletedServices, err
 		}
 		serviceaccount.SetServiceAccount(tx, ctx.ExceptionalAccumulationResultContext.AccumulatingServiceAccount)
-		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, nil
+		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, ctx.ExceptionalAccumulationResultContext.DeletedServices, nil
 	}
 
 	// Success - apply changes to outer batch (merges changes into parent transaction)
 	if err := tx.ReplaceMemoryWith(ctx.AccumulationResultContext.Tx); err != nil {
-		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, fmt.Errorf("failed to apply nested batch: %w", err)
+		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, ctx.AccumulationResultContext.DeletedServices, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
 
 	serviceaccount.SetServiceAccount(tx, ctx.AccumulationResultContext.AccumulatingServiceAccount)
@@ -375,7 +382,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	if len(blob) == 32 {
 		var preimageResult [32]byte
 		copy(preimageResult[:], blob)
-		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, &preimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
+		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, &preimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, ctx.AccumulationResultContext.DeletedServices, nil
 	}
-	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, nil
+	return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, ctx.AccumulationResultContext.DeletedServices, nil
 }

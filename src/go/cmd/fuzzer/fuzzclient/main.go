@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"jam/pkg/block"
 	"jam/pkg/block/header"
@@ -274,173 +273,6 @@ func (fc *FuzzerClient) sendAndReceive(msg fuzzinterface.RequestMessage) (fuzzin
 	return fc.receiveResponse()
 }
 
-// testStateTransitions tests state transitions against test vectors
-func (fc *FuzzerClient) testStateTransitions(t *testing.T, vectorsDir string) {
-	t.Log("Testing state transitions using test vectors...")
-
-	// Start CPU profiling on the server
-	profileName := fmt.Sprintf("cpu_test_run_%d.prof", time.Now().Unix())
-	startProf := fuzzinterface.StartProfiling{ProfileName: []byte(profileName)}
-	resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StartProfiling: &startProf})
-	if err != nil {
-		t.Fatalf("Failed to start profiling: %v", err)
-	}
-	if resp.ProfilingStatus != nil && resp.ProfilingStatus.Success != 1 {
-		t.Fatalf("Failed to start profiling: %s", resp.ProfilingStatus.Message)
-	}
-	t.Logf("Started profiling: %s", profileName)
-
-	// Ensure we stop profiling when done
-	defer func() {
-		stopProf := fuzzinterface.StopProfiling{}
-		resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StopProfiling: &stopProf})
-		if err != nil {
-			t.Errorf("Failed to stop profiling: %v", err)
-		} else if resp.ProfilingStatus != nil {
-			t.Logf("Profiling stopped: %s", resp.ProfilingStatus.Message)
-		}
-	}()
-
-	// Get all test vectors from the reports-l0 directory
-	genesisVectorPath := filepath.Join(vectorsDir, "genesis.bin")
-	genesisVectorData, err := os.ReadFile(genesisVectorPath)
-	if err != nil {
-		t.Fatalf("Failed to load genesis vector file: %v", err)
-	}
-
-	genesisVector := GenesisVector{}
-	if err := serializer.Deserialize(genesisVectorData, &genesisVector); err != nil {
-		t.Fatalf("Failed to deserialize genesis vector: %v", err)
-	}
-
-	t.Log("Setting initial genesis state...")
-	resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{Initialize: &fuzzinterface.Initialize{Header: genesisVector.Header, State: genesisVector.StateWithRoot.State}})
-	if err != nil {
-		t.Fatalf("Failed to send Initialize message: %v", err)
-	}
-
-	if resp.StateRoot == nil {
-		t.Fatal("SetState failed: no state root returned")
-	}
-	if resp.StateRoot == nil {
-		t.Fatal("SetState failed: no state root returned")
-	}
-
-	if *resp.StateRoot != genesisVector.StateWithRoot.StateRoot {
-		t.Fatalf("SetState failed: state root mismatch - expected %x, got %x", genesisVector.StateWithRoot.StateRoot, *resp.StateRoot)
-	}
-
-	t.Log("Genesis state set successfully")
-
-	vectorFiles, err := os.ReadDir(vectorsDir)
-	if err != nil {
-		t.Fatalf("Failed to read test vectors directory: %v", err)
-	}
-	// Sort files by name to ensure proper sequence
-	var fileNames []string
-	for _, fileInfo := range vectorFiles {
-		// Skip directories and the genesis file which we've already processed
-		if fileInfo.IsDir() || !strings.HasSuffix(fileInfo.Name(), ".bin") || fileInfo.Name() == "genesis.bin" {
-			continue
-		}
-		fileNames = append(fileNames, fileInfo.Name())
-	}
-	sort.Strings(fileNames)
-
-	t.Logf("Processing %d test vectors...", len(fileNames))
-	failedTests := []string{}
-	for i, fileName := range fileNames {
-		t.Logf("[%d/%d] Processing test vector: %s", i+1, len(fileNames), fileName)
-
-		vectorPath := filepath.Join(vectorsDir, fileName)
-		vectorData, err := os.ReadFile(vectorPath)
-		if err != nil {
-			t.Errorf("Failed to load test vector file %s: %v", fileName, err)
-			failedTests = append(failedTests, fileName)
-			continue
-		}
-
-		testVector := TestVector{}
-		if err := serializer.Deserialize(vectorData, &testVector); err != nil {
-			t.Errorf("Failed to deserialize test vector %s: %v", fileName, err)
-			failedTests = append(failedTests, fileName)
-			continue
-		}
-
-		importBlock := fuzzinterface.ImportBlock(testVector.Block)
-
-		// Start timing the block import and response
-		importStartTime := time.Now()
-
-		resp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
-		if err != nil {
-			t.Errorf("Failed to send ImportBlock message for %s: %v", fileName, err)
-			failedTests = append(failedTests, fileName)
-			continue
-		}
-
-		importDuration := time.Since(importStartTime)
-		t.Logf("Block %d imported in %v", i, importDuration)
-
-		if resp.StateRoot == nil {
-			t.Errorf("No state root returned from ImportBlock for %s: %s", fileName, *resp.Error)
-			failedTests = append(failedTests, fileName)
-			continue
-		}
-
-		t.Logf("Block %d imported in %v, state root: %x", i, importDuration, *resp.StateRoot)
-
-		// Verify the state root matches expected
-		if *resp.StateRoot != testVector.PostState.StateRoot {
-			failedTests = append(failedTests, fileName)
-			t.Errorf("State root mismatch for %s: expected %x, got %x", fileName, testVector.PostState.StateRoot, *resp.StateRoot)
-
-			getState := fuzzinterface.GetState(testVector.Block.Header.Hash())
-			getStateResponse, err := fc.sendAndReceive(fuzzinterface.RequestMessage{GetState: &getState})
-			if err != nil {
-				t.Errorf("Failed to send GetState message for %s: %v", fileName, err)
-				continue
-			}
-
-			if getStateResponse.State == nil {
-				t.Errorf("GetState failed: no state returned for %s", fileName)
-				continue
-			}
-
-			expectedState, err := state.GetStateFromKVs(testVector.PostState.State)
-			if err != nil {
-				t.Errorf("Failed to get expected state from KVs for %s: %v", fileName, err)
-				continue
-			}
-
-			actualState, err := state.GetStateFromKVs(*getStateResponse.State)
-			if err != nil {
-				t.Errorf("Failed to get actual state from KVs for %s: %v", fileName, err)
-				continue
-			}
-
-			// compare expectedState with actualState
-			if diff := cmp.Diff(expectedState, actualState); diff != "" {
-				t.Errorf("State comparison failed for %s:", fileName)
-				t.Errorf("State mismatch (-expected +actual):\n%s", diff)
-			} else {
-				t.Logf("State comparison passed for %s: states are identical", fileName)
-			}
-			// Compare the underlying KVs to show any differences
-			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
-		} else {
-			t.Logf("State root verified for %s: %x", fileName, *resp.StateRoot)
-		}
-	}
-
-	if len(failedTests) > 0 {
-		t.Errorf("Failed tests: %v", failedTests)
-	} else {
-		t.Log("All test vectors processed successfully!")
-	}
-	t.Logf("Profile saved as: %s", profileName)
-}
-
 func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 	// Get all subdirectories in the disputes directory
 	entries, err := os.ReadDir(disputesDir)
@@ -463,7 +295,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "1763487888") {
+		// if !strings.Contains(testDir, "1763487989") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)
@@ -578,7 +410,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 
 	// Process all test files sequentially after the warp file
-	for i := 1; i < len(testBinFiles); i++ {
+	for i := 0; i < len(testBinFiles); i++ {
 		testVectorPath := testBinFiles[i]
 		testFileName := filepath.Base(testVectorPath)
 

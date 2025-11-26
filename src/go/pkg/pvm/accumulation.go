@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, error) {
+func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, map[types.ServiceIndex]struct{}, error) {
 	var gas types.GasValue
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
 		gas = g
@@ -103,6 +103,8 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	// Map to store preimage provisions by service index
 	allPreimageProvisions := make(PreimageProvisions)
 
+	allDeletedServices := make(map[types.ServiceIndex]struct{})
+
 	resultsByServiceIndex := make(map[types.ServiceIndex]*AccumulationStateComponents)
 
 	var childTransactions []*staterepository.TrackedTx
@@ -121,7 +123,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			childTransactions = append(childTransactions, childTx)
 			childTxMutex.Unlock()
 
-			components, transfers, preimageResult, gasUsed, provisions, err := SingleServiceAccumulation(
+			components, transfers, preimageResult, gasUsed, provisions, deletedServices, err := SingleServiceAccumulation(
 				childTx, // Use child transaction instead of parent
 				accumulationStateComponents,
 				deferredTransfers,
@@ -138,6 +140,10 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 				return
 			}
 			mu.Lock()
+
+			for deletedServiceIdx := range deletedServices {
+				allDeletedServices[deletedServiceIdx] = struct{}{}
+			}
 
 			resultsByServiceIndex[sIndex] = components
 			if _, exists := baseServiceIndices[sIndex]; exists {
@@ -189,6 +195,16 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		if err := tx.Apply(childTx); err != nil {
 			return AccumulationStateComponents{}, nil, nil, nil, err
 		}
+	}
+
+	// Even though we already deleted the service during Eject which ensures that
+	// within that particular service's context it is aware of the deleted service,
+	// we must keep track of that deleted service and re-delete it
+	// in the case that another service in this batch e.g. sent balance to that
+	// deleted service, which triggers a service save, which may overwrite
+	// the deleted service from tx's memory
+	for deletedServiceIdx := range allDeletedServices {
+		serviceaccount.DeleteServiceAccount(tx, deletedServiceIdx)
 	}
 
 	// sort service gas usage by service index
