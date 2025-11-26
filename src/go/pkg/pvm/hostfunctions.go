@@ -51,6 +51,69 @@ const (
 	LogID = 100
 )
 
+func (h HostFunctionIdentifier) String() string {
+	switch h {
+	case GasID:
+		return "Gas"
+	case FetchID:
+		return "Fetch"
+	case LookupID:
+		return "Lookup"
+	case ReadID:
+		return "Read"
+	case WriteID:
+		return "Write"
+	case InfoID:
+		return "Info"
+	case HistoricalLookupID:
+		return "HistoricalLookup"
+	case ExportID:
+		return "Export"
+	case MachineID:
+		return "Machine"
+	case PeekID:
+		return "Peek"
+	case PokeID:
+		return "Poke"
+	case PagesID:
+		return "Pages"
+	case InvokeID:
+		return "Invoke"
+	case ExpungeID:
+		return "Expunge"
+	case BlessID:
+		return "Bless"
+	case AssignID:
+		return "Assign"
+	case DesignateID:
+		return "Designate"
+	case CheckpointID:
+		return "Checkpoint"
+	case NewID:
+		return "New"
+	case UpgradeID:
+		return "Upgrade"
+	case TransferID:
+		return "Transfer"
+	case EjectID:
+		return "Eject"
+	case QueryID:
+		return "Query"
+	case SolicitID:
+		return "Solicit"
+	case ForgetID:
+		return "Forget"
+	case YieldID:
+		return "Yield"
+	case ProvideID:
+		return "Provide"
+	case LogID:
+		return "Log"
+	default:
+		return fmt.Sprintf("Unknown(%d)", h)
+	}
+}
+
 type ExitReasonType uint64
 
 const maxUint64 = ^uint64(0)
@@ -994,12 +1057,12 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterep
 			return ExitReasonGo, nil
 		}
 
-		historicalStatus, _, err := serviceAccount.GetPreimageLookupHistoricalStatus(tx, uint32(z), blake2b.Sum256(i))
+		historicalStatus, exists, err := serviceAccount.GetPreimageLookupHistoricalStatus(tx, uint32(z), blake2b.Sum256(i))
 		if err != nil {
 			return ExitReason{}, err
 		}
 
-		if len(historicalStatus) > 0 {
+		if !exists || len(historicalStatus) > 0 {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return ExitReasonGo, nil
 		}

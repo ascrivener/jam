@@ -331,7 +331,7 @@ func (r *RAM) getPageAccess(pageNum uint32) RamAccess {
 }
 
 // pageRangeCheck performs a check on all pages in a range with early termination
-func (r *RAM) pageRangeCheck(start, length uint64, mode MemoryAccessMode, checkFunc func(RamAccess) bool) bool {
+func (r *RAM) pageRangeCheck(start, length uint64, mode MemoryAccessMode, access RamAccess, checkFunc func(RamAccess) bool) bool {
 	// Handle zero-length ranges
 	if length == 0 {
 		return false // Default for empty ranges
@@ -339,6 +339,10 @@ func (r *RAM) pageRangeCheck(start, length uint64, mode MemoryAccessMode, checkF
 
 	// Check for potential overflow or out of bounds in NoWrap mode
 	if mode == NoWrap && (start >= RamSize || RamSize-start < length) {
+		// Special case: if checking for Inaccessible, out-of-bounds memory IS inaccessible
+		if access == Inaccessible {
+			return true
+		}
 		return false
 	}
 
@@ -363,7 +367,7 @@ func (r *RAM) pageRangeCheck(start, length uint64, mode MemoryAccessMode, checkF
 
 // RangeHas checks if any page in the range has the specified access type
 func (r *RAM) RangeHas(access RamAccess, start, length uint64, mode MemoryAccessMode) bool {
-	return r.pageRangeCheck(start, length, mode, func(pageAccess RamAccess) bool {
+	return r.pageRangeCheck(start, length, mode, access, func(pageAccess RamAccess) bool {
 		return pageAccess == access
 	})
 }
@@ -376,7 +380,7 @@ func (r *RAM) RangeUniform(access RamAccess, start, length uint64, mode MemoryAc
 	}
 
 	// Use pageRangeCheck to find any page that doesn't match
-	return !r.pageRangeCheck(start, length, mode, func(pageAccess RamAccess) bool {
+	return !r.pageRangeCheck(start, length, mode, access, func(pageAccess RamAccess) bool {
 		return pageAccess != access
 	})
 }
