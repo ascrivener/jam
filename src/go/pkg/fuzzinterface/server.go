@@ -41,7 +41,7 @@ func NewServer() *Server {
 			JamVersion: Version{
 				Major: 0,
 				Minor: 7,
-				Patch: 1,
+				Patch: 2,
 			},
 			Name: []byte("jamzilla"),
 		},

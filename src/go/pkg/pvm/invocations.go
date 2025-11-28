@@ -24,8 +24,6 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 			return Gas(ctx)
 		case FetchID:
 			return Fetch(ctx, &workpackage, nil, nil, nil, nil, nil, nil)
-		case LogID:
-			return Log(ctx)
 		default:
 			return Default(ctx)
 		}
@@ -88,11 +86,6 @@ func Refine(tx *staterepository.TrackedTx, workItemIndex int, workPackage wp.Wor
 			return Invoke(ctx)
 		case ExpungeID:
 			return Expunge(ctx)
-		case LogID:
-			return Log(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			})
 		default:
 			return Default(&HostFunctionContext[struct{}]{
 				State:    ctx.State,
@@ -310,11 +303,6 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 			return Yield(ctx)
 		case ProvideID:
 			return Provide(ctx, ctx.Argument.AccumulationResultContext.Tx)
-		case LogID:
-			return Log(&HostFunctionContext[struct{}]{
-				State:    ctx.State,
-				Argument: &struct{}{},
-			})
 		default:
 			return Default(&HostFunctionContext[struct{}]{
 				State:    ctx.State,

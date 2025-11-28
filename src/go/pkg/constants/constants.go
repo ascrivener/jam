@@ -50,7 +50,7 @@ const MaxImportsInWorkPackage uint32 = 3072 // W_M
 
 const MaxItemsInAuthorizationsPool uint16 = 8 // O
 
-const MaxSizeEncodedWorkPackage uint32 = 13794305 // W_B
+const MaxSizeEncodedWorkPackage uint32 = 13791360 // W_B
 
 const MaxSumDependencyItemsInReport uint16 = 8 // J
 

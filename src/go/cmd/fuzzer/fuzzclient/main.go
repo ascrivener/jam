@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"jam/pkg/block"
 	"jam/pkg/block/header"
@@ -295,6 +296,9 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
+		// if !strings.Contains(testDir, "fallback") {
+		// 	continue
+		// }
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -407,7 +411,11 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	}
 
 	// Process all test files sequentially after the warp file
+	var longestDuration time.Duration
+	var longestTestFile string
+
 	for i := 0; i < len(testBinFiles); i++ {
+		startTime := time.Now()
 		testVectorPath := testBinFiles[i]
 		testFileName := filepath.Base(testVectorPath)
 
@@ -502,6 +510,17 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		} else {
 			t.Logf("Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
 		}
+
+		// Track longest test
+		duration := time.Since(startTime)
+		if duration > longestDuration {
+			longestDuration = duration
+			longestTestFile = testFileName
+		}
+	}
+
+	if longestTestFile != "" {
+		t.Logf("Longest test: %s took %v", longestTestFile, longestDuration)
 	}
 }
 

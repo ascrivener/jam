@@ -48,7 +48,6 @@ const (
 	ForgetID
 	YieldID
 	ProvideID
-	LogID = 100
 )
 
 func (h HostFunctionIdentifier) String() string {
@@ -107,8 +106,6 @@ func (h HostFunctionIdentifier) String() string {
 		return "Yield"
 	case ProvideID:
 		return "Provide"
-	case LogID:
-		return "Log"
 	default:
 		return fmt.Sprintf("Unknown(%d)", h)
 	}
@@ -164,10 +161,6 @@ func Default(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
 		ctx.State.Registers[7] = types.Register(HostCallWhat)
 		return ExitReasonGo, nil
 	})
-}
-
-func Log(ctx *HostFunctionContext[struct{}]) (ExitReason, error) {
-	return ExitReasonGo, nil
 }
 
 // VerifyAndReturnStateForAccessor implements the state lookup host function
@@ -721,7 +714,12 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 			return ExitReasonGo, nil
 		}
 
-		newBalance := sourceAccount.Balance - amount
+		// Check if we still have enough gas to cover the transfer
+		if types.GasValue(ctx.State.Gas) < gasLimit {
+			ctx.State.Gas = 0
+			return ExitReasonOutOfGas, nil
+		}
+		ctx.State.Gas -= types.SignedGasValue(gasLimit)
 
 		// Create transfer object
 		transfer := types.DeferredTransfer{
@@ -733,7 +731,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		}
 
 		// Update source account balance
-		sourceAccount.Balance = newBalance
+		sourceAccount.Balance -= amount
 
 		// Append transfer to deferred transfers list
 		ctx.Argument.AccumulationResultContext.DeferredTransfers = append(
@@ -743,7 +741,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		ctx.State.Registers[7] = types.Register(HostCallOK)
 
 		return ExitReasonGo, nil
-	}, types.GasValue(ctx.State.Registers[9]))
+	})
 }
 
 func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepository.TrackedTx, timeslot types.Timeslot) (ExitReason, error) {
@@ -1181,14 +1179,7 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 			if workPackage == nil {
 				break
 			}
-			serialized := serializer.Serialize(struct {
-				CodeHash [32]byte
-				Blob     []byte
-			}{
-				CodeHash: workPackage.AuthorizationCodeHash,
-				Blob:     workPackage.AuthorizationConfig,
-			})
-			preimage = serialized
+			preimage = workPackage.AuthorizationConfig
 		case 9:
 			if workPackage == nil {
 				break
@@ -1684,24 +1675,12 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 func withGasCheck[T any](
 	ctx *HostFunctionContext[T],
 	fn func(*HostFunctionContext[T]) (ExitReason, error),
-	additionalGasUsage ...types.GasValue,
 ) (ExitReason, error) {
-	// Extract additional gas usage (default to 0 if not provided)
-	var extraGas types.GasValue = 0
-	if len(additionalGasUsage) > 0 {
-		extraGas = additionalGasUsage[0]
-	}
-
 	if types.GasValue(ctx.State.Gas) < GasUsage {
 		ctx.State.Gas = 0
 		return ExitReasonOutOfGas, nil
 	}
 	ctx.State.Gas -= types.SignedGasValue(GasUsage)
-	if types.GasValue(ctx.State.Gas) < extraGas {
-		ctx.State.Gas = 0
-		return ExitReasonOutOfGas, nil
-	}
-	ctx.State.Gas -= types.SignedGasValue(extraGas)
 	return fn(ctx)
 }
 
