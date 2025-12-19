@@ -99,8 +99,19 @@ build_binary() {
         # Native build for Linux AMD64
         # Set CGO flags to find the Rust library
         local rust_lib_dir="${PROJECT_ROOT}/src/bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release"
-        export LD_LIBRARY_PATH="${rust_lib_dir}:${LD_LIBRARY_PATH}"
-        CGO_ENABLED=1 CGO_LDFLAGS="-L${rust_lib_dir}" \
+        local rust_lib="${rust_lib_dir}/libbandersnatch_ffi.a"
+        
+        # Verify the library exists
+        if [ ! -f "${rust_lib}" ]; then
+            echo -e "${RED}Rust library not found at: ${rust_lib}${NC}"
+            cd "${current_dir}"
+            return 1
+        fi
+        
+        echo -e "${BLUE}Using Rust library: ${rust_lib}${NC}"
+        
+        # Use absolute path to the library file directly
+        CGO_ENABLED=1 CGO_LDFLAGS="${rust_lib}" \
         go build -o "${bin_dir}/${output_name}" -ldflags="-s -w" -tags=netgo -trimpath
     else
         echo -e "${YELLOW}Skipping unsupported target: ${goos}/${goarch}${NC}"
