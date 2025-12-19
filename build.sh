@@ -28,20 +28,6 @@ build_rust_library() {
         return 1
     fi
     
-    # For Linux, create archive index with ranlib
-    if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
-        # Check if the library was built
-        local lib_path="target/${target}/release/libbandersnatch_ffi.a"
-        if [ ! -f "$lib_path" ]; then
-            echo -e "${RED}Library file not found at ${lib_path}${NC}"
-            return 1
-        fi
-        
-        # Run ranlib to add archive index
-        ranlib "$lib_path"
-        echo -e "${GREEN}Added archive index to Linux library${NC}"
-    fi
-    
     echo -e "${GREEN}Successfully built Rust FFI library for ${target}${NC}"
 }
 
@@ -97,20 +83,7 @@ build_binary() {
         go build -o "${bin_dir}/${output_name}" -ldflags="-s -w" -tags=netgo -a -installsuffix netgo -trimpath
     elif [ "${goos}" == "linux" ] && [ "${goarch}" == "amd64" ]; then
         # Native build for Linux AMD64
-        # Set CGO flags to find the Rust library
-        local rust_lib_dir="${PROJECT_ROOT}/src/bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release"
-        local rust_lib="${rust_lib_dir}/libbandersnatch_ffi.a"
-        
-        # Verify the library exists
-        if [ ! -f "${rust_lib}" ]; then
-            echo -e "${RED}Rust library not found at: ${rust_lib}${NC}"
-            cd "${current_dir}"
-            return 1
-        fi
-        
-        echo -e "${BLUE}Using Rust library: ${rust_lib}${NC}"
-        
-        # Use absolute path to the library file directly
+        local rust_lib="${PROJECT_ROOT}/src/bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release/libbandersnatch_ffi.a"
         CGO_ENABLED=1 CGO_LDFLAGS="${rust_lib}" \
         go build -o "${bin_dir}/${output_name}" -ldflags="-s -w" -tags=netgo -trimpath
     else

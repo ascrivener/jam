@@ -3,7 +3,6 @@ package bandersnatch
 /*
 #cgo LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/release -lbandersnatch_ffi
 #cgo darwin LDFLAGS: -framework Security
-#cgo linux,amd64 LDFLAGS: -L/tmp/jam_crossbuild/lib -lbandersnatch_ffi -static
 // Declaration of the Rust functions.
 int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
