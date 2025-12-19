@@ -80,6 +80,8 @@ build_binary() {
     # Build the binary
     if [ "${goos}" == "darwin" ] && [ "${goarch}" == "arm64" ]; then
         # Native build for macOS ARM64
+        local rust_lib="${PROJECT_ROOT}/src/bandersnatch_ffi/target/aarch64-apple-darwin/release/libbandersnatch_ffi.a"
+        CGO_ENABLED=1 CGO_LDFLAGS="${rust_lib}" \
         go build -o "${bin_dir}/${output_name}" -ldflags="-s -w" -tags=netgo -a -installsuffix netgo -trimpath
     elif [ "${goos}" == "linux" ] && [ "${goarch}" == "amd64" ]; then
         # Native build for Linux AMD64

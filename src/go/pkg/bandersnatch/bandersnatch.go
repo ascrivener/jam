@@ -1,6 +1,7 @@
 package bandersnatch
 
 /*
+#cgo LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/aarch64-apple-darwin/release -L${SRCDIR}/../../../bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release -lbandersnatch_ffi
 #cgo darwin LDFLAGS: -framework Security
 // Declaration of the Rust functions.
 int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
