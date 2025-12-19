@@ -21,12 +21,7 @@ build_rust_library() {
     cd "${PROJECT_ROOT}/src/bandersnatch_ffi"
     
     # Build with appropriate flags
-    # Disable LTO on Linux to avoid LLVM version mismatch with system linker
-    if [[ "$target" == "x86_64-unknown-linux-gnu" ]]; then
-        RUSTFLAGS="-C lto=off" cargo build --release --target="${target}"
-    else
-        cargo build --release --target="${target}"
-    fi
+    cargo build --release --target="${target}"
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to build Rust FFI library for ${target}${NC}"
