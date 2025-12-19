@@ -32,6 +32,12 @@ jobs:
           ls -lh bin/jamzilla-tiny
           file bin/jamzilla-tiny
       
+      - name: Start jamzilla server
+        run: |
+          ./bin/jamzilla-tiny &
+          sleep 2
+          echo "Server started"
+      
       - name: Run conformance tests
         run: |
           cd src/go
