@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 
+	ed25519consensus "github.com/hdevalence/ed25519consensus"
+
 	"maps"
 
 	"jam/pkg/bandersnatch"
@@ -19,7 +21,6 @@ import (
 	"jam/pkg/types"
 
 	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/ed25519"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -167,7 +168,7 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 				message = append(message, []byte("jam_invalid")...)
 			}
 			message = append(message, verdict.WorkReportHash[:]...)
-			if !ed25519.Verify(key[:], message, judgement.Signature[:]) {
+			if !ed25519consensus.Verify(key[:], message, judgement.Signature[:]) {
 				return errors.ProtocolErrorf("invalid signature from validator %d", judgement.ValidatorIndex)
 			}
 		}
@@ -267,7 +268,7 @@ func (b Block) Verify(tx *staterepository.TrackedTx, priorState *state.State) er
 		messageHash := blake2b.Sum256(append(b.Header.ParentHash[:], serializer.Serialize(&assurance.CoreAvailabilityContributions)...))
 		message := append([]byte("jam_available"), messageHash[:]...)
 		key := priorState.ValidatorKeysetsActive[assurance.ValidatorIndex].ToEd25519PublicKey()
-		if !ed25519.Verify(key[:], message, assurance.Signature[:]) {
+		if !ed25519consensus.Verify(key[:], message, assurance.Signature[:]) {
 			return errors.ProtocolErrorf("invalid signature from validator %d", assurance.ValidatorIndex)
 		}
 	}
@@ -638,7 +639,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 			return errors.ProtocolErrorf("culprit validator key is not in reportable keyset")
 		}
 		var message = append([]byte("jam_guarantee"), culprit.InvalidWorkReportHash[:]...)
-		if !ed25519.Verify(culprit.ValidatorKey[:], message, culprit.Signature[:]) {
+		if !ed25519consensus.Verify(culprit.ValidatorKey[:], message, culprit.Signature[:]) {
 			return errors.ProtocolErrorf("invalid signature from validator %d", culprit.ValidatorKey)
 		}
 	}
@@ -659,7 +660,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 			message = append(message, []byte("jam_invalid")...)
 		}
 		message = append(message, fault.WorkReportHash[:]...)
-		if !ed25519.Verify(fault.ValidatorKey[:], message, fault.Signature[:]) {
+		if !ed25519consensus.Verify(fault.ValidatorKey[:], message, fault.Signature[:]) {
 			return errors.ProtocolErrorf("invalid signature from validator %d", fault.ValidatorKey)
 		}
 	}
@@ -670,7 +671,7 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 		hashedWorkReport := blake2b.Sum256(serializer.Serialize(&guarantee.WorkReport))
 		for _, credential := range guarantee.Credentials {
 			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
-			if !ed25519.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
+			if !ed25519consensus.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
 				return errors.ProtocolErrorf("invalid signature from validator %d", credential.ValidatorIndex)
 			}
 			var k uint16
