@@ -1,0 +1,41 @@
+name: Test Linux Build
+
+on:
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+jobs:
+  test-linux-build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      
+      - name: Run build.sh
+        run: ./build.sh
+      
+      - name: Verify binary
+        run: |
+          ls -lh bin/jamzilla-tiny
+          file bin/jamzilla-tiny
+      
+      - name: Run conformance tests
+        run: |
+          cd src/go
+          go test ./cmd/fuzzer/fuzzclient -run TestConformanceVectors -v
+      
+      - name: Success
+        run: echo "✅ Build and tests passed on Linux!"

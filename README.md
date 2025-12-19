@@ -43,27 +43,15 @@ go test ./cmd/fuzzer/fuzzclient -run TestConformanceVectors -v
 
 ## Building
 
-### Quick Build (Current Platform)
+### Build
 
 ```bash
 ./build.sh
 ```
 
-This will build the binary for your current platform in `bin/`.
+This will build `bin/jamzilla-tiny` for your current platform.
 
-### Build for All Platforms
-
-```bash
-./build.sh --all
-```
-
-This will build:
-- `bin/jamzilla-tiny-arm64-darwin` (macOS ARM64)
-- `bin/jamzilla-tiny-amd64-linux` (Linux AMD64)
-
-Note: Cross-compilation requires platform-specific tools (e.g., Linux cross-compiler on macOS)
-
-### Manual Build (Current Platform Only)
+### Manual Build
 
 ```bash
 cd src/go/cmd/fuzzer/fuzzserver
