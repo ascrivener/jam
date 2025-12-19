@@ -94,33 +94,43 @@ build_binary() {
     local goos=$1
     local goarch=$2
     local binary_name=$3
-    local output_dir=$4
+    local source_dir=$4
     local network=$5
+    local build_all=$6
     local suffix="-${network}"
     
     # Generate constants for this specific network
     generate_constants ${network}
     
-    # Build the binary with suffix
-    local output_name="${binary_name}${suffix}-${goarch}-${goos}"
+    # Build the binary with suffix - add platform suffix only if building for all platforms
+    local output_name
+    if [ "$build_all" = true ]; then
+        output_name="${binary_name}${suffix}-${goarch}-${goos}"
+    else
+        output_name="${binary_name}${suffix}"
+    fi
+    
+    # Create bin directory if it doesn't exist
+    local bin_dir="${PROJECT_ROOT}/bin"
+    mkdir -p "${bin_dir}"
     
     echo -e "${BLUE}Building Go binary ${output_name} for ${goos}/${goarch}...${NC}"
     
     # Save current directory
     local current_dir=$(pwd)
     
-    # Navigate to the binary's directory
-    cd "${output_dir}"
+    # Navigate to the source directory
+    cd "${source_dir}"
     
     # Set the appropriate environment variables for cross-compilation
     if [ "${goos}" == "darwin" ] && [ "${goarch}" == "arm64" ]; then
         # Native build for macOS ARM64
-        go build -o "${output_name}" -ldflags="-s -w" -tags=netgo -a -installsuffix netgo -trimpath
+        go build -o "${bin_dir}/${output_name}" -ldflags="-s -w" -tags=netgo -a -installsuffix netgo -trimpath
     elif [ "${goos}" == "linux" ] && [ "${goarch}" == "amd64" ]; then
         # Cross-compile for Linux AMD64 with static linking
         GOOS=linux GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-unknown-linux-gnu-gcc \
         CGO_LDFLAGS="-L/tmp/jam_crossbuild/lib -static -ldl" \
-        go build -o "${output_name}" -ldflags="-s -w -linkmode=external -extldflags=-static" \
+        go build -o "${bin_dir}/${output_name}" -ldflags="-s -w -linkmode=external -extldflags=-static" \
           -tags="netgo,osusergo" -trimpath -buildmode=exe
     else
         echo -e "${YELLOW}Skipping unsupported target: ${goos}/${goarch}${NC}"
@@ -134,7 +144,7 @@ build_binary() {
         return 1
     fi
     
-    echo -e "${GREEN}Successfully built ${output_name}${NC}"
+    echo -e "${GREEN}Successfully built ${output_name} -> ${bin_dir}/${output_name}${NC}"
     
     # Return to the original directory
     cd "${current_dir}"
@@ -145,18 +155,19 @@ build_platform() {
     local goos=$1
     local goarch=$2
     local rust_target=$3
+    local build_all=$4
     
     echo -e "${BLUE}Building for platform: ${goos}/${goarch} (${rust_target})${NC}"
     
     # Build Rust library (only need to do this once per platform)
     build_rust_library "${rust_target}" || return 1
     
-    # Build fuzzserver with tiny constants
+    # Build jamzilla with tiny constants
     fuzzserver_dir="${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
-    build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "tiny" || return 1
+    build_binary "${goos}" "${goarch}" "jamzilla" "${fuzzserver_dir}" "tiny" "${build_all}" || return 1
     
-    # Build fuzzserver with full constants
-    # build_binary "${goos}" "${goarch}" "fuzzserver" "${fuzzserver_dir}" "full" || return 1
+    # Build jamzilla with full constants
+    # build_binary "${goos}" "${goarch}" "jamzilla" "${fuzzserver_dir}" "full" "${build_all}" || return 1
     
     echo -e "${GREEN}Platform ${goos}/${goarch} built successfully${NC}"
 }
@@ -168,28 +179,32 @@ command_exists() {
 
 # Install required tools
 install_prerequisites() {
-    echo -e "${BLUE}Checking and installing prerequisites...${NC}"
+    local build_all=$1
+    echo -e "${BLUE}Checking prerequisites...${NC}"
     
-    # Check if we're on macOS
-    if [[ "$(uname)" != "Darwin" ]]; then
-        echo -e "${RED}This script is designed to run on macOS.${NC}"
-        return 1
-    fi
-    
-    # Check for Rust
+    # Check for Rust (required on all platforms)
     if ! command_exists rustup; then
         echo -e "${RED}Rust is not installed. Please install Rust first.${NC}"
+        echo -e "Visit: https://rustup.rs/${NC}"
         return 1
     fi
     
-    # Check for the cross-compiler
-    if ! command_exists x86_64-unknown-linux-gnu-gcc; then
-        echo -e "${RED}Linux cross-compiler not found. Please install it with:${NC}"
-        echo -e "brew install SergioBenitez/osxct/x86_64-unknown-linux-gnu"
+    # Check for Go (required on all platforms)
+    if ! command_exists go; then
+        echo -e "${RED}Go is not installed. Please install Go first.${NC}"
         return 1
     fi
     
-    echo -e "${GREEN}All prerequisites satisfied!${NC}"
+    # Check for cross-compiler only if building for all platforms on macOS
+    if [ "$build_all" = true ] && [[ "$(uname)" == "Darwin" ]]; then
+        if ! command_exists x86_64-unknown-linux-gnu-gcc; then
+            echo -e "${YELLOW}Warning: Linux cross-compiler not found.${NC}"
+            echo -e "${YELLOW}Install with: brew install SergioBenitez/osxct/x86_64-unknown-linux-gnu${NC}"
+            echo -e "${YELLOW}Skipping Linux builds...${NC}"
+        fi
+    fi
+    
+    echo -e "${GREEN}Prerequisites satisfied!${NC}"
     return 0
 }
 
@@ -198,30 +213,41 @@ main() {
     # Create temporary directory for cross-compilation
     mkdir -p /tmp/jam_crossbuild
     
+    # Detect current platform
+    local os_type=$(uname -s)
+    local arch_type=$(uname -m)
+    
+    # Determine build targets based on platform
+    local build_all=false
+    if [ "$1" == "--all" ]; then
+        build_all=true
+        echo -e "${BLUE}Building for all platforms...${NC}"
+    else
+        echo -e "${BLUE}Building for current platform: ${os_type}/${arch_type}${NC}"
+    fi
+    
     # Check and install prerequisites
-    install_prerequisites || exit 1
+    install_prerequisites "$build_all" || exit 1
     
     # Set up Rust targets and configuration
     setup_rust_targets || exit 1
     
-    echo -e "${BLUE}Starting builds for all platforms...${NC}"
+    # Build based on platform
+    if [ "$build_all" = true ] || [ "$os_type" == "Darwin" ]; then
+        if [ "$arch_type" == "arm64" ] || [ "$arch_type" == "aarch64" ] || [ "$build_all" = true ]; then
+            build_platform "darwin" "arm64" "aarch64-apple-darwin" "$build_all" || exit 1
+        fi
+    fi
     
-    # Build for current platform (ARM64 macOS)
-    build_platform "darwin" "arm64" "aarch64-apple-darwin" || exit 1
-    
-    # Build for AMD64 Linux
-    build_platform "linux" "amd64" "x86_64-unknown-linux-gnu" || exit 1
-    
-    # Build the fuzzclient for Linux AMD64 with both tiny and full variants
-    echo -e "${BLUE}Building Linux AMD64 fuzzclient variants...${NC}"
-    fuzzclient_dir="${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzclient"
-    # build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "full" || exit 1
-    # build_binary "linux" "amd64" "fuzzclient" "${fuzzclient_dir}" "tiny" || exit 1
-    echo -e "${GREEN}Successfully built fuzzclient variants for Linux AMD64${NC}"
+    if [ "$build_all" = true ] || [ "$os_type" == "Linux" ]; then
+        if [ "$arch_type" == "x86_64" ] || [ "$build_all" = true ]; then
+            build_platform "linux" "amd64" "x86_64-unknown-linux-gnu" "$build_all" || exit 1
+        fi
+    fi
     
     echo -e "${GREEN}All builds completed successfully!${NC}"
-    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver/ and ${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzclient/${NC}"
+    echo -e "${BLUE}Binaries are available in: ${PROJECT_ROOT}/bin/${NC}"
 }
 
 # Execute the main function
-main
+main "$@"

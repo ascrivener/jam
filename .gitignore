@@ -44,3 +44,18 @@ src/bandersnatch_ffi/build/
 
 # If using rustfmt, ignore rustfmt configuration if it's generated.
 src/bandersnatch_ffi/rustfmt.toml
+
+######## Build outputs
+# Compiled binaries
+bin/
+build/
+dist/
+
+# Profiling outputs
+*.prof
+cpu.prof
+mem.prof
+trace.out
+
+# OS files
+.DS_Store

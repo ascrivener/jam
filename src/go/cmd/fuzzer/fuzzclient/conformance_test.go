@@ -13,11 +13,11 @@ func TestConformanceVectors(t *testing.T) {
 	vectorsDir := os.Getenv("TEST_VECTORS_DIR")
 	if vectorsDir == "" {
 		// Default to the conformance directory
-		vectorsDir = filepath.Join("..", "..", "..", "..", "jam-conformance", "fuzz-reports", "0.6.7")
+		vectorsDir = filepath.Join("..", "..", "..", "..", "..", "jam-test-vectors", "traces")
 	}
 
 	// Create fuzzer client in in-process mode
-	fuzzer := NewFuzzerClient("/tmp/jam_target.sock", true) // empty socket path, in-process mode
+	fuzzer := NewFuzzerClient("/tmp/jam_target.sock", false) // empty socket path, in-process mode
 	if err := fuzzer.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
