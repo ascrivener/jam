@@ -18,7 +18,7 @@ go test ./cmd/fuzzer/fuzzclient -run TestConformanceVectors -v
 
 ## Prerequisites
 
-### macOS (Development Platform)
+### macOS
 
 1. **Go** (1.21 or later)
    ```bash
@@ -30,16 +30,14 @@ go test ./cmd/fuzzer/fuzzclient -run TestConformanceVectors -v
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
-3. **Linux Cross-Compiler** (for building Linux binaries on macOS)
-   ```bash
-   brew install SergioBenitez/osxct/x86_64-unknown-linux-gnu
-   ```
-
 ### Linux
 
 1. **Go** (1.21 or later)
 2. **Rust** (latest stable)
 3. **GCC** (for CGO compilation)
+   ```bash
+   sudo apt-get install build-essential
+   ```
 
 ## Building
 
