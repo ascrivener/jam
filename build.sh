@@ -58,8 +58,7 @@ echo -e "${BLUE}Building jamzilla-tiny...${NC}"
 mkdir -p "${PROJECT_ROOT}/bin"
 cd "${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
 
-RUST_LIB="${PROJECT_ROOT}/src/bandersnatch_ffi/target/${RUST_TARGET}/release/libbandersnatch_ffi.a"
-CGO_ENABLED=1 CGO_LDFLAGS="${RUST_LIB}" \
+CGO_ENABLED=1 \
     go build -o "${PROJECT_ROOT}/bin/jamzilla-tiny" \
     -ldflags="-s -w" -tags=netgo -trimpath
 

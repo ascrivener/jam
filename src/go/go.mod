@@ -4,7 +4,11 @@ go 1.24.0
 
 toolchain go1.24.1
 
-require golang.org/x/crypto v0.41.0
+require (
+	github.com/hdevalence/ed25519consensus v0.2.0
+	golang.org/x/crypto v0.41.0
+	golang.org/x/sync v0.16.0
+)
 
 require (
 	filippo.io/edwards25519 v1.0.0 // indirect
@@ -21,7 +25,6 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
 	github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc // indirect
-	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
@@ -38,7 +41,6 @@ require (
 	golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b // indirect
 	golang.org/x/mod v0.27.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/tools v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
