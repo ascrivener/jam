@@ -10,27 +10,8 @@ NC='\033[0m' # No Color
 PROJECT_ROOT=$(pwd)
 echo -e "${BLUE}Building Jam project at: ${PROJECT_ROOT}${NC}"
 
-# Detect platform and set target
-OS_TYPE=$(uname -s)
-ARCH_TYPE=$(uname -m)
-
-case "${OS_TYPE}-${ARCH_TYPE}" in
-    Darwin-arm64|Darwin-aarch64)
-        RUST_TARGET="aarch64-apple-darwin"
-        ;;
-    Linux-x86_64)
-        RUST_TARGET="x86_64-unknown-linux-gnu"
-        ;;
-    *)
-        echo -e "${RED}Unsupported platform: ${OS_TYPE}/${ARCH_TYPE}${NC}"
-        exit 1
-        ;;
-esac
-
-echo -e "${BLUE}Building for ${OS_TYPE}/${ARCH_TYPE} (${RUST_TARGET})${NC}"
-
 # Check prerequisites
-if ! command -v rustup >/dev/null 2>&1; then
+if ! command -v cargo >/dev/null 2>&1; then
     echo -e "${RED}Rust is not installed. Visit: https://rustup.rs/${NC}"
     exit 1
 fi
@@ -43,7 +24,7 @@ fi
 # Build Rust FFI library
 echo -e "${BLUE}Building Rust FFI library...${NC}"
 cd "${PROJECT_ROOT}/src/bandersnatch_ffi"
-cargo build --release --target="${RUST_TARGET}"
+cargo build --release
 echo -e "${GREEN}Rust FFI library built${NC}"
 
 # Generate constants

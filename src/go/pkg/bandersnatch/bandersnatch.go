@@ -1,8 +1,7 @@
 package bandersnatch
 
 /*
-#cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/aarch64-apple-darwin/release -lbandersnatch_ffi -framework Security
-#cgo linux,amd64 LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/x86_64-unknown-linux-gnu/release -lbandersnatch_ffi
+#cgo LDFLAGS: -L${SRCDIR}/../../../bandersnatch_ffi/target/release -lbandersnatch_ffi
 // Declaration of the Rust functions.
 int ietf_vrf_output(const unsigned char *input_ptr, size_t input_len, unsigned char *out_ptr);
 int kzg_commitment(const unsigned char *hashes_ptr, size_t num_hashes, unsigned char *out_ptr);
