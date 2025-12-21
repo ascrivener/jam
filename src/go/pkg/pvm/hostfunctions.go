@@ -621,6 +621,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 			serviceaccount.SetServiceAccount(tx, newAccount)
 			accumulatingServiceAccount.Balance -= newAccount.Balance
 			ctx.State.Registers[7] = types.Register(serviceIndex)
+			ctx.Argument.AccumulationResultContext.NewServices[serviceIndex] = struct{}{}
 			return ExitReasonGo, nil
 		}
 

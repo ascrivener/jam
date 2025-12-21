@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"jam/pkg/constants"
+	"jam/pkg/errors"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
 	"jam/pkg/types"
@@ -14,7 +15,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, map[types.ServiceIndex]struct{}, error) {
+func SingleServiceAccumulation(tx *staterepository.TrackedTx, accumulationStateComponents *AccumulationStateComponents, deferredTransfers []types.DeferredTransfer, workReports []workreport.WorkReport, freeAccumulationServices map[types.ServiceIndex]types.GasValue, serviceIndex types.ServiceIndex, timeslot types.Timeslot, posteriorEntropyAccumulator [4][32]byte) (*AccumulationStateComponents, []types.DeferredTransfer, *[32]byte, types.GasValue, PreimageProvisions, map[types.ServiceIndex]struct{}, map[types.ServiceIndex]struct{}, error) {
 	var gas types.GasValue
 	if g, ok := freeAccumulationServices[serviceIndex]; ok {
 		gas = g
@@ -104,6 +105,8 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	allPreimageProvisions := make(PreimageProvisions)
 
 	allDeletedServices := make(map[types.ServiceIndex]struct{})
+	// Map from new service ID -> list of services that created it (to detect collisions)
+	newServiceCreators := make(map[types.ServiceIndex][]types.ServiceIndex)
 
 	resultsByServiceIndex := make(map[types.ServiceIndex]*AccumulationStateComponents)
 
@@ -123,7 +126,7 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 			childTransactions = append(childTransactions, childTx)
 			childTxMutex.Unlock()
 
-			components, transfers, preimageResult, gasUsed, provisions, deletedServices, err := SingleServiceAccumulation(
+			components, transfers, preimageResult, gasUsed, provisions, deletedServices, newServices, err := SingleServiceAccumulation(
 				childTx, // Use child transaction instead of parent
 				accumulationStateComponents,
 				deferredTransfers,
@@ -143,6 +146,10 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 
 			for deletedServiceIdx := range deletedServices {
 				allDeletedServices[deletedServiceIdx] = struct{}{}
+			}
+
+			for newServiceIdx := range newServices {
+				newServiceCreators[newServiceIdx] = append(newServiceCreators[newServiceIdx], sIndex)
 			}
 
 			resultsByServiceIndex[sIndex] = components
@@ -188,6 +195,14 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 	// Check if any errors occurred during accumulation
 	if len(accumulationErrors) > 0 {
 		return AccumulationStateComponents{}, nil, nil, nil, accumulationErrors[0]
+	}
+
+	// Check for service ID collisions across parallel runs
+	// This detects if multiple services tried to create a service with the same ID
+	for newServiceIdx, creators := range newServiceCreators {
+		if len(creators) > 1 {
+			return AccumulationStateComponents{}, nil, nil, nil, errors.ProtocolErrorf("service ID collision detected: service %d was created by multiple services: %v", newServiceIdx, creators)
+		}
 	}
 
 	// Merge all child transactions back into parent after concurrent processing

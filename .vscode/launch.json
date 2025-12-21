@@ -207,26 +207,8 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces"
-            }
-        },
-        {
-            "name": "Debug Fuzzclient Test Traces in-process",
-            "type": "go",
-            "request": "launch",
-            "mode": "test",
-            "program": "${workspaceFolder}/src/go/cmd/fuzzer/fuzzclient",
-            "args": [
-                "-test.v",
-                "-test.run=TestConformanceVectors",
-                "-test.cpuprofile=cpu.prof"
-            ],
-            "cwd": "${workspaceFolder}",
-            "console": "integratedTerminal",
-            "showLog": true,
-            "env": {
-                "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.1/traces"
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-test-vectors/traces",
+                "USE_SOCKET": "false"
             }
         },
         {
