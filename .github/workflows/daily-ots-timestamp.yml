@@ -19,7 +19,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Fetch full history
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.BOT_TOKEN }}
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -70,5 +70,3 @@ jobs:
         git add .timestamps/ latest-commits.sha256.ots
         git commit -m "Daily OTS timestamp: $(date -u +%Y-%m-%d_%H:%M:%S_UTC)" || echo "No changes to commit"
         git push
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
