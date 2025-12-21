@@ -151,7 +151,7 @@ func main() {
 	}
 	txSuccess = true
 
-	var privateKey ed25519.PrivateKey
+	var privateKey []byte
 
 	// Create trivial seed as per JIP-5: repeat_8_times(encode_as_32bit_le(i))
 	seed := make([]byte, 32)
@@ -178,6 +178,9 @@ func main() {
 	bandersnatchSecretSeed := h2.Sum(nil)
 
 	// Use the derived secret seed to get private key
+	// NOTE: Using crypto/ed25519 for key derivation is fine - ZIP-215 compliance
+	// only matters for signature VERIFICATION, not key generation.
+	// The networking layer will use ed25519consensus for verification if needed.
 	privateKey = ed25519.NewKeyFromSeed(ed25519SecretSeed)
 
 	log.Printf("Using JIP-5 derived keys for validator %d", *devValidator)

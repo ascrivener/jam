@@ -3,7 +3,6 @@ package net
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -39,7 +38,7 @@ var (
 // jamnpsConnection implements the Connection interface
 type jamnpsConnection struct {
 	conn                *quic.Conn
-	localKey            ed25519.PublicKey
+	localKey            []byte
 	validatorInfo       ValidatorInfo
 	initializedByRemote bool
 	isNeighbor          bool
@@ -67,7 +66,7 @@ type jamnpsStream struct {
 }
 
 // NewConnection creates a new Connection from a QUIC connection
-func NewConnection(ctx context.Context, conn *quic.Conn, localKey ed25519.PublicKey, validatorInfo ValidatorInfo, initializedByRemote bool, myValidatorIndex int, totalValidators int) (Connection, error) {
+func NewConnection(ctx context.Context, conn *quic.Conn, localKey []byte, validatorInfo ValidatorInfo, initializedByRemote bool, myValidatorIndex int, totalValidators int) (Connection, error) {
 	// Create connection context
 	connCtx, cancel := context.WithCancel(ctx)
 
@@ -604,7 +603,7 @@ func (c *jamnpsConnection) Close() error {
 }
 
 // RemoteKey returns the remote peer's public key
-func (c *jamnpsConnection) RemoteKey() ed25519.PublicKey {
+func (c *jamnpsConnection) RemoteKey() []byte {
 	publicKey := c.validatorInfo.Keyset.ToEd25519PublicKey()
 	return publicKey[:]
 }
@@ -620,7 +619,7 @@ func (c *jamnpsConnection) ValidatorIdx() int {
 }
 
 // LocalKey returns the local peer's public key
-func (c *jamnpsConnection) LocalKey() ed25519.PublicKey {
+func (c *jamnpsConnection) LocalKey() []byte {
 	return c.localKey
 }
 

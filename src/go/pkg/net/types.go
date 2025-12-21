@@ -1,7 +1,6 @@
 package net
 
 import (
-	"crypto/ed25519"
 	"crypto/tls"
 	"io"
 
@@ -80,7 +79,7 @@ type Connection interface {
 	OpenStream(kind StreamKind) (Stream, error)
 
 	// RemoteKey returns the remote peer's public key
-	RemoteKey() ed25519.PublicKey
+	RemoteKey() []byte
 
 	// InitializedByRemote returns true if this connection was initialized by the remote peer
 	InitializedByRemote() bool
@@ -89,7 +88,7 @@ type Connection interface {
 	ValidatorIdx() int
 
 	// LocalKey returns the local peer's public key
-	LocalKey() ed25519.PublicKey
+	LocalKey() []byte
 
 	// TLSConnectionState returns the TLS connection state
 	TLSConnectionState() tls.ConnectionState

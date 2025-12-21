@@ -3,7 +3,6 @@ package net
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -30,10 +29,10 @@ import (
 
 // NodeOptions configures a JAMNP-S Node
 type NodeOptions struct {
-	PrivateKey  ed25519.PrivateKey // Ed25519 private key
-	ChainID     string             // Chain ID
-	ListenAddr  string             // Address to listen on (default: ":40000")
-	DialTimeout time.Duration      // Timeout for outbound connections (default: 30s)
+	PrivateKey  []byte        // Ed25519 private key (64 bytes)
+	ChainID     string        // Chain ID
+	ListenAddr  string        // Address to listen on (default: ":40000")
+	DialTimeout time.Duration // Timeout for outbound connections (default: 30s)
 	IsBuilder   bool
 }
 
@@ -180,8 +179,8 @@ func NewNode(opts NodeOptions) (*Node, error) {
 
 // GenerateAlternativeName generates the alternative name for a certificate
 // using the algorithm specified in the JAMNP-S protocol
-func GenerateAlternativeName(pubKey ed25519.PublicKey) (string, error) {
-	if len(pubKey) != ed25519.PublicKeySize {
+func GenerateAlternativeName(pubKey []byte) (string, error) {
+	if len(pubKey) != 32 {
 		return "", fmt.Errorf("invalid public key size: %d", len(pubKey))
 	}
 
@@ -227,7 +226,7 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	}
 
 	// Check that the certificate uses Ed25519
-	publicKey, ok := cert.PublicKey.(ed25519.PublicKey)
+	publicKey, ok := cert.PublicKey.([]byte)
 	if !ok {
 		return fmt.Errorf("peer certificate does not use Ed25519 key")
 	}
@@ -266,7 +265,8 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 
 	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
-	myKey := n.opts.PrivateKey.Public().(ed25519.PublicKey)
+	// Extract public key from private key (last 32 bytes)
+	myKey := n.opts.PrivateKey[32:]
 	var iAmInitiator []ValidatorInfo
 	var theyAreInitiator []ValidatorInfo
 
@@ -350,7 +350,9 @@ func (n *Node) Start(ctx context.Context) error {
 // createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
 func (n *Node) createAndStoreConnection(ctx context.Context, quicConn *quic.Conn, validatorInfo ValidatorInfo, initializedByRemote bool, totalValidators int) error {
 	// Create JAMNP-S connection (this will register handlers, start accepting streams, and open required streams)
-	conn, err := NewConnection(ctx, quicConn, n.opts.PrivateKey.Public().(ed25519.PublicKey), validatorInfo, initializedByRemote, n.myValidator.Index, totalValidators)
+	// Extract public key from private key (last 32 bytes)
+	publicKey := n.opts.PrivateKey[32:]
+	conn, err := NewConnection(ctx, quicConn, publicKey, validatorInfo, initializedByRemote, n.myValidator.Index, totalValidators)
 	if err != nil {
 		quicConn.CloseWithError(0, "failed to create connection")
 		return fmt.Errorf("failed to create JAMNP-S connection: %w", err)
@@ -426,7 +428,7 @@ func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []Validat
 				}
 
 				cert := tlsState.PeerCertificates[0]
-				remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
+				remoteKey, ok := cert.PublicKey.([]byte)
 				if !ok {
 					conn.CloseWithError(0, "invalid certificate key type")
 					return
@@ -557,8 +559,9 @@ func (n *Node) Close() error {
 }
 
 // generateCertificate creates a self-signed certificate for the JAMNP-S client
-func generateCertificate(privateKey ed25519.PrivateKey) (tls.Certificate, error) {
-	publicKey := privateKey.Public().(ed25519.PublicKey)
+func generateCertificate(privateKey []byte) (tls.Certificate, error) {
+	// Extract public key from private key (last 32 bytes)
+	publicKey := privateKey[32:]
 	// Generate alternative name from public key
 	altName, err := GenerateAlternativeName(publicKey)
 	if err != nil {
