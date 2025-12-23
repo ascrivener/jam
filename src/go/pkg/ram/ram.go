@@ -2,7 +2,6 @@ package ram
 
 import (
 	"fmt"
-	"sync"
 	"unsafe"
 
 	"jam/pkg/constants"
@@ -70,50 +69,25 @@ type RAM struct {
 	touchedPages             map[uint32]struct{}    // Track which pages were touched (for reset)
 }
 
-// Use sync.Pool for RAM objects (but not the mmap buffer itself)
-var globalRAMPool = &sync.Pool{
-	New: func() interface{} {
-		// Allocate 4GB virtual address space using mmap
-		// Physical pages are allocated by OS on first access (page fault)
-		buffer, err := unix.Mmap(
-			-1, 0,
-			RamSize,
-			unix.PROT_READ|unix.PROT_WRITE,
-			unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
-		)
-		if err != nil {
-			panic(fmt.Sprintf("Failed to mmap RAM: %v", err))
-		}
-
-		return &RAM{
-			buffer:                   buffer,
-			access:                   [NumRamPages]RamAccess{},
-			minMemoryAccessException: nil,
-			touchedPages:             make(map[uint32]struct{}),
-		}
-	},
-}
-
 func NewEmptyRAM() *RAM {
-	ram := globalRAMPool.Get().(*RAM)
-	return ram
-}
-
-func (r *RAM) resetToEmpty() {
-	// Zero out touched pages
-	for pageNum := range r.touchedPages {
-		// Zero the page in the mmap buffer
-		pageStart := pageNum * PageSize
-		for i := uint32(0); i < PageSize; i++ {
-			r.buffer[pageStart+i] = 0
-		}
-		r.access[pageNum] = Inaccessible
+	// Allocate 4GB virtual address space using mmap
+	// Physical pages are allocated by OS on first access (page fault)
+	buffer, err := unix.Mmap(
+		-1, 0,
+		RamSize,
+		unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
+	)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to mmap RAM: %v", err))
 	}
 
-	clear(r.touchedPages)
-
-	r.BeginningOfHeap = nil
-	r.minMemoryAccessException = nil
+	return &RAM{
+		buffer:                   buffer,
+		access:                   [NumRamPages]RamAccess{},
+		minMemoryAccessException: nil,
+		touchedPages:             make(map[uint32]struct{}),
+	}
 }
 
 // trackTouchedPage adds a page to the touched pages map
@@ -412,11 +386,10 @@ func (r *RAM) ZeroPage(pageNum uint32) {
 		panic(fmt.Sprintf("Attempted to zero invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
 
-	// Zero the page in the mmap buffer
+	// Zero the page in the mmap buffer using efficient clear()
 	pageStart := uint64(pageNum) * PageSize
-	for i := uint64(0); i < PageSize; i++ {
-		r.buffer[pageStart+i] = 0
-	}
+	pageEnd := pageStart + PageSize
+	clear(r.buffer[pageStart:pageEnd])
 }
 
 // ClearPageAccess removes a page from the access map
@@ -484,11 +457,6 @@ func (r *RAM) GetMinMemoryAccessException() *RamIndex {
 	return r.minMemoryAccessException
 }
 
-func (r *RAM) ReturnToPool() {
-	r.resetToEmpty()
-	globalRAMPool.Put(r)
-}
-
 // GetRawPointer returns the raw pointer to the mmap buffer for FFI use
 // WARNING: This is unsafe and should only be used for FFI boundaries
 func (r *RAM) GetRawPointer() (unsafe.Pointer, uint64) {
@@ -496,12 +464,4 @@ func (r *RAM) GetRawPointer() (unsafe.Pointer, uint64) {
 		return nil, 0
 	}
 	return unsafe.Pointer(&r.buffer[0]), uint64(len(r.buffer))
-}
-
-// Cleanup unmaps the RAM buffer - call this when truly done with RAM
-func (r *RAM) Cleanup() {
-	if len(r.buffer) > 0 {
-		unix.Munmap(r.buffer)
-		r.buffer = nil
-	}
 }

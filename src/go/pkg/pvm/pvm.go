@@ -260,8 +260,6 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
 
-	defer pvm.State.RAM.ReturnToPool()
-
 	postHostCallExitReason, err := RunHost(pvm, f, x)
 	if err != nil {
 		return types.ExecutionExitReason{}, 0, err
