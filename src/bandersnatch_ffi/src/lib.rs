@@ -33,7 +33,7 @@ pub fn verify_signature_ffi<S: Suite>(
     let output = Output(pt);
 
     // 4. Decode proof components (c and s) - skip the gamma/output part
-    let deserialized_proof = ietf::Proof::<S>::deserialize_compressed(&mut &proof[32..])
+    let deserialized_proof = ietf::Proof::<S>::deserialize_compressed_unchecked(&mut &proof[32..])
         .map_err(|_| Error::InvalidData)?;
 
     // 5. Verify the proof
@@ -141,7 +141,7 @@ pub extern "C" fn initialize_ring_params(ring_size: usize) -> i32 {
 
     let result = || -> Result<RingProofParams, Error> {
         // Deserialize PCS params temporarily
-        let pcs_params = PcsParams::deserialize_uncompressed(&mut &PCS_SRS_DATA[..])
+        let pcs_params = PcsParams::deserialize_uncompressed_unchecked(&mut &PCS_SRS_DATA[..])
             .map_err(|_| Error::InvalidData)?;
 
         // Create ring params and discard PCS params
@@ -246,8 +246,9 @@ pub fn verify_ring_signature_ffi(
     let ring_proof_params = get_ring_params()?;
 
     // 2. Decode the ring commitment
-    let commitment = CanonicalDeserialize::deserialize_compressed(&mut &ring_commitment[..])
-        .map_err(|_| Error::InvalidData)?;
+    let commitment =
+        CanonicalDeserialize::deserialize_compressed_unchecked(&mut &ring_commitment[..])
+            .map_err(|_| Error::InvalidData)?;
 
     // 3. Create input from message by hashing to a point first
     let input = Input::new(message).ok_or(Error::InvalidData)?;
@@ -262,8 +263,8 @@ pub fn verify_ring_signature_ffi(
     let output = Output(pt);
 
     // 5. Decode proof components - skip the gamma/output part
-    let deserialized_proof =
-        RingProof::deserialize_compressed(&mut &proof[32..]).map_err(|_| Error::InvalidData)?;
+    let deserialized_proof = RingProof::deserialize_compressed_unchecked(&mut &proof[32..])
+        .map_err(|_| Error::InvalidData)?;
 
     // 6. Create a verifier for the commitment
     let verifier_key = ring_proof_params.verifier_key_from_commitment(commitment);
@@ -342,8 +343,9 @@ mod tests {
 
         let expected_bytes =
             hex::decode(expected_commitment_hex).expect("Failed to decode hex string");
-        let expected_commitment = RingCommitment::deserialize_compressed(&mut &expected_bytes[..])
-            .expect("Failed to deserialize expected commitment");
+        let expected_commitment =
+            RingCommitment::deserialize_compressed_unchecked(&mut &expected_bytes[..])
+                .expect("Failed to deserialize expected commitment");
 
         let mut result_bytes = Vec::new();
         result
