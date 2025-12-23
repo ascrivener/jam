@@ -19,7 +19,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.24'
       
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential
@@ -42,6 +42,13 @@ jobs:
         run: |
           cd src/go
           go test ./cmd/fuzzer/fuzzclient -run TestConformanceVectors -v
+      
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: jamzilla-tiny-linux
+          path: bin/jamzilla-tiny
+          retention-days: 7
       
       - name: Success
         run: echo "✅ Build and tests passed on Linux!"
