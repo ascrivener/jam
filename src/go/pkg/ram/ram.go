@@ -2,9 +2,10 @@ package ram
 
 import (
 	"fmt"
-	"sync"
 
 	"jam/pkg/constants"
+
+	"golang.org/x/sys/unix"
 )
 
 // Constants for RAM memory layout and access control
@@ -60,54 +61,29 @@ func TotalSizeNeededPages(size int) int {
 
 // RAM represents the memory of a PVM
 type RAM struct {
-	pages                    [NumRamPages]*[PageSize]byte // Page number -> page content (nil = unallocated)
-	access                   [NumRamPages]RamAccess       // Page number -> access rights
-	BeginningOfHeap          *RamIndex                    // nil if no heap
-	minMemoryAccessException *RamIndex                    // Track the minimum index that caused an access exception
-	usedPages                map[uint32]struct{}          // Track which pages were allocated/modified (for fast reset)
-}
-
-// Use sync.Pool for better GC integration
-var globalRAMPool = &sync.Pool{
-	New: func() interface{} {
-		return &RAM{
-			pages:                    [NumRamPages]*[PageSize]byte{},
-			access:                   [NumRamPages]RamAccess{},
-			minMemoryAccessException: nil,
-			usedPages:                make(map[uint32]struct{}),
-		}
-	},
+	buffer                   []byte                 // mmap'd 4GB virtual address space
+	access                   [NumRamPages]RamAccess // Page number -> access rights
+	BeginningOfHeap          *RamIndex              // nil if no heap
+	minMemoryAccessException *RamIndex              // Track the minimum index that caused an access exception
 }
 
 func NewEmptyRAM() *RAM {
-	ram := globalRAMPool.Get().(*RAM)
-	return ram
-}
-
-func (r *RAM) resetToEmpty() {
-	for pageNum := range r.usedPages {
-		// Return page to pool if it exists
-		r.returnPageToPool(pageNum)
-		r.access[pageNum] = Inaccessible
+	// Allocate 4GB virtual address space using mmap
+	// Physical pages are allocated by OS on first access (page fault)
+	buffer, err := unix.Mmap(
+		-1, 0,
+		RamSize,
+		unix.PROT_READ|unix.PROT_WRITE,
+		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
+	)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to mmap RAM: %v", err))
 	}
 
-	clear(r.usedPages)
-
-	r.BeginningOfHeap = nil
-	r.minMemoryAccessException = nil
-}
-
-// trackUsedPage adds a page to the used pages map
-func (r *RAM) trackUsedPage(pageNum uint32) {
-	r.usedPages[pageNum] = struct{}{}
-}
-
-func (r *RAM) returnPageToPool(pageNum uint32) {
-	if r.pages[pageNum] != nil {
-		page := r.pages[pageNum]
-		clear(page[:])
-		pagePool.Put(page)
-		r.pages[pageNum] = nil
+	return &RAM{
+		buffer:                   buffer,
+		access:                   [NumRamPages]RamAccess{},
+		minMemoryAccessException: nil,
 	}
 }
 
@@ -147,22 +123,6 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 // Memory access and mutation methods
 //
 
-// getOrCreatePage returns the page at the given page number for write operations
-// Creates the page if it doesn't exist since we need to mutate it
-func (r *RAM) getOrCreatePage(pageNum uint32) *[PageSize]byte {
-	// Bounds check
-	if pageNum >= NumRamPages {
-		panic(fmt.Sprintf("Attempted to create page at invalid index %d (max is %d)", pageNum, NumRamPages-1))
-	}
-
-	if r.pages[pageNum] == nil {
-		page := pagePool.Get().(*[PageSize]byte)
-		r.pages[pageNum] = page
-		r.trackUsedPage(pageNum)
-	}
-	return r.pages[pageNum]
-}
-
 // Inspect returns the byte at the given index, optionally tracking access violations
 func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions bool) byte {
 	return r.InspectRange(index, 1, mode, trackAccessExceptions)[0]
@@ -201,19 +161,6 @@ func (r *RAM) checkAccessViolations(start, length uint64, mode MemoryAccessMode,
 	}
 }
 
-// isSinglePageAccess checks if the given range fits within a single page
-func (r *RAM) isSinglePageAccess(index uint64, length uint64, mode MemoryAccessMode) (bool, uint32, uint64) {
-	actualStart := index
-	if mode == Wrap {
-		actualStart = index % RamSize
-	}
-	startPageNum := uint32(actualStart / PageSize)
-	startPageOffset := actualStart % PageSize
-	isSinglePage := startPageOffset+length <= PageSize
-
-	return isSinglePage, startPageNum, startPageOffset
-}
-
 // InspectRange returns a contiguous buffer for the range, either direct page memory or combined slices
 func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
 	if length == 0 {
@@ -223,24 +170,7 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAcc
 	r.checkAccessViolations(index, length, mode, trackAccessExceptions,
 		func(access RamAccess) bool { return access == Inaccessible })
 
-	// Check if this is a single page operation
-	isSinglePage, pageNum, pageOffset := r.isSinglePageAccess(index, length, mode)
-
-	if isSinglePage {
-		page := r.getOrCreatePage(pageNum)
-		return page[pageOffset : pageOffset+length]
-	} else {
-		slices := r.pageIterator(index, length, mode)
-
-		// Combine into contiguous buffer
-		combined := make([]byte, length)
-		offset := 0
-		for _, slice := range slices {
-			copy(combined[offset:offset+len(slice)], slice)
-			offset += len(slice)
-		}
-		return combined
-	}
+	return r.buffer[index : index+length]
 }
 
 // Mutate changes a byte at the given index, optionally tracking access violations and updating rollback state
@@ -259,59 +189,7 @@ func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, track
 	r.checkAccessViolations(index, uint64(length), mode, trackAccessExceptions,
 		func(access RamAccess) bool { return access == Inaccessible || access == Immutable })
 
-	// Check if this is a single page operation
-	isSinglePage, pageNum, pageOffset := r.isSinglePageAccess(index, uint64(length), mode)
-
-	if isSinglePage {
-		page := r.getOrCreatePage(pageNum)
-		fn(page[pageOffset : pageOffset+uint64(length)])
-	} else {
-		slices := r.pageIterator(index, uint64(length), mode)
-
-		temp := make([]byte, length)
-		fn(temp)
-
-		offset := 0
-		for _, slice := range slices {
-			copy(slice, temp[offset:offset+len(slice)])
-			offset += len(slice)
-		}
-	}
-}
-
-// pageIterator yields slices of memory for the given range, allowing callers to process each slice
-// Note: This is only called for multi-page operations now
-func (r *RAM) pageIterator(start, length uint64, mode MemoryAccessMode) [][]byte {
-
-	if length == 0 {
-		return nil
-	}
-
-	// Multi-page access - pre-allocate slice capacity
-	expectedPages := (length + PageSize - 1) / PageSize
-	slices := make([][]byte, 0, expectedPages)
-
-	// Process data page by page
-	for i := uint64(0); i < length; {
-		index := start + i
-		if mode == Wrap {
-			index = index % RamSize
-		}
-
-		pageNum := uint32(index / PageSize)
-		pageOffset := index % PageSize
-
-		// Get the page for operations
-		page := r.getOrCreatePage(pageNum)
-		bytesToCopy := min(PageSize-pageOffset, length-i)
-
-		// Add slice to results
-		slices = append(slices, page[pageOffset:pageOffset+bytesToCopy])
-
-		i += bytesToCopy
-	}
-
-	return slices
+	fn(r.buffer[index : index+uint64(length)])
 }
 
 //
@@ -393,26 +271,19 @@ func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
 		panic(fmt.Sprintf("Attempted to set permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
 	r.access[pageNum] = access
-	r.trackUsedPage(pageNum)
 }
 
-// Use sync.Pool for page management too
-var pagePool = &sync.Pool{
-	New: func() interface{} {
-		return &[PageSize]byte{}
-	},
-}
-
-// ZeroPage removes a page from the pages map, effectively zeroing it out
-// This is more memory efficient than storing a page full of zeros
+// ZeroPage zeros out a page in the mmap buffer
 func (r *RAM) ZeroPage(pageNum uint32) {
 	// Bounds check
 	if pageNum >= NumRamPages {
 		panic(fmt.Sprintf("Attempted to zero invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
 
-	// Return page to pool before removing reference
-	r.returnPageToPool(pageNum)
+	// Zero the page in the mmap buffer using efficient clear()
+	pageStart := uint64(pageNum) * PageSize
+	pageEnd := pageStart + PageSize
+	clear(r.buffer[pageStart:pageEnd])
 }
 
 // ClearPageAccess removes a page from the access map
@@ -478,9 +349,4 @@ func (r *RAM) ClearMemoryAccessExceptions() {
 // GetMinMemoryAccessException returns the minimum memory access exception
 func (r *RAM) GetMinMemoryAccessException() *RamIndex {
 	return r.minMemoryAccessException
-}
-
-func (r *RAM) ReturnToPool() {
-	r.resetToEmpty()
-	globalRAMPool.Put(r)
 }
