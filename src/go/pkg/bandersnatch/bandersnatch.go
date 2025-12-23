@@ -19,9 +19,12 @@ import "C"
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"unsafe"
+
+	e "jam/pkg/errors"
 
 	"jam/pkg/constants"
 	"jam/pkg/types"
@@ -36,35 +39,33 @@ func init() {
 	}
 }
 
-func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
+// ietfVRFOutput is a helper function that calls the FFI ietf_vrf_output function
+func ietfVRFOutput(data []byte, dataType string) ([32]byte, error) {
 	var out [32]byte
 
 	ret := C.ietf_vrf_output(
-		(*C.uchar)(unsafe.Pointer(&proof)),
-		C.size_t(len(proof)),
+		(*C.uchar)(unsafe.Pointer(&data[0])),
+		C.size_t(len(data)),
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
 	if ret != 0 {
-		return out, errors.New("vrf_output failed")
+		// Error code -3 means invalid VRF proof data (protocol error)
+		// All other error codes are internal errors that shouldn't happen
+		if ret == -3 {
+			return out, e.ProtocolErrorf("invalid VRF %s data", dataType)
+		}
+		return out, fmt.Errorf("ietf_vrf_output internal error: code=%d", ret)
 	}
 
 	return out, nil
 }
 
-// TODO: implement
-func BandersnatchVRFSignatureOutput(proof types.BandersnatchVRFSignature) ([32]byte, error) {
-	var out [32]byte
+func BandersnatchRingVRFProofOutput(proof types.BandersnatchRingVRFProof) ([32]byte, error) {
+	return ietfVRFOutput(proof[:], "proof")
+}
 
-	ret := C.ietf_vrf_output(
-		(*C.uchar)(unsafe.Pointer(&proof)),
-		C.size_t(len(proof)),
-		(*C.uchar)(unsafe.Pointer(&out[0])),
-	)
-	if ret != 0 {
-		return out, errors.New("vrf_output failed")
-	}
-
-	return out, nil
+func BandersnatchVRFSignatureOutput(signature types.BandersnatchVRFSignature) ([32]byte, error) {
+	return ietfVRFOutput(signature[:], "signature")
 }
 
 // Cache for BandersnatchRingRoot results
@@ -86,7 +87,7 @@ func hashPublicKeys(pks []types.BandersnatchPublicKey) [32]byte {
 	return sha256.Sum256(hasher.Sum(nil))
 }
 
-func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchRingRoot {
+func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) (types.BandersnatchRingRoot, error) {
 	// Create cache key from hash of public keys
 	cacheKey := hashPublicKeys(pks)
 
@@ -94,7 +95,7 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 	ringCache.mu.RLock()
 	if cached, exists := ringCache.cache[cacheKey]; exists {
 		ringCache.mu.RUnlock()
-		return cached
+		return cached, nil
 	}
 	ringCache.mu.RUnlock()
 
@@ -102,7 +103,7 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 
 	// There must be at least one public key.
 	if len(pks) == 0 {
-		panic(errors.New("no public keys provided"))
+		return types.BandersnatchRingRoot{}, errors.New("no public keys provided")
 	}
 
 	// Since pks is a slice of [32]byte, its elements are stored contiguously.
@@ -113,7 +114,7 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 		(*C.uchar)(unsafe.Pointer(&out[0])),
 	)
 	if ret != 0 {
-		panic(errors.New("kzg_commitment failed"))
+		return types.BandersnatchRingRoot{}, fmt.Errorf("kzg_commitment internal error: code=%d, num_pks=%d", ret, len(pks))
 	}
 
 	result := types.BandersnatchRingRoot(out)
@@ -128,7 +129,7 @@ func BandersnatchRingRoot(pks []types.BandersnatchPublicKey) types.BandersnatchR
 	ringCache.cache[cacheKey] = result
 	ringCache.mu.Unlock()
 
-	return result
+	return result, nil
 }
 
 // Cache for ring signature verification results

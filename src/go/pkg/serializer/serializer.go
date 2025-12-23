@@ -879,7 +879,7 @@ type ChainParameters struct {
 }
 
 func SerializeChainParameters() []byte {
-	return Serialize(&ChainParameters{
+	return Serialize(ChainParameters{
 		ServiceMinimumBalancePerItem:                      constants.ServiceMinimumBalancePerItem,
 		ServiceMinimumBalancePerOctet:                     constants.ServiceMinimumBalancePerOctet,
 		ServiceMinimumBalance:                             constants.ServiceMinimumBalance,

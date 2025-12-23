@@ -296,7 +296,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "fallback") {
+		// if !strings.Contains(testDir, "1766243315_7231") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)
@@ -457,10 +457,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		importBlock := fuzzinterface.ImportBlock(testVector.Block)
 		resp, err = fc.sendAndReceive(fuzzinterface.RequestMessage{ImportBlock: &importBlock})
 		if err != nil {
-			t.Logf("Failed to send ImportBlock message for %s: %v", testFileName, err)
-			if resp.StateRoot != nil && *resp.StateRoot != testVector.PostState.StateRoot {
-				t.Fatalf("State root mismatch for %s: %x != %x", testFileName, *resp.StateRoot, testVector.PostState.StateRoot)
-			}
+			t.Fatalf("Failed to send ImportBlock message for %s: %v", testFileName, err)
 			continue
 		}
 

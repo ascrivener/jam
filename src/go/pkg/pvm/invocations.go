@@ -327,7 +327,7 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	// Transfer the balances to the service account
 	for _, accumulationInput := range accumulationInputs {
 		if accumulationInput.IsDeferredTransfer() {
-			serviceAccount.Balance += types.Balance(accumulationInput.DeferredTransfer.BalanceTransfer)
+			serviceAccount.UpdateBalance(tx, serviceAccount.Balance+types.Balance(accumulationInput.DeferredTransfer.BalanceTransfer))
 		}
 	}
 	_, code, err := serviceAccount.MetadataAndCode(tx)
@@ -335,7 +335,6 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		return &AccumulationStateComponents{}, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), make(map[types.ServiceIndex]struct{}), err
 	}
 	if code == nil || len(*code) > int(constants.ServiceCodeMaxSize) {
-		serviceaccount.SetServiceAccount(tx, serviceAccount)
 		return accumulationStateComponents, []types.DeferredTransfer{}, nil, 0, PreimageProvisions{}, make(map[types.ServiceIndex]struct{}), make(map[types.ServiceIndex]struct{}), nil
 	}
 	// Create two separate context objects with independent child transactions
@@ -362,7 +361,6 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 		if err := tx.ReplaceMemoryWith(ctx.ExceptionalAccumulationResultContext.Tx); err != nil {
 			return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, ctx.ExceptionalAccumulationResultContext.DeletedServices, ctx.ExceptionalAccumulationResultContext.NewServices, err
 		}
-		serviceaccount.SetServiceAccount(tx, ctx.ExceptionalAccumulationResultContext.AccumulatingServiceAccount)
 		return ctx.ExceptionalAccumulationResultContext.StateComponents, ctx.ExceptionalAccumulationResultContext.DeferredTransfers, ctx.ExceptionalAccumulationResultContext.PreimageResult, gasUsed, ctx.ExceptionalAccumulationResultContext.PreimageProvisions, ctx.ExceptionalAccumulationResultContext.DeletedServices, ctx.ExceptionalAccumulationResultContext.NewServices, nil
 	}
 
@@ -370,8 +368,6 @@ func Accumulate(tx *staterepository.TrackedTx, accumulationStateComponents *Accu
 	if err := tx.ReplaceMemoryWith(ctx.AccumulationResultContext.Tx); err != nil {
 		return ctx.AccumulationResultContext.StateComponents, ctx.AccumulationResultContext.DeferredTransfers, ctx.AccumulationResultContext.PreimageResult, gasUsed, ctx.AccumulationResultContext.PreimageProvisions, ctx.AccumulationResultContext.DeletedServices, ctx.AccumulationResultContext.NewServices, fmt.Errorf("failed to apply nested batch: %w", err)
 	}
-
-	serviceaccount.SetServiceAccount(tx, ctx.AccumulationResultContext.AccumulatingServiceAccount)
 
 	blob := *executionExitReason.Blob
 	if len(blob) == 32 {

@@ -86,6 +86,12 @@ func SetServiceAccount(tx *staterepository.TrackedTx, serviceAccount *ServiceAcc
 	staterepository.SetServiceAccount(tx, serviceAccount.ServiceIndex, serializer.Serialize(serviceAccount.ServiceAccountData))
 }
 
+// UpdateBalance sets the service account's balance to a new value and persists the change
+func (serviceAccount *ServiceAccount) UpdateBalance(tx *staterepository.TrackedTx, newBalance types.Balance) {
+	serviceAccount.Balance = newBalance
+	SetServiceAccount(tx, serviceAccount)
+}
+
 func DeleteServiceAccount(tx *staterepository.TrackedTx, serviceIndex types.ServiceIndex) {
 	staterepository.DeleteServiceAccount(tx, serviceIndex)
 }
@@ -149,6 +155,8 @@ func (s *ServiceAccount) SetServiceStorageItem(tx *staterepository.TrackedTx, ke
 		s.TotalOctetsUsedInStorage += uint64(len(value))
 	}
 
+	SetServiceAccount(tx, s)
+
 	// Set the storage item
 	staterepository.SetServiceStorageItem(tx, s.ServiceIndex, key, value)
 	return nil
@@ -168,6 +176,8 @@ func (s *ServiceAccount) DeleteServiceStorageItem(tx *staterepository.TrackedTx,
 	// Update storage metrics
 	s.TotalItemsUsedInStorage--
 	s.TotalOctetsUsedInStorage -= (34 + uint64(len(key)) + uint64(len(oldItem))) // Key + value
+
+	SetServiceAccount(tx, s)
 
 	// Delete the storage item
 	staterepository.DeleteServiceStorageItem(tx, s.ServiceIndex, key)
@@ -208,6 +218,8 @@ func (s *ServiceAccount) SetPreimageLookupHistoricalStatus(tx *staterepository.T
 		s.TotalItemsUsedInStorage += 2
 		// 81 bytes (4 for blobLength + 32 for hashedPreimage + 45 for the key structure)
 		s.TotalOctetsUsedInStorage += 81 + uint64(blobLength)
+
+		SetServiceAccount(tx, s)
 	}
 
 	// Set the historical status
@@ -232,6 +244,8 @@ func (s *ServiceAccount) DeletePreimageLookupHistoricalStatus(tx *staterepositor
 	s.TotalItemsUsedInStorage -= 2
 	// 81 bytes (4 for blobLength + 32 for hashedPreimage + 45 for the key structure) + status size
 	s.TotalOctetsUsedInStorage -= (81 + uint64(blobLength))
+
+	SetServiceAccount(tx, s)
 
 	// Delete using StateKV function (replaces manual key construction)
 	staterepository.DeletePreimageLookupHistoricalStatus(tx, s.ServiceIndex, blobLength, hashedPreimage)

@@ -1,6 +1,7 @@
 use ark_vrf::ietf::Verifier;
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::ring;
+use ark_vrf::ring::RingSuite;
 use ark_vrf::suites::bandersnatch::{
     BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProof, RingProofParams,
 };
@@ -170,14 +171,10 @@ pub fn kzg_commitment_ffi(hashes: &[[u8; 32]]) -> Result<RingCommitment, Error> 
 
     let mut ring_pks = Vec::with_capacity(hashes.len());
     for (_i, hash) in hashes.iter().enumerate() {
-        match codec::point_decode::<BandersnatchSha512Ell2>(&hash[..]) {
-            Ok(point) => {
-                ring_pks.push(point);
-            }
-            Err(_) => {
-                return Err(Error::InvalidData);
-            }
-        }
+        // Per spec: if point decoding fails, use the padding point instead
+        let point = codec::point_decode::<BandersnatchSha512Ell2>(&hash[..])
+            .unwrap_or(<BandersnatchSha512Ell2 as RingSuite>::PADDING);
+        ring_pks.push(point);
     }
 
     let verifier_key = ring_proof_params.verifier_key(&ring_pks);

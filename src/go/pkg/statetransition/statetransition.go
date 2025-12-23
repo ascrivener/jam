@@ -93,7 +93,7 @@ func STF(curBlock block.Block) ([32]byte, error) {
 
 	// 5.8
 	if curBlock.Header.PriorStateRoot != parentBlock.Info.PosteriorStateRoot {
-		return [32]byte{}, fmt.Errorf("parent block state root does not match merklized state")
+		return [32]byte{}, errors.ProtocolErrorf("parent block state root does not match merklized state")
 	}
 
 	// Run state transition function
@@ -250,7 +250,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 	// Wait for Safrole computation to complete
 	safroleRes := <-safroleResultChan
 	if safroleRes.err != nil {
-		return fmt.Errorf("failed to compute safrole basic state: %w", safroleRes.err)
+		return safroleRes.err
 	}
 
 	// Create post-state using pointer to avoid massive 50-200MB allocation
@@ -440,7 +440,11 @@ func computeSafroleBasicState(header header.Header, mostRecentBlockTimeslot type
 		for index, keyset := range posteriorValidatorKeysetsPending {
 			posteriorBandersnatchPublicKeysPending[index] = keyset.ToBandersnatchPublicKey()
 		}
-		posteriorEpochTicketSubmissionsRoot = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:])
+		var err error
+		posteriorEpochTicketSubmissionsRoot, err = bandersnatch.BandersnatchRingRoot(posteriorBandersnatchPublicKeysPending[:])
+		if err != nil {
+			return state.SafroleBasicState{}, err
+		}
 
 		// posteriorSealingKeySequence
 		if header.TimeSlot.EpochIndex() == mostRecentBlockTimeslot.EpochIndex()+1 && mostRecentBlockTimeslot.SlotPhaseIndex() >= int(constants.TicketSubmissionEndingSlotPhaseNumber) && len(priorSafroleBasicState.TicketAccumulator) == int(constants.NumTimeslotsPerEpoch) {

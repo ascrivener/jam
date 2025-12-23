@@ -619,7 +619,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 				return ExitReason{}, err
 			}
 			serviceaccount.SetServiceAccount(tx, newAccount)
-			accumulatingServiceAccount.Balance -= newAccount.Balance
+			accumulatingServiceAccount.UpdateBalance(tx, accumulatingServiceAccount.Balance-newAccount.Balance)
 			ctx.State.Registers[7] = types.Register(serviceIndex)
 			ctx.Argument.AccumulationResultContext.NewServices[serviceIndex] = struct{}{}
 			return ExitReasonGo, nil
@@ -668,6 +668,8 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason,
 		accumulatingServiceAccount.CodeHash = codeHash
 		accumulatingServiceAccount.MinimumGasForAccumulate = types.GasValue(minGasForAccumulate)
 		accumulatingServiceAccount.MinimumGasForOnTransfer = types.GasValue(minGasForOnTransfer)
+
+		serviceaccount.SetServiceAccount(ctx.Argument.AccumulationResultContext.Tx, accumulatingServiceAccount)
 
 		// Set return status to OK
 		ctx.State.Registers[7] = types.Register(HostCallOK)
@@ -732,7 +734,7 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		}
 
 		// Update source account balance
-		sourceAccount.Balance -= amount
+		sourceAccount.UpdateBalance(ctx.Argument.AccumulationResultContext.Tx, sourceAccount.Balance-amount)
 
 		// Append transfer to deferred transfers list
 		ctx.Argument.AccumulationResultContext.DeferredTransfers = append(
@@ -812,8 +814,7 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 			}
 			if lastTimeslot < cutoffTime {
 				// Update accumulating account balance
-				// For simplicity, we're assuming the balance to transfer is associated with the destination account
-				accumulatingServiceAccount.Balance += destinationAccount.Balance
+				accumulatingServiceAccount.UpdateBalance(tx, accumulatingServiceAccount.Balance+destinationAccount.Balance)
 
 				// IMPORTANT: actually delete the service account and preimage from state as well
 				if err := destinationAccount.DeletePreimageLookupHistoricalStatus(tx, uint32(length), hash); err != nil {
