@@ -2,7 +2,6 @@ package ram
 
 import (
 	"fmt"
-	"unsafe"
 
 	"jam/pkg/constants"
 
@@ -350,13 +349,4 @@ func (r *RAM) ClearMemoryAccessExceptions() {
 // GetMinMemoryAccessException returns the minimum memory access exception
 func (r *RAM) GetMinMemoryAccessException() *RamIndex {
 	return r.minMemoryAccessException
-}
-
-// GetRawPointer returns the raw pointer to the mmap buffer for FFI use
-// WARNING: This is unsafe and should only be used for FFI boundaries
-func (r *RAM) GetRawPointer() (unsafe.Pointer, uint64) {
-	if len(r.buffer) == 0 {
-		return nil, 0
-	}
-	return unsafe.Pointer(&r.buffer[0]), uint64(len(r.buffer))
 }
