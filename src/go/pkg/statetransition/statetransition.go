@@ -231,7 +231,7 @@ func stfHelper(tx *staterepository.TrackedTx, curBlock block.Block) error {
 			}
 		}
 		if !authorizersPoolHasWorkReport {
-			return errors.ProtocolErrorf("authorizer %s not in authorizers pool for core %d", guarantee.WorkReport.AuthorizerHash, guarantee.WorkReport.CoreIndex)
+			return errors.ProtocolErrorf("authorizer %x not in authorizers pool for core %d", guarantee.WorkReport.AuthorizerHash, guarantee.WorkReport.CoreIndex)
 		}
 	}
 
