@@ -50,7 +50,7 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 		return errors.ProtocolErrorf("bandersnatch block author index is out of bounds: %d", b.Header.BandersnatchBlockAuthorIndex)
 	}
 	for _, ticket := range b.Extrinsics.Tickets {
-		if uint16(ticket.EntryIndex) >= uint16(constants.NumTicketEntries) {
+		if uint16(ticket.EntryIndex) >= constants.NumTicketEntries {
 			return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
 		}
 	}
@@ -89,7 +89,7 @@ func (b Block) VerifyInBounds(priorState *state.State) error {
 	}
 	priorEpochIndex := priorState.MostRecentBlockTimeslot.EpochIndex()
 	for _, verdict := range b.Extrinsics.Disputes.Verdicts {
-		if verdict.EpochIndex != uint32(priorEpochIndex) && verdict.EpochIndex != uint32(priorEpochIndex-1) {
+		if verdict.EpochIndex != uint32(priorEpochIndex) && (priorEpochIndex == 0 || verdict.EpochIndex != uint32(priorEpochIndex-1)) {
 			return errors.ProtocolErrorf("verdict epoch index does not match prior state most recent block timeslot epoch index or previous")
 		}
 		for _, judgement := range verdict.Judgements {
@@ -669,26 +669,30 @@ func (b Block) VerifyPostStateTransition(priorState *state.State, postState *sta
 	for _, guarantee := range b.Extrinsics.Guarantees {
 		guarantorAssignments := guarantee.GuarantorAssignments(postState.EntropyAccumulator, postState.MostRecentBlockTimeslot, postState.ValidatorKeysetsActive, postState.ValidatorKeysetsPriorEpoch, postState.Disputes)
 		hashedWorkReport := blake2b.Sum256(serializer.Serialize(&guarantee.WorkReport))
+		currentRotationIndex := postState.MostRecentBlockTimeslot.CoreAssignmentRotationIndex()
+
+		// Accept guarantees from current and previous rotation period only
+		var minAcceptableTimeslot types.Timeslot
+		if currentRotationIndex > 0 {
+			minAcceptableTimeslot = types.Timeslot(constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots) * (types.Timeslot(currentRotationIndex) - 1)
+		} else { // prevent underflow
+			minAcceptableTimeslot = 0
+		}
+
+		if guarantee.Timeslot < minAcceptableTimeslot {
+			return errors.ProtocolErrorf("guarantee timeslot %d is too old (minimum accepted timeslot: %d)",
+				uint32(guarantee.Timeslot), minAcceptableTimeslot)
+		}
+		if guarantee.Timeslot > postState.MostRecentBlockTimeslot {
+			return errors.ProtocolErrorf("guarantee timeslot is too new")
+		}
 		for _, credential := range guarantee.Credentials {
 			publicKey := guarantorAssignments.ValidatorKeysets[credential.ValidatorIndex].ToEd25519PublicKey()
 			if !ed25519consensus.Verify(publicKey[:], append([]byte("jam_guarantee"), hashedWorkReport[:]...), credential.Signature[:]) {
 				return errors.ProtocolErrorf("invalid signature from validator %d", credential.ValidatorIndex)
 			}
-			var k uint16
-			rotationIndex := uint16(postState.MostRecentBlockTimeslot.CoreAssignmentRotationIndex())
-			if rotationIndex > 0 {
-				k = constants.ValidatorCoreAssignmentsRotationPeriodInTimeslots * (rotationIndex - 1)
-			} else {
-				k = 0 // If we're in the first rotation period, accept all guarantees
-			}
 			if guarantorAssignments.CoreIndices[credential.ValidatorIndex] != types.CoreIndex(guarantee.WorkReport.CoreIndex) {
 				return errors.ProtocolErrorf("guarantee core index does not match work report core index")
-			}
-			if k > uint16(guarantee.Timeslot) {
-				return errors.ProtocolErrorf("guarantee timeslot is too old")
-			}
-			if guarantee.Timeslot > postState.MostRecentBlockTimeslot {
-				return errors.ProtocolErrorf("guarantee timeslot is too new")
 			}
 		}
 	}
@@ -737,9 +741,12 @@ func GetAnchorBlock(tx *staterepository.TrackedTx, header header.Header, targetA
 			return nil, fmt.Errorf("failed to get block %x: %w", currentHeaderHash, err)
 		}
 
-		// Check if the block is too old (more than 24 hours)
-		if header.TimeSlot > blockWithInfo.Block.Header.TimeSlot+types.Timeslot(constants.LookupAnchorMaxAgeTimeslots) {
-			return nil, errors.ProtocolErrorf("anchor block is too old (more than 24 hours before current block)")
+		if blockWithInfo.Block.Header.TimeSlot > header.TimeSlot {
+			return nil, errors.ProtocolErrorf("anchor block is newer than current header")
+		}
+
+		if header.TimeSlot-blockWithInfo.Block.Header.TimeSlot > types.Timeslot(constants.LookupAnchorMaxAgeTimeslots) {
+			return nil, errors.ProtocolErrorf("anchor block is too old (more than 24 timeslots before current block)")
 		}
 
 		if currentHeaderHash == targetAnchorHeaderHash {
