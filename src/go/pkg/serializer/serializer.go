@@ -747,47 +747,35 @@ func DecodeLittleEndian(b []byte) uint64 {
 // into its two's complement signed representation as an int64.
 // If x is less than 2^(8*n-1), it is interpreted as positive; otherwise, we subtract 2^(8*n).
 func UnsignedToSigned(octets int, x uint64) int64 {
-	totalBits := 8 * octets
-	if totalBits > 64 {
-		panic(fmt.Sprintf("Unsupported octet width: %d (max 8 allowed)", octets))
-	}
-
-	signBit := uint64(1) << uint(totalBits-1)
-
-	// Special case for octets = 8 (64 bits)
-	if octets == 8 {
-		// For 64-bit integers, if the sign bit is set, we need to interpret as negative
-		if x >= signBit {
-			// This is equivalent to x - 2^64, but we need to be careful with the arithmetic
-			// to avoid overflow. Since int64(x) already gives us the correct bit pattern
-			// interpreted as signed, we can just return it directly.
-			return int64(x)
+	switch octets {
+	case 1:
+		return int64(int8(x))
+	case 2:
+		return int64(int16(x))
+	case 3:
+		if x&0x800000 != 0 {
+			return int64(x | 0xFFFFFFFFFF000000)
 		}
 		return int64(x)
-	}
-
-	modVal := uint64(1) << uint(totalBits)
-	if x < signBit {
+	case 4:
+		return int64(int32(x))
+	case 8:
 		return int64(x)
+	default:
+		panic(fmt.Sprintf("Unsupported octet width: %d (must be 1, 2, 3, 4, or 8)", octets))
 	}
-	return int64(x) - int64(modVal)
 }
 
 // SignedToUnsigned converts a signed integer a, assumed to be in the range
 // [ -2^(8*l-1), 2^(8*l-1) - 1 ], into its unsigned natural representation
 // in [0, 2^(8*l)).
 func SignedToUnsigned(octets int, a int64) uint64 {
-	// Special case for octets = 8 (64 bits)
 	if octets == 8 {
-		// For 64-bit values, we don't need modular arithmetic
-		// because uint64(a) already gives the correct bit pattern
 		return uint64(a)
 	}
 
-	totalBits := 8 * octets
-	modVal := uint64(1) << uint(totalBits)
-	// Adjust a so that negative values wrap around properly.
-	return (modVal + uint64(a)) % modVal
+	mask := (uint64(1) << (8 * octets)) - 1
+	return uint64(a) & mask
 }
 
 func BlobLengthFromPreimageLookupHistoricalStatusKey(key [31]byte) types.BlobLength {

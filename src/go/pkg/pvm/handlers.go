@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
-	"slices"
 
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
@@ -102,19 +101,19 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 		pvm.State.Registers[instruction.Ra] = types.Register(pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap, true))
 	case 53: // load_i8
 		val := pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap, true)
-		pvm.State.Registers[instruction.Ra] = signExtendImmediate(1, uint64(val))
+		pvm.State.Registers[instruction.Ra] = types.Register(int8(val))
 	case 54: // load_u16
 		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap, true)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(data))
 	case 55: // load_i16
 		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap, true)
-		pvm.State.Registers[instruction.Ra] = signExtendImmediate(2, uint64(binary.LittleEndian.Uint16(data)))
+		pvm.State.Registers[instruction.Ra] = types.Register(int16(binary.LittleEndian.Uint16(data)))
 	case 56: // load_u32
 		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap, true)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(data))
 	case 57: // load_i32
 		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap, true)
-		pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(binary.LittleEndian.Uint32(data)))
+		pvm.State.Registers[instruction.Ra] = types.Register(int32(binary.LittleEndian.Uint32(data)))
 	case 58: // load_u64
 		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 8, ram.Wrap, true)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint64(data))
@@ -133,7 +132,7 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 		})
 	default:
-		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleOneRegOneImm: unexpected opcode %d", instruction.Opcode))
 	}
 	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
@@ -209,13 +208,13 @@ func handleOneRegOneImmOneOff(pvm *PVM, instruction ParsedInstruction) (ExitReas
 	case 86: // branch_gt_u_imm
 		cond = pvm.State.Registers[instruction.Ra] > instruction.Vx
 	case 87: // branch_lt_s_imm
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) < serializer.UnsignedToSigned(8, uint64(instruction.Vx))
+		cond = int64(pvm.State.Registers[instruction.Ra]) < int64(instruction.Vx)
 	case 88: // branch_le_s_imm
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) <= serializer.UnsignedToSigned(8, uint64(instruction.Vx))
+		cond = int64(pvm.State.Registers[instruction.Ra]) <= int64(instruction.Vx)
 	case 89: // branch_ge_s_imm
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) >= serializer.UnsignedToSigned(8, uint64(instruction.Vx))
+		cond = int64(pvm.State.Registers[instruction.Ra]) >= int64(instruction.Vx)
 	case 90: // branch_gt_s_imm
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) > serializer.UnsignedToSigned(8, uint64(instruction.Vx))
+		cond = int64(pvm.State.Registers[instruction.Ra]) > int64(instruction.Vx)
 	default:
 		panic(fmt.Sprintf("handleBranchImm: unexpected opcode %d", instruction))
 	}
@@ -281,25 +280,19 @@ func handleTwoReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Re
 		pvm.State.Registers[instruction.Rd] = types.Register(bits.TrailingZeros32(uint32(pvm.State.Registers[instruction.Ra])))
 
 	case 108: // sign_extend_8
-		pvm.State.Registers[instruction.Rd] = types.Register(
-			serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(1, uint64(uint8(pvm.State.Registers[instruction.Ra])))),
-		)
+		pvm.State.Registers[instruction.Rd] = types.Register(int8(pvm.State.Registers[instruction.Ra]))
 
 	case 109: // sign_extend_16
-		pvm.State.Registers[instruction.Rd] = types.Register(
-			serializer.SignedToUnsigned(8, serializer.UnsignedToSigned(2, uint64(uint16(pvm.State.Registers[instruction.Ra])))),
-		)
+		pvm.State.Registers[instruction.Rd] = types.Register(int16(pvm.State.Registers[instruction.Ra]))
 
 	case 110: // zero_extend_16
 		pvm.State.Registers[instruction.Rd] = types.Register(uint16(pvm.State.Registers[instruction.Ra]))
 
 	case 111: // reverse_bytes
-		bytes := serializer.EncodeLittleEndian(8, uint64(pvm.State.Registers[instruction.Ra]))
-		slices.Reverse(bytes)
-		pvm.State.Registers[instruction.Rd] = types.Register(binary.LittleEndian.Uint64(bytes))
+		pvm.State.Registers[instruction.Rd] = types.Register(bits.ReverseBytes64(uint64(pvm.State.Registers[instruction.Ra])))
 
 	default:
-		panic(fmt.Sprintf("handleTwoReg: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleTwoReg: unexpected opcode %d", instruction.Opcode))
 	}
 	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
@@ -384,11 +377,11 @@ func handleTwoRegOneOffset(pvm *PVM, instruction ParsedInstruction) (ExitReason,
 	case 172: // branch_lt_u
 		cond = pvm.State.Registers[instruction.Ra] < pvm.State.Registers[instruction.Rb]
 	case 173: // branch_lt_s
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) < serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))
+		cond = int64(pvm.State.Registers[instruction.Ra]) < int64(pvm.State.Registers[instruction.Rb])
 	case 174: // branch_ge_u
 		cond = pvm.State.Registers[instruction.Ra] >= pvm.State.Registers[instruction.Rb]
 	case 175: // branch_ge_s
-		cond = serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) >= serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))
+		cond = int64(pvm.State.Registers[instruction.Ra]) >= int64(pvm.State.Registers[instruction.Rb])
 	default:
 		panic(fmt.Sprintf("handleTwoRegOneOffset: unexpected opcode %d", instruction.Opcode))
 	}
@@ -446,48 +439,47 @@ func extractLoadImmJumpInd(instructions []byte, pc int, skipLength int) (ra, rb,
 func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register) {
 	switch instruction.Opcode {
 	case 190: // add_32
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra]+pvm.State.Registers[instruction.Rb])))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra] + pvm.State.Registers[instruction.Rb]))
 	case 191: // sub_32
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra]-pvm.State.Registers[instruction.Rb])))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra] - pvm.State.Registers[instruction.Rb]))
 	case 192: // mul_32
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra]*pvm.State.Registers[instruction.Rb])))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra] * pvm.State.Registers[instruction.Rb]))
 	case 193: // div_u_32
 		if uint32(pvm.State.Registers[instruction.Rb]) == 0 {
 			pvm.State.Registers[instruction.Rd] = (1 << 64) - 1
 		} else {
-			pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra])/uint32(pvm.State.Registers[instruction.Rb])))
+			pvm.State.Registers[instruction.Rd] = types.Register(int32(uint32(pvm.State.Registers[instruction.Ra]) / uint32(pvm.State.Registers[instruction.Rb])))
 		}
 	case 194: // div_s_32
-		a := serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Ra])))
-		b := serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Rb])))
+		a := int32(pvm.State.Registers[instruction.Ra])
+		b := int32(pvm.State.Registers[instruction.Rb])
 		if b == 0 {
 			pvm.State.Registers[instruction.Rd] = (1 << 64) - 1
 		} else if a == -(1<<31) && b == -1 {
 			pvm.State.Registers[instruction.Rd] = types.Register(a)
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, a/b))
+			pvm.State.Registers[instruction.Rd] = types.Register(a / b)
 		}
 	case 195: // rem_u_32
 		if uint32(pvm.State.Registers[instruction.Rb]) == 0 {
-			pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra])))
+			pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra]))
 		} else {
-			pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra])%uint32(pvm.State.Registers[instruction.Rb])))
+			pvm.State.Registers[instruction.Rd] = types.Register(int32(uint32(pvm.State.Registers[instruction.Ra]) % uint32(pvm.State.Registers[instruction.Rb])))
 		}
 	case 196: // rem_s_32
-		a := serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Ra])))
-		b := serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Rb])))
+		a := int32(pvm.State.Registers[instruction.Ra])
+		b := int32(pvm.State.Registers[instruction.Rb])
 		if a == -(1<<31) && b == -1 {
 			pvm.State.Registers[instruction.Rd] = 0
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, smod(a, b)))
+			pvm.State.Registers[instruction.Rd] = types.Register(smod(a, b))
 		}
 	case 197: // shlo_l_32
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra]<<(pvm.State.Registers[instruction.Rb]%32))))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra] << (pvm.State.Registers[instruction.Rb] % 32)))
 	case 198: // shlo_r_32
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Ra])>>(pvm.State.Registers[instruction.Rb]%32)))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(uint32(pvm.State.Registers[instruction.Ra]) >> (pvm.State.Registers[instruction.Rb] % 32)))
 	case 199: // shar_r_32
-		pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8,
-			serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Ra])))>>(pvm.State.Registers[instruction.Rb]%32)))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(pvm.State.Registers[instruction.Ra]) >> (pvm.State.Registers[instruction.Rb] % 32))
 	case 200: // add_64
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] + pvm.State.Registers[instruction.Rb]
 	case 201: // sub_64
@@ -503,13 +495,13 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 	case 204: // div_s_64
 		if pvm.State.Registers[instruction.Rb] == 0 {
 			pvm.State.Registers[instruction.Rd] = (1 << 64) - 1
-		} else if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) == -(1<<63) &&
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) == -1 {
+		} else if int64(pvm.State.Registers[instruction.Ra]) == -(1<<63) &&
+			int64(pvm.State.Registers[instruction.Rb]) == -1 {
 			pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra]
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8,
-				serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra]))/
-					serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))))
+			pvm.State.Registers[instruction.Rd] = types.Register(
+				int64(pvm.State.Registers[instruction.Ra]) /
+					int64(pvm.State.Registers[instruction.Rb]))
 		}
 	case 205: // rem_u_64
 		if pvm.State.Registers[instruction.Rb] == 0 {
@@ -518,21 +510,21 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 			pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] % pvm.State.Registers[instruction.Rb]
 		}
 	case 206: // rem_s_64
-		if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) == -(1<<63) &&
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) == -1 {
+		if int64(pvm.State.Registers[instruction.Ra]) == -(1<<63) &&
+			int64(pvm.State.Registers[instruction.Rb]) == -1 {
 			pvm.State.Registers[instruction.Rd] = 0
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8,
-				smod(serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])),
-					serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])))))
+			pvm.State.Registers[instruction.Rd] = types.Register(
+				smod(int64(pvm.State.Registers[instruction.Ra]),
+					int64(pvm.State.Registers[instruction.Rb])))
 		}
 	case 207: // shlo_l_64
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] << (pvm.State.Registers[instruction.Rb] % 64)
 	case 208: // shlo_r_64
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] >> (pvm.State.Registers[instruction.Rb] % 64)
 	case 209: // shar_r_64
-		pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8,
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra]))>>(pvm.State.Registers[instruction.Rb]%64)))
+		pvm.State.Registers[instruction.Rd] = types.Register(
+			int64(pvm.State.Registers[instruction.Ra]) >> (pvm.State.Registers[instruction.Rb] % 64))
 	case 210: // and
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] & pvm.State.Registers[instruction.Rb]
 	case 211: // xor
@@ -540,15 +532,15 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 	case 212: // or
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] | pvm.State.Registers[instruction.Rb]
 	case 213: // mul_upper_s_s
-		pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, floorProductDiv2Pow64Signed(
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])),
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])))))
+		pvm.State.Registers[instruction.Rd] = types.Register(floorProductDiv2Pow64Signed(
+			int64(pvm.State.Registers[instruction.Ra]),
+			int64(pvm.State.Registers[instruction.Rb])))
 	case 214: // mul_upper_u_u
 		hi, _ := bits.Mul64(uint64(pvm.State.Registers[instruction.Ra]), uint64(pvm.State.Registers[instruction.Rb]))
 		pvm.State.Registers[instruction.Rd] = types.Register(hi)
 	case 215: // mul_upper_s_u
-		pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, mulDiv2Pow64(
-			serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])),
+		pvm.State.Registers[instruction.Rd] = types.Register(uint64(mulDiv2Pow64(
+			int64(pvm.State.Registers[instruction.Ra]),
 			uint64(pvm.State.Registers[instruction.Rb]))))
 	case 216: // set_lt_u
 		if pvm.State.Registers[instruction.Ra] < pvm.State.Registers[instruction.Rb] {
@@ -557,7 +549,7 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 			pvm.State.Registers[instruction.Rd] = 0
 		}
 	case 217: // set_lt_s
-		if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra])) < serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) {
+		if int64(pvm.State.Registers[instruction.Ra]) < int64(pvm.State.Registers[instruction.Rb]) {
 			pvm.State.Registers[instruction.Rd] = 1
 		} else {
 			pvm.State.Registers[instruction.Rd] = 0
@@ -578,7 +570,7 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 		val := uint32(pvm.State.Registers[instruction.Ra])
 		shift := pvm.State.Registers[instruction.Rb] % 32
 		rotated := (val << shift) | (val >> (32 - shift))
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(rotated))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(rotated))
 	case 222: // rot_r_64
 		val := uint64(pvm.State.Registers[instruction.Ra])
 		shift := pvm.State.Registers[instruction.Rb] % 64
@@ -587,7 +579,7 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 		val := uint32(pvm.State.Registers[instruction.Ra])
 		shift := pvm.State.Registers[instruction.Rb] % 32
 		rotated := (val >> shift) | (val << (32 - shift))
-		pvm.State.Registers[instruction.Rd] = signExtendImmediate(4, uint64(rotated))
+		pvm.State.Registers[instruction.Rd] = types.Register(int32(rotated))
 	case 224: // and_inv
 		pvm.State.Registers[instruction.Rd] = pvm.State.Registers[instruction.Ra] & ^pvm.State.Registers[instruction.Rb]
 	case 225: // or_inv
@@ -595,22 +587,22 @@ func handleThreeReg(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.
 	case 226: // xnor
 		pvm.State.Registers[instruction.Rd] = ^(pvm.State.Registers[instruction.Ra] ^ pvm.State.Registers[instruction.Rb])
 	case 227: // max
-		l := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra]))
-		r := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))
+		l := int64(pvm.State.Registers[instruction.Ra])
+		r := int64(pvm.State.Registers[instruction.Rb])
 		if l > r {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, l))
+			pvm.State.Registers[instruction.Rd] = types.Register(l)
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, r))
+			pvm.State.Registers[instruction.Rd] = types.Register(r)
 		}
 	case 228: // max_u
 		pvm.State.Registers[instruction.Rd] = max(pvm.State.Registers[instruction.Ra], pvm.State.Registers[instruction.Rb])
 	case 229: // min
-		l := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Ra]))
-		r := serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))
+		l := int64(pvm.State.Registers[instruction.Ra])
+		r := int64(pvm.State.Registers[instruction.Rb])
 		if l < r {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, l))
+			pvm.State.Registers[instruction.Rd] = types.Register(l)
 		} else {
-			pvm.State.Registers[instruction.Rd] = types.Register(serializer.SignedToUnsigned(8, r))
+			pvm.State.Registers[instruction.Rd] = types.Register(r)
 		}
 	case 230: // min_u
 		pvm.State.Registers[instruction.Rd] = min(pvm.State.Registers[instruction.Ra], pvm.State.Registers[instruction.Rb])
@@ -667,8 +659,8 @@ func handleLoadIndU8(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleLoadIndI8(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(1, uint64(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), ram.Wrap, true)))))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int8(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), ram.Wrap, true)))
 }
 
 func handleLoadIndU16(pvm *PVM, instruction ParsedInstruction) {
@@ -677,9 +669,8 @@ func handleLoadIndU16(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleLoadIndI16(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(2, uint64(binary.LittleEndian.Uint16(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true))))))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int16(binary.LittleEndian.Uint16(pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true))))
 }
 
 func handleLoadIndU32(pvm *PVM, instruction ParsedInstruction) {
@@ -688,9 +679,9 @@ func handleLoadIndU32(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleLoadIndI32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(4, uint64(binary.LittleEndian.Uint32(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true))))))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int32(binary.LittleEndian.Uint32(
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true))))
 }
 
 func handleLoadIndU64(pvm *PVM, instruction ParsedInstruction) {
@@ -701,7 +692,7 @@ func handleLoadIndU64(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleAddImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]+instruction.Vx)))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(pvm.State.Registers[instruction.Rb] + instruction.Vx))
 }
 
 func handleAndImm(pvm *PVM, instruction ParsedInstruction) {
@@ -717,7 +708,7 @@ func handleOrImm(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleMulImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]*instruction.Vx)))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(pvm.State.Registers[instruction.Rb] * instruction.Vx))
 }
 
 func handleSetLtUImm(pvm *PVM, instruction ParsedInstruction) {
@@ -729,7 +720,7 @@ func handleSetLtUImm(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleSetLtSImm(pvm *PVM, instruction ParsedInstruction) {
-	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) < serializer.UnsignedToSigned(8, uint64(instruction.Vx)) {
+	if int64(pvm.State.Registers[instruction.Rb]) < int64(instruction.Vx) {
 		pvm.State.Registers[instruction.Ra] = 1
 	} else {
 		pvm.State.Registers[instruction.Ra] = 0
@@ -737,20 +728,20 @@ func handleSetLtSImm(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleShloLImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb]<<(instruction.Vx%32))))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(pvm.State.Registers[instruction.Rb] << (instruction.Vx % 32)))
 }
 
 func handleShloRImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(pvm.State.Registers[instruction.Rb])>>(instruction.Vx%32)))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(uint32(pvm.State.Registers[instruction.Rb]) >> (instruction.Vx % 32)))
 }
 
 func handleSharRImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(4, uint64(uint32(pvm.State.Registers[instruction.Rb])))>>(instruction.Vx%32)))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int32(pvm.State.Registers[instruction.Rb]) >> (instruction.Vx % 32))
 }
 
 func handleNegAddImm32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx-pvm.State.Registers[instruction.Rb])))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(instruction.Vx - pvm.State.Registers[instruction.Rb]))
 }
 
 func handleSetGtUImm(pvm *PVM, instruction ParsedInstruction) {
@@ -762,7 +753,7 @@ func handleSetGtUImm(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleSetGtSImm(pvm *PVM, instruction ParsedInstruction) {
-	if serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb])) > serializer.UnsignedToSigned(8, uint64(instruction.Vx)) {
+	if int64(pvm.State.Registers[instruction.Rb]) > int64(instruction.Vx) {
 		pvm.State.Registers[instruction.Ra] = 1
 	} else {
 		pvm.State.Registers[instruction.Ra] = 0
@@ -770,16 +761,16 @@ func handleSetGtSImm(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleShloLImmAlt32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx<<(pvm.State.Registers[instruction.Rb]%32))))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(instruction.Vx << (pvm.State.Registers[instruction.Rb] % 32)))
 }
 
 func handleShloRImmAlt32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(uint32(instruction.Vx)>>(pvm.State.Registers[instruction.Rb]%32)))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(uint32(instruction.Vx) >> (pvm.State.Registers[instruction.Rb] % 32)))
 }
 
 func handleSharRImmAlt32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(4, uint64(uint32(instruction.Vx)))>>(pvm.State.Registers[instruction.Rb]%32)))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int32(instruction.Vx) >> (pvm.State.Registers[instruction.Rb] % 32))
 }
 
 func handleCmovIzImm(pvm *PVM, instruction ParsedInstruction) {
@@ -805,17 +796,17 @@ func handleMulImm64(pvm *PVM, instruction ParsedInstruction) {
 func handleShloLImm64(pvm *PVM, instruction ParsedInstruction) {
 	shiftAmount := instruction.Vx % 64
 	shifted := uint64(pvm.State.Registers[instruction.Rb] << shiftAmount)
-	result := signExtendImmediate(8, shifted)
+	result := types.Register(int64(shifted))
 	pvm.State.Registers[instruction.Ra] = result
 }
 
 func handleShloRImm64(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(8, uint64(pvm.State.Registers[instruction.Rb]>>(instruction.Vx%64)))
+	pvm.State.Registers[instruction.Ra] = types.Register(int64(pvm.State.Registers[instruction.Rb] >> (instruction.Vx % 64)))
 }
 
 func handleSharRImm64(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(8, uint64(pvm.State.Registers[instruction.Rb]))>>(instruction.Vx%64)))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int64(pvm.State.Registers[instruction.Rb]) >> (instruction.Vx % 64))
 }
 
 func handleNegAddImm64(pvm *PVM, instruction ParsedInstruction) {
@@ -831,8 +822,8 @@ func handleShloRImmAlt64(pvm *PVM, instruction ParsedInstruction) {
 }
 
 func handleSharRImmAlt64(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.Registers[instruction.Ra] = types.Register(serializer.SignedToUnsigned(8,
-		serializer.UnsignedToSigned(8, uint64(instruction.Vx))>>(pvm.State.Registers[instruction.Rb]%64)))
+	pvm.State.Registers[instruction.Ra] = types.Register(
+		int64(instruction.Vx) >> (pvm.State.Registers[instruction.Rb] % 64))
 }
 
 func handleRotR64Imm(pvm *PVM, instruction ParsedInstruction) {
@@ -851,12 +842,12 @@ func handleRotR32Imm(pvm *PVM, instruction ParsedInstruction) {
 	val := uint32(pvm.State.Registers[instruction.Rb])
 	shift := instruction.Vx % 32
 	rotated := (val >> shift) | (val << (32 - shift))
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(rotated))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(rotated))
 }
 
 func handleRotR32ImmAlt(pvm *PVM, instruction ParsedInstruction) {
 	val := uint32(instruction.Vx)
 	shift := pvm.State.Registers[instruction.Rb] % 32
 	rotated := (val >> shift) | (val << (32 - shift))
-	pvm.State.Registers[instruction.Ra] = signExtendImmediate(4, uint64(rotated))
+	pvm.State.Registers[instruction.Ra] = types.Register(int32(rotated))
 }

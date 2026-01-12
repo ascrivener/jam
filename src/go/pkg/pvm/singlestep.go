@@ -29,37 +29,28 @@ var dispatchTable [256]*InstructionInfo
 var terminationOpcodes [256]bool
 
 func signExtendImmediate(n int, x uint64) types.Register {
-	// Special case for n=0: no sign extension needed
 	if n == 0 {
 		return types.Register(x)
 	}
 
-	// Check that n is one of the allowed sizes.
 	switch n {
-	case 1, 2, 3, 4, 8:
-		// ok
+	case 1:
+		return types.Register(int8(x))
+	case 2:
+		return types.Register(int16(x))
+	case 3:
+		if x&0x800000 != 0 {
+			return types.Register(x | 0xFFFFFFFFFF000000)
+		}
+		return types.Register(x)
+	case 4:
+		return types.Register(int32(x))
+	case 8:
+		return types.Register(int64(x))
 	default:
 		log.Fatalf("signExtendImmediate: invalid byte length %d (must be 0,1,2,3,4, or 8)", n)
 	}
-
-	// Compute the bit position of the sign bit: 8*n - 1.
-	signBitPos := uint64(8*n - 1)
-	// signThreshold = 2^(8*n - 1)
-	signThreshold := uint64(1) << signBitPos
-
-	// floor(x / 2^(8*n - 1)) will be 0 if the sign bit is not set,
-	// or 1 if it is set (since x is in the range [0, 2^(8*n))).
-	sign := x / signThreshold
-
-	// Compute offset = 2^64 - 2^(8*n).
-	// Because 1<<64 is not representable as a uint64 constant in Go, we compute the mask for the lower 8*n bits:
-	//   mask = 2^(8*n) - 1,
-	// so that ^mask (the bitwise complement) equals 2^64 - 2^(8*n).
-	mask := (uint64(1) << (8 * n)) - 1
-	offset := ^mask
-
-	// The sign extension function is then:
-	return types.Register(x + sign*offset)
+	return 0
 }
 
 func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, types.Register) {
@@ -102,7 +93,7 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 	return ExitReasonGo, target
 }
 
-func smod(a, b int64) int64 {
+func smod[T int32 | int64](a, b T) T {
 	if b == 0 {
 		return a
 	}
