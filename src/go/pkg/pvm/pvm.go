@@ -40,8 +40,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		return nil
 	}
 
-	opcodeCount := opcodes.CountOnes()
-
 	return &PVM{
 		InstructionsLength: len(instructions),
 		InstructionCounter: instructionCounter,
@@ -54,7 +52,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		program:            instructions,
 		opcodes:            opcodes,
 		blockCache:         make([]*BasicBlock, len(instructions)),
-		parsedInstructions: make([]ParsedInstruction, 0, opcodeCount),
+		parsedInstructions: nil,
 	}
 }
 
@@ -170,10 +168,8 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 }
 
 func (pvm *PVM) getOrCreateBlock(pc types.Register) *BasicBlock {
-	if int(pc) < len(pvm.blockCache) {
-		if block := pvm.blockCache[pc]; block != nil {
-			return block
-		}
+	if int(pc) < len(pvm.blockCache) && pvm.blockCache[pc] != nil {
+		return pvm.blockCache[pc]
 	}
 	return pvm.parseBlockFrom(pc)
 }
@@ -211,9 +207,7 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 		skipLength := nextPC - pc - 1
 		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
 
-		idx := len(pvm.parsedInstructions)
-		pvm.parsedInstructions = pvm.parsedInstructions[:idx+1]
-		pvm.parsedInstructions[idx] = ParsedInstruction{
+		pvm.parsedInstructions = append(pvm.parsedInstructions, ParsedInstruction{
 			PC:         types.Register(pc),
 			NextPC:     types.Register(nextPC),
 			Opcode:     opcode,
@@ -223,7 +217,7 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 			Rd:         rd,
 			Vx:         vx,
 			Vy:         vy,
-		}
+		})
 
 		pc = nextPC
 		if terminationOpcodes[opcode] || pc >= programLen {
