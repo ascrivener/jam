@@ -2,6 +2,7 @@ package bitsequence
 
 import (
 	"fmt"
+	"math/bits"
 
 	"jam/pkg/constants"
 )
@@ -55,6 +56,27 @@ func (bs *BitSequence) BitAt(i int) bool {
 // Len returns the total number of bits in the sequence.
 func (bs *BitSequence) Len() int {
 	return bs.bitLen
+}
+
+// CountOnes returns the number of 1 bits in the sequence.
+// It uses Go's built-in bits.OnesCount8 for optimal performance.
+func (bs *BitSequence) CountOnes() int {
+	count := 0
+	fullBytes := bs.bitLen / 8
+
+	// Count full bytes using bits.OnesCount8
+	for i := 0; i < fullBytes; i++ {
+		count += bits.OnesCount8(bs.buf[i])
+	}
+
+	// Handle remaining bits in the last partial byte
+	if remainingBits := bs.bitLen % 8; remainingBits > 0 {
+		lastByte := bs.buf[fullBytes]
+		mask := byte((1 << remainingBits) - 1)
+		count += bits.OnesCount8(lastByte & mask)
+	}
+
+	return count
 }
 
 // CoreBitMask represents a fixed-length array of bits.

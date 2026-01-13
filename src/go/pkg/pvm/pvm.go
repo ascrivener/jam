@@ -9,14 +9,17 @@ import (
 )
 
 type ParsedInstruction struct {
-	PC                    types.Register
-	NextPC                types.Register
-	Opcode                byte
-	SkipLength            int
-	Handler               InstructionHandler
-	IsBeginningBasicBlock bool
-	Ra, Rb, Rd            int
-	Vx, Vy                types.Register
+	PC         types.Register
+	NextPC     types.Register
+	Opcode     byte
+	SkipLength int
+	Ra, Rb, Rd int
+	Vx, Vy     types.Register
+}
+
+type BasicBlock struct {
+	StartPC      types.Register
+	Instructions []ParsedInstruction
 }
 
 type PVM struct {
@@ -24,7 +27,7 @@ type PVM struct {
 	InstructionCounter types.Register
 	DynamicJumpTable   []types.Register
 	State              *State
-	InstructionSlice   []ParsedInstruction
+	BlockPointers      []*BasicBlock
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -33,7 +36,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		return nil
 	}
 
-	instructionSlice := formParsedInstructions(instructions, opcodes)
+	blockPointers := formBasicBlocks(instructions, opcodes)
 
 	return &PVM{
 		InstructionsLength: len(instructions),
@@ -44,7 +47,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			Registers: registers,
 			RAM:       ram,
 		},
-		InstructionSlice: instructionSlice,
+		BlockPointers: blockPointers,
 	}
 }
 
@@ -59,35 +62,30 @@ func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructio
 func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]types.Register, r *ram.RAM, ok bool) {
 	offset := 0
 
-	// 1. Decode E3(|o|): the encoded number of elements in o.
 	if offset+3 > len(p) {
 		return nil, regs, nil, false
 	}
 	L_o := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
 	offset += 3
 
-	// 2. Decode E3(|w|): the encoded number of elements in w.
 	if offset+3 > len(p) {
 		return nil, regs, nil, false
 	}
 	L_w := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
 	offset += 3
 
-	// 3. Decode E2(z): the encoded z
 	if offset+2 > len(p) {
 		return nil, regs, nil, false
 	}
 	z := int(serializer.DecodeLittleEndian(p[offset : offset+2]))
 	offset += 2
 
-	// 4. Decode E3(s): encoded s
 	if offset+3 > len(p) {
 		return nil, regs, nil, false
 	}
 	s := int(serializer.DecodeLittleEndian(p[offset : offset+3]))
 	offset += 3
 
-	// 5. Decode o and w
 	if offset+L_o > len(p) {
 		return nil, regs, nil, false
 	}
@@ -99,7 +97,6 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	w := p[offset : offset+L_w]
 	offset += int(L_w)
 
-	// 6. Decode E4(|c|)
 	if offset+4 > len(p) {
 		return nil, regs, nil, false
 	}
@@ -122,33 +119,27 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	return c, regs, ram.NewRAM(o, w, arguments, z, s), true
 }
 
-// deblob attempts to decompose p into three parts: c, k, and j.
-// It returns ok==false if p does not follow the expected structure.
 func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, ok bool) {
 	offset := 0
 
-	// 1. Decode E(|j|): the encoded number of elements in j.
 	L_j, n, ok := serializer.DecodeGeneralNatural(p[offset:])
 	if !ok {
 		return nil, k, nil, false
 	}
 	offset += n
 
-	// 2. Decode E1(z): a one-byte value indicating bytes per element in j.
 	if offset >= len(p) {
 		return nil, k, nil, false
 	}
 	z := p[offset]
 	offset++
 
-	// 3. Decode E(|c|): the encoded length of c (and hence k's underlying byte slice).
 	L_c, n, ok := serializer.DecodeGeneralNatural(p[offset:])
 	if !ok {
 		return nil, k, nil, false
 	}
 	offset += n
 
-	// 4. Decode Ez(j): j is an array of L_j elements, each encoded in z bytes.
 	totalJBytes := int(L_j) * int(z)
 	if offset+totalJBytes > len(p) {
 		return nil, k, nil, false
@@ -162,7 +153,6 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 
 	c = p[offset : offset+int(L_c)]
 	offset += int(L_c)
-	// Construct k from kBuf using LSB-first ordering with exact bit length matching L_c
 	bitSeq, err := bitsequence.FromBytesLSBWithLength(p[offset:], int(L_c))
 	if err != nil {
 		return nil, k, nil, false
@@ -172,61 +162,83 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func formParsedInstructions(instructions []byte, opcodes bitsequence.BitSequence) []ParsedInstruction {
-	instructionSlice := make([]ParsedInstruction, len(instructions))
+func formBasicBlocks(instructions []byte, opcodes bitsequence.BitSequence) []*BasicBlock {
+	blockPointers := make([]*BasicBlock, len(instructions))
+	defaultExtractor := dispatchTable[0].ExtractOperands
+	opcodeCount := opcodes.CountOnes()
+	allInstructions := make([]ParsedInstruction, opcodeCount)
+	var instructionIdx int
+	var blockStartPC types.Register
+	var blockStartIdx int
+	newBlock := true
 
 	currentOpcode := instructions[0]
 	currentOpcodePC := 0
-	previousWasTerminating := false
 
-	// Helper function to finish current instruction
-	finishInstruction := func(nextPC int) {
-		instructionInfo := dispatchTable[currentOpcode]
-		isBeginning := (currentOpcodePC == 0 || previousWasTerminating) && instructionInfo != nil
-		handler := dispatchTable[0].Handler
-		operandExtractor := dispatchTable[0].ExtractOperands
-		if instructionInfo != nil {
-			handler = instructionInfo.Handler
-			operandExtractor = instructionInfo.ExtractOperands
+	createBlock := func() {
+		if instructionIdx > blockStartIdx {
+			blockInstructions := allInstructions[blockStartIdx:instructionIdx]
+
+			block := &BasicBlock{
+				StartPC:      blockStartPC,
+				Instructions: blockInstructions,
+			}
+			for i := range blockInstructions {
+				blockPointers[blockInstructions[i].PC] = block
+			}
+			blockStartIdx = instructionIdx
 		}
-		skipLength := nextPC - currentOpcodePC - 1
+	}
 
+	processInstruction := func(nextPC int) {
+		instructionInfo := dispatchTable[currentOpcode]
+
+		var operandExtractor OperandExtractor
+		if instructionInfo != nil {
+			operandExtractor = instructionInfo.ExtractOperands
+		} else {
+			operandExtractor = defaultExtractor
+		}
+
+		skipLength := nextPC - currentOpcodePC - 1
 		ra, rb, rd, vx, vy := operandExtractor(instructions, currentOpcodePC, skipLength)
 
-		instructionSlice[currentOpcodePC] = ParsedInstruction{
-			PC:                    types.Register(currentOpcodePC),
-			NextPC:                types.Register(nextPC),
-			Opcode:                currentOpcode,
-			SkipLength:            skipLength,
-			Handler:               handler,
-			IsBeginningBasicBlock: isBeginning,
-			Ra:                    ra,
-			Rb:                    rb,
-			Rd:                    rd,
-			Vx:                    vx,
-			Vy:                    vy,
+		if newBlock {
+			blockStartPC = types.Register(currentOpcodePC)
+			newBlock = false
 		}
 
-		// Update for next iteration
-		previousWasTerminating = terminationOpcodes[currentOpcode]
+		allInstructions[instructionIdx] = ParsedInstruction{
+			PC:         types.Register(currentOpcodePC),
+			NextPC:     types.Register(nextPC),
+			Opcode:     currentOpcode,
+			SkipLength: skipLength,
+			Ra:         ra,
+			Rb:         rb,
+			Rd:         rd,
+			Vx:         vx,
+			Vy:         vy,
+		}
+		instructionIdx++
+
+		if terminationOpcodes[currentOpcode] {
+			createBlock()
+			newBlock = true
+		}
 	}
 
 	for n := 1; n < len(instructions); n++ {
-		// If this is an opcode position
 		if opcodes.BitAt(n) {
-			// Finish the previous instruction
-			finishInstruction(n)
-
-			// Start new instruction
+			processInstruction(n)
 			currentOpcode = instructions[n]
 			currentOpcodePC = n
 		}
 	}
 
-	// Handle the final instruction
-	finishInstruction(len(instructions))
+	processInstruction(len(instructions))
+	createBlock()
 
-	return instructionSlice
+	return blockPointers
 }
 
 func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
@@ -274,7 +286,6 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 			len := uint64(pvm.State.Registers[8])
 			if !pvm.State.RAM.RangeHas(ram.Inaccessible, start, len, ram.NoWrap) {
 				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap, false)
-				// IMPORTANT: copy blob here to avoid returning a reference to RAM's internal storage
 				blobCopy := make([]byte, len)
 				copy(blobCopy, blob)
 				return types.NewExecutionExitReasonBlob(blobCopy), gasUsed, nil
@@ -289,38 +300,51 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 func (pvm *PVM) Run() ExitReason {
 	for {
 		ic := pvm.InstructionCounter
-		if int(ic) >= pvm.InstructionsLength || pvm.InstructionSlice[ic].Handler == nil {
+		if int(ic) >= pvm.InstructionsLength {
 			ic = 0
 		}
-		instruction := pvm.InstructionSlice[ic]
 
-		// Execute single instruction
-		exitReason := pvm.executeInstruction(instruction)
-		if exitReason == ExitReasonGo {
+		if int(ic) >= len(pvm.BlockPointers) {
+			pvm.InstructionCounter = 0
 			continue
 		}
-		// Otherwise, adjust for out-of-gas or panic/halt conditions.
-		if pvm.State.Gas < 0 {
-			exitReason = ExitReasonOutOfGas
-		} else if exitReason.IsSimple() &&
-			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
-			// Reset the instruction counter on panic/halt.
+		block := pvm.BlockPointers[ic]
+		if block == nil {
 			pvm.InstructionCounter = 0
+			continue
 		}
-		return exitReason
+
+		var startIdx int
+		for i, inst := range block.Instructions {
+			if inst.PC == ic {
+				startIdx = i
+				break
+			}
+		}
+
+		for i := startIdx; i < len(block.Instructions); i++ {
+			instruction := block.Instructions[i]
+
+			exitReason := pvm.executeInstruction(instruction)
+			if exitReason == ExitReasonGo {
+				continue
+			}
+			if pvm.State.Gas < 0 {
+				exitReason = ExitReasonOutOfGas
+			} else if exitReason.IsSimple() &&
+				(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+				pvm.InstructionCounter = 0
+			}
+			return exitReason
+		}
 	}
 }
 
 func (pvm *PVM) executeInstruction(instruction ParsedInstruction) ExitReason {
-	// Clear memory access exceptions for each instruction
 	pvm.State.RAM.ClearMemoryAccessExceptions()
-
-	exitReason, nextIC := instruction.Handler(pvm, instruction)
-
-	// Consume gas
+	handler := dispatchTable[instruction.Opcode].Handler
+	exitReason, nextIC := handler(pvm, instruction)
 	pvm.State.Gas -= types.SignedGasValue(1)
-
-	// Always update instruction counter and return what the handler gave us
 	pvm.InstructionCounter = nextIC
 
 	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()

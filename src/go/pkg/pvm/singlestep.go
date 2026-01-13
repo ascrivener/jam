@@ -57,17 +57,18 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if !C {
 		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
-	if int(b) >= len(pvm.InstructionSlice) {
+	if int(b) >= len(pvm.BlockPointers) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
-	targetInstruction := pvm.InstructionSlice[b]
-	if !targetInstruction.IsBeginningBasicBlock {
+	// Check if target is a valid basic block start
+	block := pvm.BlockPointers[b]
+	if block == nil || block.StartPC != b {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
 }
 
-func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, parsedInstructions []ParsedInstruction) (ExitReason, types.Register) {
+func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, blockPointers []*BasicBlock) (ExitReason, types.Register) {
 
 	if a == (1<<32)-(1<<16) { // ??
 		return ExitReasonHalt, defaultNextInstructionCounter
@@ -80,13 +81,12 @@ func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTa
 	index := (a / uint32(constants.DynamicAddressAlignmentFactor)) - 1
 	target := dynamicJumpTable[index]
 
-	if int(target) >= len(parsedInstructions) {
+	// Check if target is a valid basic block start
+	if int(target) >= len(blockPointers) {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
-
-	targetInstruction := parsedInstructions[target]
-
-	if !targetInstruction.IsBeginningBasicBlock {
+	block := blockPointers[target]
+	if block == nil || block.StartPC != target {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
