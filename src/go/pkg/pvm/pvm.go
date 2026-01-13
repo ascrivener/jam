@@ -18,8 +18,9 @@ type ParsedInstruction struct {
 }
 
 type BasicBlock struct {
-	StartPC      types.Register
-	Instructions []ParsedInstruction
+	StartPC  types.Register
+	StartIdx int
+	EndIdx   int
 }
 
 type PVM struct {
@@ -27,7 +28,10 @@ type PVM struct {
 	InstructionCounter types.Register
 	DynamicJumpTable   []types.Register
 	State              *State
-	BlockPointers      []*BasicBlock
+	program            []byte
+	opcodes            bitsequence.BitSequence
+	blockCache         []*BasicBlock
+	parsedInstructions []ParsedInstruction
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -36,7 +40,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		return nil
 	}
 
-	blockPointers := formBasicBlocks(instructions, opcodes)
+	opcodeCount := opcodes.CountOnes()
 
 	return &PVM{
 		InstructionsLength: len(instructions),
@@ -47,7 +51,10 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			Registers: registers,
 			RAM:       ram,
 		},
-		BlockPointers: blockPointers,
+		program:            instructions,
+		opcodes:            opcodes,
+		blockCache:         make([]*BasicBlock, len(instructions)),
+		parsedInstructions: make([]ParsedInstruction, 0, opcodeCount),
 	}
 }
 
@@ -144,10 +151,10 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	if offset+totalJBytes > len(p) {
 		return nil, k, nil, false
 	}
-	jArr := make([]types.Register, 0, L_j)
-	for range int(L_j) {
+	jArr := make([]types.Register, L_j)
+	for i := range int(L_j) {
 		elem := serializer.DecodeLittleEndian(p[offset : offset+int(z)])
-		jArr = append(jArr, types.Register(elem))
+		jArr[i] = types.Register(elem)
 		offset += int(z)
 	}
 
@@ -162,56 +169,54 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func formBasicBlocks(instructions []byte, opcodes bitsequence.BitSequence) []*BasicBlock {
-	blockPointers := make([]*BasicBlock, len(instructions))
-	defaultExtractor := dispatchTable[0].ExtractOperands
-	opcodeCount := opcodes.CountOnes()
-	allInstructions := make([]ParsedInstruction, opcodeCount)
-	var instructionIdx int
-	var blockStartPC types.Register
-	var blockStartIdx int
-	newBlock := true
-
-	currentOpcode := instructions[0]
-	currentOpcodePC := 0
-
-	createBlock := func() {
-		if instructionIdx > blockStartIdx {
-			blockInstructions := allInstructions[blockStartIdx:instructionIdx]
-
-			block := &BasicBlock{
-				StartPC:      blockStartPC,
-				Instructions: blockInstructions,
-			}
-			for i := range blockInstructions {
-				blockPointers[blockInstructions[i].PC] = block
-			}
-			blockStartIdx = instructionIdx
+func (pvm *PVM) getOrCreateBlock(pc types.Register) *BasicBlock {
+	if int(pc) < len(pvm.blockCache) {
+		if block := pvm.blockCache[pc]; block != nil {
+			return block
 		}
 	}
+	return pvm.parseBlockFrom(pc)
+}
 
-	processInstruction := func(nextPC int) {
-		instructionInfo := dispatchTable[currentOpcode]
+func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
+	programLen := len(pvm.program)
+	if int(startPC) >= programLen {
+		return nil
+	}
 
-		var operandExtractor OperandExtractor
-		if instructionInfo != nil {
+	defaultExtractor := dispatchTable[0].ExtractOperands
+	startIdx := len(pvm.parsedInstructions)
+	pc := int(startPC)
+
+	for {
+		if !pvm.opcodes.BitAt(pc) {
+			pc++
+			if pc >= programLen {
+				break
+			}
+			continue
+		}
+
+		opcode := pvm.program[pc]
+		nextPC := pc + 1
+		for nextPC < programLen && !pvm.opcodes.BitAt(nextPC) {
+			nextPC++
+		}
+
+		operandExtractor := defaultExtractor
+		if instructionInfo := dispatchTable[opcode]; instructionInfo != nil {
 			operandExtractor = instructionInfo.ExtractOperands
-		} else {
-			operandExtractor = defaultExtractor
 		}
 
-		skipLength := nextPC - currentOpcodePC - 1
-		ra, rb, rd, vx, vy := operandExtractor(instructions, currentOpcodePC, skipLength)
+		skipLength := nextPC - pc - 1
+		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
 
-		if newBlock {
-			blockStartPC = types.Register(currentOpcodePC)
-			newBlock = false
-		}
-
-		allInstructions[instructionIdx] = ParsedInstruction{
-			PC:         types.Register(currentOpcodePC),
+		idx := len(pvm.parsedInstructions)
+		pvm.parsedInstructions = pvm.parsedInstructions[:idx+1]
+		pvm.parsedInstructions[idx] = ParsedInstruction{
+			PC:         types.Register(pc),
 			NextPC:     types.Register(nextPC),
-			Opcode:     currentOpcode,
+			Opcode:     opcode,
 			SkipLength: skipLength,
 			Ra:         ra,
 			Rb:         rb,
@@ -219,26 +224,29 @@ func formBasicBlocks(instructions []byte, opcodes bitsequence.BitSequence) []*Ba
 			Vx:         vx,
 			Vy:         vy,
 		}
-		instructionIdx++
 
-		if terminationOpcodes[currentOpcode] {
-			createBlock()
-			newBlock = true
+		pc = nextPC
+		if terminationOpcodes[opcode] || pc >= programLen {
+			break
 		}
 	}
 
-	for n := 1; n < len(instructions); n++ {
-		if opcodes.BitAt(n) {
-			processInstruction(n)
-			currentOpcode = instructions[n]
-			currentOpcodePC = n
-		}
+	endIdx := len(pvm.parsedInstructions)
+	if startIdx == endIdx {
+		return nil
 	}
 
-	processInstruction(len(instructions))
-	createBlock()
+	block := &BasicBlock{
+		StartPC:  startPC,
+		StartIdx: startIdx,
+		EndIdx:   endIdx,
+	}
 
-	return blockPointers
+	for i := startIdx; i < endIdx; i++ {
+		pvm.blockCache[pvm.parsedInstructions[i].PC] = block
+	}
+
+	return block
 }
 
 func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
@@ -304,26 +312,22 @@ func (pvm *PVM) Run() ExitReason {
 			ic = 0
 		}
 
-		if int(ic) >= len(pvm.BlockPointers) {
-			pvm.InstructionCounter = 0
-			continue
-		}
-		block := pvm.BlockPointers[ic]
+		block := pvm.getOrCreateBlock(ic)
 		if block == nil {
 			pvm.InstructionCounter = 0
 			continue
 		}
 
-		var startIdx int
-		for i, inst := range block.Instructions {
-			if inst.PC == ic {
-				startIdx = i
+		var instrIdx int
+		for i := block.StartIdx; i < block.EndIdx; i++ {
+			if pvm.parsedInstructions[i].PC == ic {
+				instrIdx = i
 				break
 			}
 		}
 
-		for i := startIdx; i < len(block.Instructions); i++ {
-			instruction := block.Instructions[i]
+		for i := instrIdx; i < block.EndIdx; i++ {
+			instruction := pvm.parsedInstructions[i]
 
 			exitReason := pvm.executeInstruction(instruction)
 			if exitReason == ExitReasonGo {

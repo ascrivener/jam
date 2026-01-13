@@ -57,35 +57,35 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if !C {
 		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
-	if int(b) >= len(pvm.BlockPointers) {
+	if int(b) >= pvm.InstructionsLength {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	// Check if target is a valid basic block start
-	block := pvm.BlockPointers[b]
+	block := pvm.getOrCreateBlock(b)
 	if block == nil || block.StartPC != b {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
 }
 
-func djump(a uint32, defaultNextInstructionCounter types.Register, dynamicJumpTable []types.Register, blockPointers []*BasicBlock) (ExitReason, types.Register) {
+func djump(pvm *PVM, a uint32, defaultNextInstructionCounter types.Register) (ExitReason, types.Register) {
 
 	if a == (1<<32)-(1<<16) { // ??
 		return ExitReasonHalt, defaultNextInstructionCounter
 	}
 
-	if a == 0 || a > uint32(len(dynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
+	if a == 0 || a > uint32(len(pvm.DynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
 
 	index := (a / uint32(constants.DynamicAddressAlignmentFactor)) - 1
-	target := dynamicJumpTable[index]
+	target := pvm.DynamicJumpTable[index]
 
 	// Check if target is a valid basic block start
-	if int(target) >= len(blockPointers) {
+	if int(target) >= pvm.InstructionsLength {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
-	block := blockPointers[target]
+	block := pvm.getOrCreateBlock(target)
 	if block == nil || block.StartPC != target {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}

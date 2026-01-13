@@ -94,7 +94,7 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	case 50: // jump_ind
 		// Jump to the target address computed from (register[ra] + vx)
 		targetAddr := uint32(pvm.State.Registers[instruction.Ra] + instruction.Vx)
-		return djump(targetAddr, pvm.InstructionCounter, pvm.DynamicJumpTable, pvm.BlockPointers)
+		return djump(pvm, targetAddr, pvm.InstructionCounter)
 	case 51: // load_imm
 		pvm.State.Registers[instruction.Ra] = instruction.Vx
 	case 52: // load_u8
@@ -409,10 +409,9 @@ func handleLoadImmJumpInd(pvm *PVM, instruction ParsedInstruction) (ExitReason, 
 	// Store the immediate value vx into the destination register.
 	pvm.State.Registers[instruction.Ra] = instruction.Vx
 	return djump(
+		pvm,
 		uint32(pvm.State.Registers[instruction.Rb]+instruction.Vy),
 		pvm.InstructionCounter,
-		pvm.DynamicJumpTable,
-		pvm.BlockPointers,
 	)
 }
 
