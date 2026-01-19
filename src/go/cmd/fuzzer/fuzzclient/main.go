@@ -296,7 +296,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "1767889897_2790") {
+		// if !strings.Contains(testDir, "fuzzy") {
 		// 	continue
 		// }
 		testName := filepath.Base(testDir)

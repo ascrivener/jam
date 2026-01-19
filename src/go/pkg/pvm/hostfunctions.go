@@ -1466,7 +1466,10 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			ctx.State.Registers[7] = types.Register(InnerPanic)
 			return ExitReasonGo, nil
 		}
-		exitReason := pvm.Run()
+		exitReason, err := Run(pvm, nil, (*struct{})(nil))
+		if err != nil {
+			return ExitReason{}, err
+		}
 
 		// Update memory with new gas and registers
 		ctx.State.RAM.MutateRange(uint64(o), 8, ram.NoWrap, false, func(dest []byte) {

@@ -18,7 +18,6 @@ type ParsedInstruction struct {
 }
 
 type BasicBlock struct {
-	StartPC  types.Register
 	StartIdx int
 	EndIdx   int
 }
@@ -231,41 +230,13 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 	}
 
 	block := &BasicBlock{
-		StartPC:  startPC,
 		StartIdx: startIdx,
 		EndIdx:   endIdx,
 	}
 
-	for i := startIdx; i < endIdx; i++ {
-		pvm.blockCache[pvm.parsedInstructions[i].PC] = block
-	}
+	pvm.blockCache[startPC] = block
 
 	return block
-}
-
-func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
-	for {
-		exitReason := pvm.Run()
-		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
-			return exitReason, nil
-		}
-
-		hostCall := exitReason.ComplexExitReason.Parameter
-		postHostCallExitReason, err := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
-		if err != nil {
-			return ExitReason{}, err
-		}
-
-		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-			return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
-		}
-
-		if *postHostCallExitReason.SimpleExitReason == ExitGo {
-			continue
-		}
-
-		return postHostCallExitReason, nil
-	}
 }
 
 func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
@@ -274,7 +245,7 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
 
-	postHostCallExitReason, err := RunHost(pvm, f, x)
+	postHostCallExitReason, err := Run(pvm, f, x)
 	if err != nil {
 		return types.ExecutionExitReason{}, 0, err
 	}
@@ -299,7 +270,7 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 	return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), gasUsed, nil
 }
 
-func (pvm *PVM) Run() ExitReason {
+func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (ExitReason, error) {
 	for {
 		ic := pvm.InstructionCounter
 		if int(ic) >= pvm.InstructionsLength {
@@ -312,15 +283,7 @@ func (pvm *PVM) Run() ExitReason {
 			continue
 		}
 
-		var instrIdx int
 		for i := block.StartIdx; i < block.EndIdx; i++ {
-			if pvm.parsedInstructions[i].PC == ic {
-				instrIdx = i
-				break
-			}
-		}
-
-		for i := instrIdx; i < block.EndIdx; i++ {
 			instruction := pvm.parsedInstructions[i]
 
 			exitReason := pvm.executeInstruction(instruction)
@@ -333,7 +296,37 @@ func (pvm *PVM) Run() ExitReason {
 				(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
 				pvm.InstructionCounter = 0
 			}
-			return exitReason
+
+			// Handle host calls inline if host function provided
+			if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
+				if hostFunc != nil {
+					hostCall := exitReason.ComplexExitReason.Parameter
+					postHostCallExitReason, err := hostFunc(
+						HostFunctionIdentifier(hostCall),
+						&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
+					)
+
+					if err != nil {
+						return ExitReason{}, err
+					}
+
+					if postHostCallExitReason.IsComplex() &&
+						postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
+						return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
+					}
+
+					if *postHostCallExitReason.SimpleExitReason == ExitGo {
+						continue
+					}
+
+					return postHostCallExitReason, nil
+				} else {
+					// No host function, return to caller (Invoke case)
+					return exitReason, nil
+				}
+			}
+
+			return exitReason, nil
 		}
 	}
 }
