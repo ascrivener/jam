@@ -355,7 +355,7 @@ var twoRegOneImmDispatch = [256]twoRegOneImmHandler{
 
 func handleTwoRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register) {
 	twoRegOneImmDispatch[instruction.Opcode](pvm, instruction)
-	return ExitReasonGo, instruction.NextPC
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
 func extractTwoRegOneImm(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register) {

@@ -60,11 +60,6 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if int(b) >= pvm.InstructionsLength {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
-	// Check if target is a valid basic block start
-	block := pvm.getOrCreateBlock(b)
-	if block == nil {
-		return ExitReasonPanic, pvm.InstructionCounter
-	}
 	return ExitReasonGo, b
 }
 
@@ -85,11 +80,6 @@ func djump(pvm *PVM, a uint32, defaultNextInstructionCounter types.Register) (Ex
 	if int(target) >= pvm.InstructionsLength {
 		return ExitReasonPanic, defaultNextInstructionCounter
 	}
-	block := pvm.getOrCreateBlock(target)
-	if block == nil {
-		return ExitReasonPanic, defaultNextInstructionCounter
-	}
-
 	return ExitReasonGo, target
 }
 
