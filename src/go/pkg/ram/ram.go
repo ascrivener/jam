@@ -56,9 +56,8 @@ func TotalSizeNeededPages(size int) int {
 }
 
 type RAM struct {
-	buffer          []byte      // mmap'd 4GB virtual address space (mprotect enforces permissions)
-	pageAccess      []RamAccess // tracks access level per page (synced with mprotect)
-	BeginningOfHeap *RamIndex   // nil if no heap
+	buffer          []byte    // mmap'd 4GB virtual address space (mprotect enforces permissions)
+	BeginningOfHeap *RamIndex // nil if no heap
 }
 
 // BufferBase returns the base address of the RAM buffer for computing fault offsets
@@ -93,8 +92,7 @@ func NewEmptyRAM() *RAM {
 	}
 
 	return &RAM{
-		buffer:     buffer,
-		pageAccess: make([]RamAccess, NumRamPages), // all Inaccessible (zero value)
+		buffer: buffer,
 	}
 }
 
@@ -213,32 +211,50 @@ func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) b
 	return r.canWrite(start, length)
 }
 
-// canRead checks if all pages in range are readable (Immutable or Mutable)
-func (r *RAM) canRead(start, length uint64) bool {
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-	if endPage >= NumRamPages {
+// canRead probes if all pages in range are readable (won't fault on read)
+func (r *RAM) canRead(start, length uint64) (readable bool) {
+	if length == 0 {
+		return true
+	}
+	if start+length > RamSize {
 		return false
 	}
-	for p := startPage; p <= endPage; p++ {
-		if r.pageAccess[p] == Inaccessible {
-			return false
+	defer func() {
+		if recover() != nil {
+			readable = false
 		}
+	}()
+	// Probe first byte of each page in range
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	var sink byte
+	for p := startPage; p <= endPage; p++ {
+		sink = r.buffer[p*PageSize]
 	}
+	_ = sink
 	return true
 }
 
-// canWrite checks if all pages in range are writable (Mutable)
-func (r *RAM) canWrite(start, length uint64) bool {
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-	if endPage >= NumRamPages {
+// canWrite probes if all pages in range are writable (won't fault on write)
+func (r *RAM) canWrite(start, length uint64) (writable bool) {
+	if length == 0 {
+		return true
+	}
+	if start+length > RamSize {
 		return false
 	}
-	for p := startPage; p <= endPage; p++ {
-		if r.pageAccess[p] != Mutable {
-			return false
+	defer func() {
+		if recover() != nil {
+			writable = false
 		}
+	}()
+	// Probe each page by writing
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	for p := startPage; p <= endPage; p++ {
+		ptr := &r.buffer[p*PageSize]
+		tmp := *ptr
+		*ptr = tmp
 	}
 	return true
 }
@@ -305,18 +321,11 @@ func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
 		prot = unix.PROT_READ | unix.PROT_WRITE
 	}
 
-	pagePtr := uintptr(unsafe.Pointer(&r.buffer[0])) + uintptr(alignedStart)
-	err := unix.Mprotect(unsafe.Slice((*byte)(unsafe.Pointer(pagePtr)), alignedLength), prot)
+	err := unix.Mprotect(unsafe.Slice((*byte)(unsafe.Add(unsafe.Pointer(&r.buffer[0]), alignedStart)), alignedLength), prot)
 	if err != nil {
 		panic(fmt.Sprintf("mprotect failed: start=0x%x length=0x%x access=%d err=%v", alignedStart, alignedLength, access, err))
 	}
 
-	// Update pageAccess bitmap to stay in sync with mprotect
-	startPage := alignedStart / PageSize
-	endPage := alignedEnd / PageSize
-	for p := startPage; p < endPage; p++ {
-		r.pageAccess[p] = access
-	}
 }
 
 // GetBuffer returns the underlying buffer for direct JIT access
