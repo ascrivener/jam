@@ -95,7 +95,7 @@ type PVM struct {
 	State              *State
 	program            []byte
 	opcodes            bitsequence.BitSequence
-	blockCache         []*BasicBlock
+	blockCache         map[types.Register]*BasicBlock
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -115,7 +115,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		},
 		program:    instructions,
 		opcodes:    opcodes,
-		blockCache: make([]*BasicBlock, len(instructions)),
+		blockCache: make(map[types.Register]*BasicBlock),
 	}
 }
 
@@ -232,8 +232,8 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 
 func (pvm *PVM) getOrCreateBlock() *BasicBlock {
 	pc := pvm.InstructionCounter
-	if int(pc) < len(pvm.blockCache) && pvm.blockCache[pc] != nil {
-		return pvm.blockCache[pc]
+	if block, ok := pvm.blockCache[pc]; ok {
+		return block
 	}
 	return pvm.parseBlockFrom(pc)
 }
