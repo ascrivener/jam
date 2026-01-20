@@ -323,7 +323,3 @@ func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
 func (r *RAM) GetBuffer() []byte {
 	return r.buffer
 }
-
-// Legacy compatibility stubs (no longer needed with hardware protection)
-func (r *RAM) ClearMemoryAccessExceptions()           {}
-func (r *RAM) GetMinMemoryAccessException() *RamIndex { return nil }
