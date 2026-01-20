@@ -51,17 +51,17 @@ func handleTwoImmValues(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	// Use the opcode from the instruction parameter
 	switch instruction.Opcode {
 	case 30: // store_imm_u8
-		pvm.State.RAM.Mutate(uint64(instruction.Vx), byte(instruction.Vy), ram.Wrap, true)
+		pvm.State.RAM.Mutate(uint64(instruction.Vx), byte(instruction.Vy), ram.Wrap)
 	case 31: // store_imm_u16
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(instruction.Vy))
 		})
 	case 32: // store_imm_u32
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(instruction.Vy))
 		})
 	case 33: // store_imm_u64
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(instruction.Vy))
 		})
 	default:
@@ -98,37 +98,37 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	case 51: // load_imm
 		pvm.State.Registers[instruction.Ra] = instruction.Vx
 	case 52: // load_u8
-		pvm.State.Registers[instruction.Ra] = types.Register(pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap, true))
+		pvm.State.Registers[instruction.Ra] = types.Register(pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap))
 	case 53: // load_i8
-		val := pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap, true)
+		val := pvm.State.RAM.Inspect(uint64(instruction.Vx), ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(int8(val))
 	case 54: // load_u16
-		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap, true)
+		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(data))
 	case 55: // load_i16
-		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap, true)
+		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2, ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(int16(binary.LittleEndian.Uint16(data)))
 	case 56: // load_u32
-		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap, true)
+		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(data))
 	case 57: // load_i32
-		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap, true)
+		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4, ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(int32(binary.LittleEndian.Uint32(data)))
 	case 58: // load_u64
-		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 8, ram.Wrap, true)
+		data := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 8, ram.Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint64(data))
 	case 59: // store_u8
-		pvm.State.RAM.Mutate(uint64(instruction.Vx), uint8(pvm.State.Registers[instruction.Ra]), ram.Wrap, true)
+		pvm.State.RAM.Mutate(uint64(instruction.Vx), uint8(pvm.State.Registers[instruction.Ra]), ram.Wrap)
 	case 60: // store_u16
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[instruction.Ra]))
 		})
 	case 61: // store_u32
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[instruction.Ra]))
 		})
 	case 62: // store_u64
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 		})
 	default:
@@ -154,17 +154,17 @@ func handleOneRegTwoImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	// Use the opcode from the context to choose the correct store operation.
 	switch instruction.Opcode {
 	case 70: // store_imm_ind_u8
-		pvm.State.RAM.Mutate(uint64(addr), byte(instruction.Vy), ram.Wrap, true)
+		pvm.State.RAM.Mutate(uint64(addr), byte(instruction.Vy), ram.Wrap)
 	case 71: // store_imm_ind_u16
-		pvm.State.RAM.MutateRange(uint64(addr), 2, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(addr), 2, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(instruction.Vy))
 		})
 	case 72: // store_imm_ind_u32
-		pvm.State.RAM.MutateRange(uint64(addr), 4, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(addr), 4, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(instruction.Vy))
 		})
 	case 73: // store_imm_ind_u64
-		pvm.State.RAM.MutateRange(uint64(addr), 8, ram.Wrap, true, func(dest []byte) {
+		pvm.State.RAM.MutateRange(uint64(addr), 8, ram.Wrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(instruction.Vy))
 		})
 	default:
@@ -355,7 +355,7 @@ var twoRegOneImmDispatch = [256]twoRegOneImmHandler{
 
 func handleTwoRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register) {
 	twoRegOneImmDispatch[instruction.Opcode](pvm, instruction)
-	return ExitReasonGo, instruction.NextPC
+	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
 }
 
 func extractTwoRegOneImm(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register) {
@@ -629,63 +629,63 @@ func (pvm *PVM) nextInstructionCounter(skipLength int) types.Register {
 
 func handleStoreIndU8(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.RAM.Mutate(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)),
-		byte(pvm.State.Registers[instruction.Ra]), ram.Wrap, true)
+		byte(pvm.State.Registers[instruction.Ra]), ram.Wrap)
 }
 
 func handleStoreIndU16(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true, func(dest []byte) {
+	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, func(dest []byte) {
 		binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
 func handleStoreIndU32(pvm *PVM, instruction ParsedInstruction) {
-	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true, func(dest []byte) {
+	pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, func(dest []byte) {
 		binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
 func handleStoreIndU64(pvm *PVM, instruction ParsedInstruction) {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	pvm.State.RAM.MutateRange(addr, 8, ram.Wrap, true, func(dest []byte) {
+	pvm.State.RAM.MutateRange(addr, 8, ram.Wrap, func(dest []byte) {
 		binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
 func handleLoadIndU8(pvm *PVM, instruction ParsedInstruction) {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value := pvm.State.RAM.Inspect(addr, ram.Wrap, true)
+	value := pvm.State.RAM.Inspect(addr, ram.Wrap)
 	pvm.State.Registers[instruction.Ra] = types.Register(value)
 }
 
 func handleLoadIndI8(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.Registers[instruction.Ra] = types.Register(
-		int8(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), ram.Wrap, true)))
+		int8(pvm.State.RAM.Inspect(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), ram.Wrap)))
 }
 
 func handleLoadIndU16(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(
-		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true)))
+		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap)))
 }
 
 func handleLoadIndI16(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.Registers[instruction.Ra] = types.Register(
-		int16(binary.LittleEndian.Uint16(pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap, true))))
+		int16(binary.LittleEndian.Uint16(pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, ram.Wrap))))
 }
 
 func handleLoadIndU32(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(
-		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true)))
+		pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap)))
 }
 
 func handleLoadIndI32(pvm *PVM, instruction ParsedInstruction) {
 	pvm.State.Registers[instruction.Ra] = types.Register(
 		int32(binary.LittleEndian.Uint32(
-			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap, true))))
+			pvm.State.RAM.InspectRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, ram.Wrap))))
 }
 
 func handleLoadIndU64(pvm *PVM, instruction ParsedInstruction) {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	data := pvm.State.RAM.InspectRange(addr, 8, ram.Wrap, true)
+	data := pvm.State.RAM.InspectRange(addr, 8, ram.Wrap)
 	value := types.Register(binary.LittleEndian.Uint64(data))
 	pvm.State.Registers[instruction.Ra] = value
 }

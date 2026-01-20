@@ -216,7 +216,7 @@ func TestPVMWithDirectoryTestVectors(t *testing.T) {
 			// 	exitReason = pvm.Run()
 			// }()
 
-			exitReason := pvm.Run()
+			exitReason := Run(pvm, nil, (*struct{})(nil))
 
 			// Check exit status
 			switch testVector.ExpectedStatus {

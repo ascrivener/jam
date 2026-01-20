@@ -198,7 +198,7 @@ func Read(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 		o := ctx.State.Registers[10] // Output offset
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(ko), uint64(kz), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -206,7 +206,7 @@ func Read(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 		var preImage []byte
 
 		if a != nil {
-			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
+			keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap)
 
 			// Look up in state if available
 			val, ok, err := a.GetServiceStorageItem(tx, keyBytes)
@@ -222,7 +222,7 @@ func Read(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 		l := min(ctx.State.Registers[12], types.Register(len(preImage))-f)
 
 		// Check if output memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(l), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -231,7 +231,7 @@ func Read(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(len(preImage))
-			ctx.State.RAM.MutateRange(uint64(o), len(preImage[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+			ctx.State.RAM.MutateRange(uint64(o), len(preImage[int(f):int(f+l)]), ram.NoWrap, func(dest []byte) {
 				copy(dest, preImage[int(f):int(f+l)])
 			})
 		}
@@ -248,11 +248,11 @@ func Write(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, se
 		vz := ctx.State.Registers[10] // Value length
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(ko), uint64(kz), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(ko), uint64(kz), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap, false)
+		keyBytes := ctx.State.RAM.InspectRange(uint64(ko), uint64(kz), ram.NoWrap)
 
 		// Determine 'l' - length of previous value if it exists, NONE otherwise
 		var l types.Register
@@ -272,11 +272,11 @@ func Write(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, se
 			if err := serviceAccount.DeleteServiceStorageItem(tx, keyBytes); err != nil {
 				return ExitReason{}, err
 			}
-		} else if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(vo), uint64(vz), ram.NoWrap) {
+		} else if ctx.State.RAM.RangeHasInaccessible(uint64(vo), uint64(vz), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		} else {
 			// Write the value to the account storage
-			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap, false)
+			valueBytes := ctx.State.RAM.InspectRange(uint64(vo), uint64(vz), ram.NoWrap)
 			// IMPORTANT: make sure to copy because valueBytes is an alias to page memory which is cleared later
 			valueCopy := make([]byte, len(valueBytes))
 			copy(valueCopy, valueBytes)
@@ -369,7 +369,7 @@ func Info(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 		l := min(ctx.State.Registers[10], types.Register(len(v))-f)
 
 		// Check if memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(outputOffset), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(outputOffset), uint64(l), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -379,7 +379,7 @@ func Info(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 		}
 
 		// Write to memory
-		ctx.State.RAM.MutateRange(uint64(outputOffset), len(v[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(outputOffset), len(v[int(f):int(f+l)]), ram.NoWrap, func(dest []byte) {
 			copy(dest, v[int(f):int(f+l)])
 		})
 
@@ -402,11 +402,11 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		entrySize := uint64(12) // Each entry is 12 bytes (4 for service index, 8 for gas value)
 		totalSize := entrySize * uint64(numEntries)
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(offset), totalSize, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(authIndicesOffset), uint64(4*constants.NumCores), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(authIndicesOffset), uint64(4*constants.NumCores), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -424,11 +424,11 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 			entryOffset := uint64(offset) + i*entrySize
 
 			// Get service index from memory
-			serviceBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap, false)
+			serviceBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap)
 			serviceIndex := types.ServiceIndex(serializer.DecodeLittleEndian(serviceBytes))
 
 			// Get gas value from memory
-			gasBytes := ctx.State.RAM.InspectRange(entryOffset+4, 8, ram.NoWrap, false)
+			gasBytes := ctx.State.RAM.InspectRange(entryOffset+4, 8, ram.NoWrap)
 			gasValue := types.GasValue(serializer.DecodeLittleEndian(gasBytes))
 
 			// Add to mapping
@@ -438,7 +438,7 @@ func Bless(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		assignIndices := [constants.NumCores]types.ServiceIndex{}
 		for i := uint64(0); i < uint64(constants.NumCores); i++ {
 			entryOffset := uint64(authIndicesOffset) + i*4
-			assignIndicesBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap, false)
+			assignIndicesBytes := ctx.State.RAM.InspectRange(entryOffset, 4, ram.NoWrap)
 			assignIndices[i] = types.ServiceIndex(serializer.DecodeLittleEndian(assignIndicesBytes))
 		}
 
@@ -467,7 +467,7 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 		queueLength := constants.AuthorizerQueueLength
 		totalSize := 32 * queueLength // 32 bytes per hash * queue length
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), uint64(totalSize), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(offset), uint64(totalSize), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -491,7 +491,7 @@ func Assign(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, 
 		authorizerQueue := [constants.AuthorizerQueueLength][32]byte{}
 		for i := range queueLength {
 			hashOffset := uint64(offset) + uint64(i)*32
-			hashBytes := ctx.State.RAM.InspectRange(hashOffset, 32, ram.NoWrap, false)
+			hashBytes := ctx.State.RAM.InspectRange(hashOffset, 32, ram.NoWrap)
 
 			// Copy the hash bytes to the authorizer queue
 			copy(authorizerQueue[i][:], hashBytes)
@@ -519,7 +519,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 		totalSize := uint64(336 * uint64(constants.NumValidators))
 
 		// Check if memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), totalSize, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(offset), totalSize, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -532,7 +532,7 @@ func Designate(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReaso
 		validatorKeysets := [constants.NumValidators]types.ValidatorKeyset{}
 		for i := 0; i < int(constants.NumValidators); i++ {
 			keysetOffset := uint64(offset) + uint64(i)*336
-			keysetBytes := ctx.State.RAM.InspectRange(keysetOffset, 336, ram.NoWrap, false)
+			keysetBytes := ctx.State.RAM.InspectRange(keysetOffset, 336, ram.NoWrap)
 
 			// Copy the keyset bytes
 			copy(validatorKeysets[i][:], keysetBytes)
@@ -565,7 +565,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		gratisStorageOffset := ctx.State.Registers[11] // f - gratis storage offset
 		desiredID := ctx.State.Registers[12]           // d - desired ID
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) || labelLength > types.Register(^uint32(0)) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(offset), 32, ram.NoWrap) || labelLength > types.Register(^uint32(0)) {
 			return ExitReasonPanic, nil
 		}
 
@@ -575,7 +575,7 @@ func New(ctx *HostFunctionContext[AccumulateInvocationContext], tx *statereposit
 		}
 
 		// Read code hash from memory
-		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap, false)
+		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap)
 		var codeHash [32]byte
 		copy(codeHash[:], codeHashBytes)
 
@@ -653,11 +653,11 @@ func Upgrade(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason,
 		minGasForAccumulate := ctx.State.Registers[8] // g - minimum gas for accumulate
 		minGasForOnTransfer := ctx.State.Registers[9] // m - minimum gas for on transfer
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(offset), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(offset), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap, false)
+		codeHashBytes := ctx.State.RAM.InspectRange(uint64(offset), 32, ram.NoWrap)
 		var codeHash [32]byte
 		copy(codeHash[:], codeHashBytes)
 
@@ -685,11 +685,11 @@ func Transfer(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason
 		gasLimit := types.GasValue(ctx.State.Registers[9])             // l - gas limit
 		memoOffset := ctx.State.Registers[10]                          // o - memo offset
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		memoBytes := ctx.State.RAM.InspectRange(uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap, false)
+		memoBytes := ctx.State.RAM.InspectRange(uint64(memoOffset), uint64(constants.TransferMemoSize), ram.NoWrap)
 		var memo [constants.TransferMemoSize]byte
 		copy(memo[:], memoBytes)
 
@@ -752,11 +752,11 @@ func Eject(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 		destServiceIndex := types.ServiceIndex(ctx.State.Registers[7]) // d - destination service index
 		hashOffset := ctx.State.Registers[8]                           // o - hash offset
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(hashOffset), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(hashOffset), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap, false)
+		hashBytes := ctx.State.RAM.InspectRange(uint64(hashOffset), 32, ram.NoWrap)
 		var hash [32]byte
 		copy(hash[:], hashBytes)
 
@@ -842,13 +842,13 @@ func Query(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepos
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // Length/Value
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(o), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
 		var keyHash [32]byte
-		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap))
 
 		historicalStatus, ok, err := ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount.GetPreimageLookupHistoricalStatus(tx, uint32(z), keyHash)
 		if err != nil {
@@ -887,13 +887,13 @@ func Solicit(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterep
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // BlobLength
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(o), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
 		var keyHash [32]byte
-		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap))
 
 		// Get the accumulating service account (xs)
 		serviceAccount := ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount
@@ -945,13 +945,13 @@ func Forget(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterepo
 		o := ctx.State.Registers[7] // Offset
 		z := ctx.State.Registers[8] // BlobLength
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(o), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
 		var keyHash [32]byte
-		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap))
 
 		// Get the accumulating service account
 		xs := ctx.Argument.AccumulationResultContext.AccumulatingServiceAccount
@@ -1012,13 +1012,13 @@ func Yield(ctx *HostFunctionContext[AccumulateInvocationContext]) (ExitReason, e
 		// Extract offset o from register reg7
 		o := ctx.State.Registers[7] // Offset
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), 32, ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(o), 32, ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
 		// Get the 32-byte key hash from memory
 		var keyHash [32]byte
-		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap, false))
+		copy(keyHash[:], ctx.State.RAM.InspectRange(uint64(o), 32, ram.NoWrap))
 
 		// Set the exceptional accumulation result's preimage to this hash
 		// x'y = h
@@ -1037,11 +1037,11 @@ func Provide(ctx *HostFunctionContext[AccumulateInvocationContext], tx *staterep
 		o := ctx.State.Registers[8] // Offset
 		z := ctx.State.Registers[9]
 
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(o), uint64(z), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(o), uint64(z), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
-		i := ctx.State.RAM.InspectRange(uint64(o), uint64(z), ram.NoWrap, false)
+		i := ctx.State.RAM.InspectRange(uint64(o), uint64(z), ram.NoWrap)
 
 		serviceIndex := ctx.State.Registers[7]
 		if serviceIndex == types.Register(^uint64(0)) {
@@ -1243,13 +1243,13 @@ func Fetch[T any](ctx *HostFunctionContext[T], workPackage *wp.WorkPackage, n *[
 
 		l := min(ctx.State.Registers[9], types.Register(preimageLen)-f)
 
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(l), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		} else if preimage == nil {
 			ctx.State.Registers[7] = types.Register(HostCallNone)
 		} else {
 			ctx.State.Registers[7] = types.Register(preimageLen)
-			ctx.State.RAM.MutateRange(uint64(o), len(preimage[int(f):int(f+l)]), ram.NoWrap, false, func(dest []byte) {
+			ctx.State.RAM.MutateRange(uint64(o), len(preimage[int(f):int(f+l)]), ram.NoWrap, func(dest []byte) {
 				copy(dest, preimage[int(f):int(f+l)])
 			})
 		}
@@ -1261,14 +1261,14 @@ func Export(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence], exportSeg
 	return withGasCheck(ctx, func(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason, error) {
 		preimage := ctx.State.Registers[7]
 		z := min(ctx.State.Registers[8], types.Register(constants.SegmentSize))
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(preimage), uint64(z), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(preimage), uint64(z), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 		if exportSegmentOffset+len(ctx.Argument.ExportSequence) >= int(constants.MaxExportsInWorkPackage) {
 			ctx.State.Registers[7] = types.Register(HostCallFull)
 			return ExitReasonGo, nil
 		}
-		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.NoWrap, false), int(constants.SegmentSize))
+		x := util.OctetArrayZeroPadding(ctx.State.RAM.InspectRange(uint64(preimage), uint64(z), ram.NoWrap), int(constants.SegmentSize))
 		ctx.State.Registers[7] = types.Register(exportSegmentOffset + len(ctx.Argument.ExportSequence))
 		ctx.Argument.ExportSequence = append(ctx.Argument.ExportSequence, x)
 		return ExitReasonGo, nil
@@ -1280,10 +1280,10 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 		po := ctx.State.Registers[7]
 		pz := ctx.State.Registers[8]
 		i := ctx.State.Registers[9]
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(po), uint64(pz), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(po), uint64(pz), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
-		p := ctx.State.RAM.InspectRange(uint64(po), uint64(pz), ram.NoWrap, false)
+		p := ctx.State.RAM.InspectRange(uint64(po), uint64(pz), ram.NoWrap)
 		if _, _, _, ok := Deblob(p); !ok {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return ExitReasonGo, nil
@@ -1315,7 +1315,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		z := ctx.State.Registers[10] // Length to copy
 
 		// Check if destination range is accessible
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(z), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1326,14 +1326,14 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 			return ExitReasonGo, nil
 		}
 
-		if sourcePVM.RAM.RangeHas(ram.Inaccessible, uint64(s), uint64(z), ram.NoWrap) {
+		if sourcePVM.RAM.RangeHasInaccessible(uint64(s), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallOOB)
 			return ExitReasonGo, nil
 		}
 
 		// Copy the memory
-		data := sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false)
-		ctx.State.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, false, func(dest []byte) {
+		data := sourcePVM.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap)
+		ctx.State.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, func(dest []byte) {
 			copy(dest, data)
 		})
 
@@ -1364,7 +1364,7 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 			return ExitReasonGo, nil
 		}
 
-		if r > 2 && targetPVM.RAM.RangeHas(ram.Inaccessible, uint64(p)*ram.PageSize, uint64(c)*ram.PageSize, ram.NoWrap) {
+		if r > 2 && targetPVM.RAM.RangeHasInaccessible(uint64(p)*ram.PageSize, uint64(c)*ram.PageSize, ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return ExitReasonGo, nil
 		}
@@ -1406,7 +1406,7 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		z := ctx.State.Registers[10] // Length to copy
 
 		// Check if source range is accessible in current context
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(s), uint64(z), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(s), uint64(z), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1418,13 +1418,13 @@ func Poke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		}
 
 		// Check if destination range is writable in target PVM
-		if !targetPVM.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(z), ram.NoWrap) {
+		if !targetPVM.RAM.RangeUniformMutable(uint64(o), uint64(z), ram.NoWrap) {
 			ctx.State.Registers[7] = types.Register(HostCallOOB)
 			return ExitReasonGo, nil
 		}
 
-		data := ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap, false)
-		targetPVM.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, false, func(dest []byte) {
+		data := ctx.State.RAM.InspectRange(uint64(s), uint64(z), ram.NoWrap)
+		targetPVM.RAM.MutateRange(uint64(o), len(data), ram.NoWrap, func(dest []byte) {
 			copy(dest, data)
 		})
 
@@ -1441,7 +1441,7 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 		o := ctx.State.Registers[8] // Memory offset for gas/weight data
 
 		// Check if memory range o to o+112 is accessible for reading
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(112), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(112), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1452,8 +1452,8 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			return ExitReasonGo, nil
 		}
 
-		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, ram.NoWrap, false)
-		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, ram.NoWrap, false)
+		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, ram.NoWrap)
+		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, ram.NoWrap)
 
 		gas := types.GasValue(serializer.DecodeLittleEndian(gasData))
 		registers := [13]types.Register{}
@@ -1466,15 +1466,18 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			ctx.State.Registers[7] = types.Register(InnerPanic)
 			return ExitReasonGo, nil
 		}
-		exitReason := pvm.Run()
+		exitReason, err := Run(pvm, nil, (*struct{})(nil))
+		if err != nil {
+			return ExitReason{}, err
+		}
 
 		// Update memory with new gas and registers
-		ctx.State.RAM.MutateRange(uint64(o), 8, ram.NoWrap, false, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(o), 8, ram.NoWrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Gas))
 		})
 
 		for i := range 13 {
-			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, ram.NoWrap, false, func(dest []byte) {
+			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, ram.NoWrap, func(dest []byte) {
 				binary.LittleEndian.PutUint64(dest, uint64(ctx.State.Registers[i]))
 			})
 		}
@@ -1539,7 +1542,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 		o := ctx.State.Registers[9] // Output address
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(h), uint64(32), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1561,7 +1564,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 		var preImage []byte
 		if a != nil {
 			var keyArray [32]byte
-			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
+			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap))
 			v, ok, err := a.GetPreimageForHash(tx, keyArray)
 			if err != nil {
 				return ExitReasonPanic, err
@@ -1584,7 +1587,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 		l := min(ctx.State.Registers[11], types.Register(preImageLen)-f)
 
 		// Check if output memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(l), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1595,7 +1598,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, false, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}
@@ -1612,7 +1615,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		o := ctx.State.Registers[9] // Output address
 
 		// Check if key memory range is accessible
-		if ctx.State.RAM.RangeHas(ram.Inaccessible, uint64(h), uint64(32), ram.NoWrap) {
+		if ctx.State.RAM.RangeHasInaccessible(uint64(h), uint64(32), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1629,7 +1632,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		var preImage []byte
 		if a != nil {
 			var keyArray [32]byte
-			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap, false))
+			copy(keyArray[:], ctx.State.RAM.InspectRange(uint64(h), 32, ram.NoWrap))
 
 			var err error
 			preImage, err = historicallookup.HistoricalLookup(tx, a, timeslot, keyArray)
@@ -1651,7 +1654,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 		l := min(ctx.State.Registers[11], types.Register(preImageLen)-f)
 
 		// Check if output memory range is writable
-		if !ctx.State.RAM.RangeUniform(ram.Mutable, uint64(o), uint64(l), ram.NoWrap) {
+		if !ctx.State.RAM.RangeUniformMutable(uint64(o), uint64(l), ram.NoWrap) {
 			return ExitReasonPanic, nil
 		}
 
@@ -1662,7 +1665,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, false, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), len(slicedData), ram.NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}

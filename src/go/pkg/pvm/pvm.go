@@ -6,11 +6,30 @@ import (
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
+	"reflect"
 )
+
+// extractFaultAddress attempts to extract the faulting address from a runtime error
+// The runtime.errorAddressString type has an unexported "addr" field we access via reflection
+func extractFaultAddress(err error) uintptr {
+	v := reflect.ValueOf(err)
+	// Handle pointer types
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	// Look for "addr" field in the struct
+	if v.Kind() == reflect.Struct {
+		addrField := v.FieldByName("addr")
+		if addrField.IsValid() && addrField.CanUint() {
+			addr := uintptr(addrField.Uint())
+			return addr
+		}
+	}
+	return 0
+}
 
 type ParsedInstruction struct {
 	PC         types.Register
-	NextPC     types.Register
 	Opcode     byte
 	SkipLength int
 	Ra, Rb, Rd int
@@ -18,9 +37,55 @@ type ParsedInstruction struct {
 }
 
 type BasicBlock struct {
-	StartPC  types.Register
-	StartIdx int
-	EndIdx   int
+	Instructions []ParsedInstruction
+	CompiledCode []byte
+}
+
+func runBlock[X any](block *BasicBlock, pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
+	for _, instruction := range block.Instructions {
+		exitReason = pvm.executeInstruction(instruction)
+		if exitReason == ExitReasonGo {
+			continue
+		}
+		if pvm.State.Gas < 0 {
+			exitReason = ExitReasonOutOfGas
+		} else if exitReason.IsSimple() &&
+			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+			pvm.InstructionCounter = 0
+		}
+
+		// Handle host calls inline if host function provided
+		if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
+			if hostFunc != nil {
+				hostCall := exitReason.ComplexExitReason.Parameter
+				postHostCallExitReason, hostErr := hostFunc(
+					HostFunctionIdentifier(hostCall),
+					&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
+				)
+
+				if hostErr != nil {
+					return ExitReason{}, hostErr
+				}
+
+				if postHostCallExitReason.IsComplex() &&
+					postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
+					return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
+				}
+
+				if *postHostCallExitReason.SimpleExitReason == ExitGo {
+					continue
+				}
+
+				return postHostCallExitReason, nil
+			} else {
+				// No host function, return to caller (Invoke case)
+				return exitReason, nil
+			}
+		}
+
+		return exitReason, nil
+	}
+	return ExitReasonGo, nil
 }
 
 type PVM struct {
@@ -31,7 +96,6 @@ type PVM struct {
 	program            []byte
 	opcodes            bitsequence.BitSequence
 	blockCache         []*BasicBlock
-	parsedInstructions []ParsedInstruction
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -49,10 +113,9 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			Registers: registers,
 			RAM:       ram,
 		},
-		program:            instructions,
-		opcodes:            opcodes,
-		blockCache:         make([]*BasicBlock, len(instructions)),
-		parsedInstructions: nil,
+		program:    instructions,
+		opcodes:    opcodes,
+		blockCache: make([]*BasicBlock, len(instructions)),
 	}
 }
 
@@ -167,7 +230,8 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func (pvm *PVM) getOrCreateBlock(pc types.Register) *BasicBlock {
+func (pvm *PVM) getOrCreateBlock() *BasicBlock {
+	pc := pvm.InstructionCounter
 	if int(pc) < len(pvm.blockCache) && pvm.blockCache[pc] != nil {
 		return pvm.blockCache[pc]
 	}
@@ -180,23 +244,40 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 		return nil
 	}
 
+	if !pvm.opcodes.BitAt(int(startPC)) {
+		return nil
+	}
+
+	if instructionInfo := dispatchTable[pvm.program[startPC]]; instructionInfo == nil {
+		return nil
+	}
+
+	// Blocks can only start at PC 0 or after a termination opcode
+	if startPC != 0 {
+		// Rewind to find the previous opcode
+		prevPC := startPC - 1
+		for prevPC > 0 && !pvm.opcodes.BitAt(int(prevPC)) && (startPC-prevPC) <= 24 {
+			prevPC--
+		}
+		// Check if previous opcode is a termination opcode
+		if !terminationOpcodes[pvm.program[prevPC]] {
+			return nil
+		}
+	}
+
 	defaultExtractor := dispatchTable[0].ExtractOperands
-	startIdx := len(pvm.parsedInstructions)
 	pc := int(startPC)
+	var instructions []ParsedInstruction
 
 	for {
-		if !pvm.opcodes.BitAt(pc) {
-			pc++
-			if pc >= programLen {
-				break
-			}
-			continue
+		nextPC := pc + 1
+		for nextPC < programLen && !pvm.opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
+			nextPC++
 		}
 
-		opcode := pvm.program[pc]
-		nextPC := pc + 1
-		for nextPC < programLen && !pvm.opcodes.BitAt(nextPC) {
-			nextPC++
+		opcode := byte(0) // trap instruction
+		if pc < programLen {
+			opcode = pvm.program[pc]
 		}
 
 		operandExtractor := defaultExtractor
@@ -207,9 +288,8 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 		skipLength := nextPC - pc - 1
 		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
 
-		pvm.parsedInstructions = append(pvm.parsedInstructions, ParsedInstruction{
+		instructions = append(instructions, ParsedInstruction{
 			PC:         types.Register(pc),
-			NextPC:     types.Register(nextPC),
 			Opcode:     opcode,
 			SkipLength: skipLength,
 			Ra:         ra,
@@ -219,53 +299,24 @@ func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
 			Vy:         vy,
 		})
 
-		pc = nextPC
 		if terminationOpcodes[opcode] || pc >= programLen {
 			break
 		}
+		pc = nextPC
 	}
 
-	endIdx := len(pvm.parsedInstructions)
-	if startIdx == endIdx {
+	if len(instructions) == 0 {
 		return nil
 	}
 
 	block := &BasicBlock{
-		StartPC:  startPC,
-		StartIdx: startIdx,
-		EndIdx:   endIdx,
+		Instructions: instructions,
+		// CompiledCode: pvm.compileBlock(instructions),
 	}
 
-	for i := startIdx; i < endIdx; i++ {
-		pvm.blockCache[pvm.parsedInstructions[i].PC] = block
-	}
+	pvm.blockCache[startPC] = block
 
 	return block
-}
-
-func RunHost[X any](pvm *PVM, f HostFunction[X], x *X) (ExitReason, error) {
-	for {
-		exitReason := pvm.Run()
-		if exitReason.IsSimple() || exitReason.ComplexExitReason.Type != ExitHostCall {
-			return exitReason, nil
-		}
-
-		hostCall := exitReason.ComplexExitReason.Parameter
-		postHostCallExitReason, err := f(HostFunctionIdentifier(hostCall), &HostFunctionContext[X]{State: pvm.State, Argument: x})
-		if err != nil {
-			return ExitReason{}, err
-		}
-
-		if postHostCallExitReason.IsComplex() && postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-			return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
-		}
-
-		if *postHostCallExitReason.SimpleExitReason == ExitGo {
-			continue
-		}
-
-		return postHostCallExitReason, nil
-	}
 }
 
 func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
@@ -274,20 +325,20 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
 
-	postHostCallExitReason, err := RunHost(pvm, f, x)
+	postRunExitReason, err := Run(pvm, f, x)
 	if err != nil {
 		return types.ExecutionExitReason{}, 0, err
 	}
 	gasUsed := gas - types.GasValue(max(pvm.State.Gas, 0))
-	if postHostCallExitReason.IsSimple() {
-		if *postHostCallExitReason.SimpleExitReason == ExitOutOfGas {
+	if postRunExitReason.IsSimple() {
+		if *postRunExitReason.SimpleExitReason == ExitOutOfGas {
 			return types.NewExecutionExitReasonError(types.ExecutionErrorOutOfGas), gasUsed, nil
 		}
-		if *postHostCallExitReason.SimpleExitReason == ExitHalt {
+		if *postRunExitReason.SimpleExitReason == ExitHalt {
 			start := uint64(pvm.State.Registers[7])
 			len := uint64(pvm.State.Registers[8])
-			if !pvm.State.RAM.RangeHas(ram.Inaccessible, start, len, ram.NoWrap) {
-				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap, false)
+			if !pvm.State.RAM.RangeHasInaccessible(start, len, ram.NoWrap) {
+				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap)
 				blobCopy := make([]byte, len)
 				copy(blobCopy, blob)
 				return types.NewExecutionExitReasonBlob(blobCopy), gasUsed, nil
@@ -299,60 +350,52 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 	return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), gasUsed, nil
 }
 
-func (pvm *PVM) Run() ExitReason {
+func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Memory fault likely occurred - try to extract faulting address
+			if e, ok := r.(error); ok {
+				addr := extractFaultAddress(e)
+				if addr != 0 {
+					ramIdx := pvm.State.RAM.AddressToIndex(addr)
+					if ramIdx != nil {
+						if *ramIdx < ram.MinValidRamIndex {
+							exitReason = ExitReasonPanic
+						} else {
+							parameter := types.Register(ram.PageSize * (*ramIdx / ram.PageSize))
+							exitReason = NewComplexExitReason(ExitPageFault, parameter)
+						}
+						pvm.InstructionCounter = 0
+						return
+					}
+				}
+			}
+			// Can't determine the address - this is unexpected, return error
+			err = fmt.Errorf("unexpected panic in PVM execution: %v", r)
+			exitReason = ExitReason{}
+		}
+	}()
+
 	for {
-		ic := pvm.InstructionCounter
-		if int(ic) >= pvm.InstructionsLength {
-			ic = 0
-		}
-
-		block := pvm.getOrCreateBlock(ic)
+		block := pvm.getOrCreateBlock()
 		if block == nil {
-			pvm.InstructionCounter = 0
-			continue
+			return ExitReasonPanic, nil
 		}
 
-		var instrIdx int
-		for i := block.StartIdx; i < block.EndIdx; i++ {
-			if pvm.parsedInstructions[i].PC == ic {
-				instrIdx = i
-				break
-			}
+		exitReason, err = runBlock(block, pvm, hostFunc, hostArg)
+		if err != nil {
+			return ExitReason{}, err
 		}
-
-		for i := instrIdx; i < block.EndIdx; i++ {
-			instruction := pvm.parsedInstructions[i]
-
-			exitReason := pvm.executeInstruction(instruction)
-			if exitReason == ExitReasonGo {
-				continue
-			}
-			if pvm.State.Gas < 0 {
-				exitReason = ExitReasonOutOfGas
-			} else if exitReason.IsSimple() &&
-				(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
-				pvm.InstructionCounter = 0
-			}
-			return exitReason
+		if exitReason != ExitReasonGo {
+			return exitReason, nil
 		}
 	}
 }
 
 func (pvm *PVM) executeInstruction(instruction ParsedInstruction) ExitReason {
-	pvm.State.RAM.ClearMemoryAccessExceptions()
 	handler := dispatchTable[instruction.Opcode].Handler
-	exitReason, nextIC := handler(pvm, instruction)
 	pvm.State.Gas -= types.SignedGasValue(1)
+	exitReason, nextIC := handler(pvm, instruction)
 	pvm.InstructionCounter = nextIC
-
-	minRamIndex := pvm.State.RAM.GetMinMemoryAccessException()
-	if minRamIndex != nil {
-		if *minRamIndex < ram.MinValidRamIndex {
-			return ExitReasonPanic
-		} else {
-			parameter := types.Register(ram.PageSize * (*minRamIndex / ram.PageSize))
-			return NewComplexExitReason(ExitPageFault, parameter)
-		}
-	}
 	return exitReason
 }

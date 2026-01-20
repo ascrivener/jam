@@ -2,6 +2,7 @@ package ram
 
 import (
 	"fmt"
+	"unsafe"
 
 	"jam/pkg/constants"
 
@@ -44,15 +45,6 @@ const (
 	Mutable
 )
 
-type AccessCheckType int
-
-const (
-	// CheckRead checks for inaccessible pages (read operations)
-	CheckRead AccessCheckType = iota
-	// CheckWrite checks for inaccessible or immutable pages (write operations)
-	CheckWrite
-)
-
 type RamIndex uint32
 
 func TotalSizeNeededMajorZones(size int) int {
@@ -64,18 +56,36 @@ func TotalSizeNeededPages(size int) int {
 }
 
 type RAM struct {
-	buffer                   []byte      // mmap'd 4GB virtual address space
-	access                   []RamAccess // Page number -> access rights (defaults to Inaccessible=0)
-	BeginningOfHeap          *RamIndex   // nil if no heap
-	minMemoryAccessException *RamIndex   // Track the minimum index that caused an access exception
+	buffer          []byte      // mmap'd 4GB virtual address space (mprotect enforces permissions)
+	pageAccess      []RamAccess // tracks access level per page (synced with mprotect)
+	BeginningOfHeap *RamIndex   // nil if no heap
+}
+
+// BufferBase returns the base address of the RAM buffer for computing fault offsets
+func (r *RAM) BufferBase() uintptr {
+	return uintptr(unsafe.Pointer(&r.buffer[0]))
+}
+
+// AddressToIndex converts a faulting address to a RAM index, returns nil if outside buffer
+func (r *RAM) AddressToIndex(addr uintptr) *RamIndex {
+	base := r.BufferBase()
+	if addr < base {
+		return nil
+	}
+	offset := addr - base
+	if offset >= uintptr(RamSize) {
+		return nil
+	}
+	idx := RamIndex(offset)
+	return &idx
 }
 
 func NewEmptyRAM() *RAM {
-	// 4GB virtual address space via mmap (physical pages allocated on first access)
+	// 4GB virtual address space via mmap, starts as PROT_NONE (inaccessible)
 	buffer, err := unix.Mmap(
 		-1, 0,
 		RamSize,
-		unix.PROT_READ|unix.PROT_WRITE,
+		unix.PROT_NONE,
 		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
 	)
 	if err != nil {
@@ -83,166 +93,157 @@ func NewEmptyRAM() *RAM {
 	}
 
 	return &RAM{
-		buffer:                   buffer,
-		access:                   make([]RamAccess, NumRamPages),
-		minMemoryAccessException: nil,
+		buffer:     buffer,
+		pageAccess: make([]RamAccess, NumRamPages), // all Inaccessible (zero value)
 	}
 }
 
 func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	ram := NewEmptyRAM()
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
-	// read-only section
-	ram.MutateRange(MajorZoneSize, len(readData), NoWrap, false, func(dest []byte) {
-		copy(dest, readData)
-	})
+
+	// read-only section: set writable first, write data, then make immutable
+	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Mutable, NoWrap)
+	copy(ram.buffer[MajorZoneSize:], readData)
 	ram.MutateAccessRange(MajorZoneSize, uint64(TotalSizeNeededPages(len(readData))), Immutable, NoWrap)
-	// heap
-	ram.MutateRange(uint64(heapStart), len(writeData), NoWrap, false, func(dest []byte) {
-		copy(dest, writeData)
-	})
+
+	// heap: set writable, write initial data
 	heapLength := uint64(TotalSizeNeededPages(len(writeData)) + z*PageSize)
 	ram.MutateAccessRange(uint64(heapStart), heapLength, Mutable, NoWrap)
+	copy(ram.buffer[heapStart:], writeData)
 	heapStart += RamIndex(heapLength)
 	if heapLength > 0 {
 		ram.BeginningOfHeap = &heapStart
 	}
-	// stack
+
+	// stack: just set writable
 	stackStart := RamIndex(RamSize - 2*MajorZoneSize - ArgumentsZoneSize - TotalSizeNeededPages(stackSize))
 	ram.MutateAccessRange(uint64(stackStart), uint64(TotalSizeNeededPages(stackSize)), Mutable, NoWrap)
-	// arguments
+
+	// arguments: set writable, write data, then make immutable
 	argumentsStart := RamIndex(RamSize - MajorZoneSize - ArgumentsZoneSize)
-	ram.MutateRange(uint64(argumentsStart), len(arguments), NoWrap, false, func(dest []byte) {
-		copy(dest, arguments)
-	})
+	ram.MutateAccessRange(uint64(argumentsStart), uint64(TotalSizeNeededPages(len(arguments))), Mutable, NoWrap)
+	copy(ram.buffer[argumentsStart:], arguments)
 	ram.MutateAccessRange(uint64(argumentsStart), uint64(TotalSizeNeededPages(len(arguments))), Immutable, NoWrap)
+
 	return ram
 }
 
-// Inspect returns the byte at the given index, optionally tracking access violations
-func (r *RAM) Inspect(index uint64, mode MemoryAccessMode, trackAccessExceptions bool) byte {
-	return r.InspectRange(index, 1, mode, trackAccessExceptions)[0]
+// Inspect returns a byte at the given index (hardware protection enforced)
+func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) byte {
+	if mode == Wrap {
+		index = index % RamSize
+	}
+	return r.buffer[index]
 }
 
-func (r *RAM) checkAccessViolations(start, length uint64, mode MemoryAccessMode, trackAccessExceptions bool,
-	checkType AccessCheckType) {
-
-	if !trackAccessExceptions {
-		return
-	}
-
-	startPage := uint32(start / PageSize)
-	endPage := uint32((start + length - 1) / PageSize)
-
-	for pageNum := startPage; pageNum <= endPage; pageNum++ {
-		access := r.getPageAccess(pageNum)
-		var isViolation bool
-		if checkType == CheckRead {
-			isViolation = access == Inaccessible
-		} else { // CheckWrite
-			isViolation = access == Inaccessible || access == Immutable
-		}
-		if isViolation {
-			pageStart := uint64(pageNum) * PageSize
-			violationIndex := max(start, pageStart)
-
-			if mode == Wrap {
-				violationIndex = violationIndex % RamSize
-			}
-
-			if r.minMemoryAccessException == nil || violationIndex < uint64(*r.minMemoryAccessException) {
-				r.minMemoryAccessException = new(RamIndex)
-				*r.minMemoryAccessException = RamIndex(violationIndex)
-			}
-			break
-		}
-	}
-}
-
-func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode, trackAccessExceptions bool) []byte {
+// InspectRange returns a slice of bytes (hardware protection enforced)
+func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	if length == 0 {
 		return nil
 	}
-
-	r.checkAccessViolations(index, length, mode, trackAccessExceptions, CheckRead)
-
+	if mode == Wrap {
+		index = index % RamSize
+		// Handle wrap-around: if access crosses RamSize boundary, split it
+		if index+length > RamSize {
+			result := make([]byte, length)
+			firstPart := RamSize - index
+			copy(result[:firstPart], r.buffer[index:RamSize])
+			copy(result[firstPart:], r.buffer[0:length-firstPart]) // will fault on low memory
+			return result
+		}
+	}
 	return r.buffer[index : index+length]
 }
 
-func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode, trackAccessExceptions bool) {
-	r.MutateRange(index, 1, mode, trackAccessExceptions, func(dest []byte) {
-		dest[0] = newByte
-	})
+// Mutate writes a single byte (hardware protection enforced)
+func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) {
+	if mode == Wrap {
+		index = index % RamSize
+	}
+	r.buffer[index] = newByte
 }
 
-func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, trackAccessExceptions bool, fn func([]byte)) {
+// MutateRange writes bytes via callback (hardware protection enforced)
+func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, fn func([]byte)) {
 	if length == 0 {
 		return
 	}
-
-	r.checkAccessViolations(index, uint64(length), mode, trackAccessExceptions, CheckWrite)
-
+	if mode == Wrap {
+		index = index % RamSize
+		// Handle wrap-around: if access crosses RamSize boundary, split it
+		if index+uint64(length) > RamSize {
+			tmp := make([]byte, length)
+			firstPart := RamSize - index
+			copy(tmp[:firstPart], r.buffer[index:RamSize])
+			copy(tmp[firstPart:], r.buffer[0:uint64(length)-firstPart]) // will fault on low memory
+			fn(tmp)
+			// Write back
+			copy(r.buffer[index:RamSize], tmp[:firstPart])
+			copy(r.buffer[0:uint64(length)-firstPart], tmp[firstPart:]) // will fault on low memory
+			return
+		}
+	}
 	fn(r.buffer[index : index+uint64(length)])
 }
 
-func (r *RAM) getPageAccess(pageNum uint32) RamAccess {
-	if pageNum >= NumRamPages {
-		panic(fmt.Sprintf("Attempted to access permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
-	}
-	return r.access[pageNum]
-}
-
-func (r *RAM) pageRangeCheck(start, length uint64, mode MemoryAccessMode, access RamAccess, checkFunc func(RamAccess) bool) bool {
+// RangeHas checks if any page in range has the given access level
+// For Inaccessible, we probe the memory to see if it faults
+func (r *RAM) RangeHasInaccessible(start, length uint64, mode MemoryAccessMode) bool {
 	if length == 0 {
 		return false
 	}
-
-	if mode == NoWrap && (start >= RamSize || RamSize-start < length) {
-		if access == Inaccessible {
-			return true
-		}
-		return false
-	}
-
-	actualStart := start
 	if mode == Wrap {
-		actualStart = start % RamSize
+		start = start % RamSize
 	}
 
-	startPage := uint32(actualStart / PageSize)
-	endPage := uint32((actualStart + length - 1) / PageSize)
-
-	for pageNum := startPage; pageNum <= endPage; pageNum++ {
-		if checkFunc(r.getPageAccess(pageNum)) {
-			return true
-		}
-	}
-
-	return false
+	// Check if we can read the range - if we fault, it's inaccessible
+	return !r.canRead(start, length)
 }
 
-func (r *RAM) RangeHas(access RamAccess, start, length uint64, mode MemoryAccessMode) bool {
-	return r.pageRangeCheck(start, length, mode, access, func(pageAccess RamAccess) bool {
-		return pageAccess == access
-	})
-}
-
-func (r *RAM) RangeUniform(access RamAccess, start, length uint64, mode MemoryAccessMode) bool {
+// RangeUniform checks if all pages in range have the given access level
+func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) bool {
 	if length == 0 {
 		return true
 	}
-	return !r.pageRangeCheck(start, length, mode, access, func(pageAccess RamAccess) bool {
-		return pageAccess != access
-	})
-}
-
-func (r *RAM) setPageAccess(pageNum uint32, access RamAccess) {
-	if pageNum >= NumRamPages {
-		panic(fmt.Sprintf("Attempted to set permissions for invalid page %d (max is %d)", pageNum, NumRamPages-1))
+	if mode == Wrap {
+		start = start % RamSize
 	}
-	r.access[pageNum] = access
+
+	return r.canWrite(start, length)
 }
 
+// canRead checks if all pages in range are readable (Immutable or Mutable)
+func (r *RAM) canRead(start, length uint64) bool {
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	if endPage >= NumRamPages {
+		return false
+	}
+	for p := startPage; p <= endPage; p++ {
+		if r.pageAccess[p] == Inaccessible {
+			return false
+		}
+	}
+	return true
+}
+
+// canWrite checks if all pages in range are writable (Mutable)
+func (r *RAM) canWrite(start, length uint64) bool {
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	if endPage >= NumRamPages {
+		return false
+	}
+	for p := startPage; p <= endPage; p++ {
+		if r.pageAccess[p] != Mutable {
+			return false
+		}
+	}
+	return true
+}
+
+// ZeroPage clears a page (must be writable)
 func (r *RAM) ZeroPage(pageNum uint32) {
 	if pageNum >= NumRamPages {
 		panic(fmt.Sprintf("Attempted to zero invalid page %d (max is %d)", pageNum, NumRamPages-1))
@@ -252,22 +253,24 @@ func (r *RAM) ZeroPage(pageNum uint32) {
 	clear(r.buffer[pageStart:pageEnd])
 }
 
+// ClearPageAccess sets a page to inaccessible
 func (r *RAM) ClearPageAccess(pageNum uint32) {
 	if pageNum >= NumRamPages {
 		panic(fmt.Sprintf("Attempted to clear access for invalid page %d (max is %d)", pageNum, NumRamPages-1))
 	}
-	r.access[pageNum] = Inaccessible
+	r.mprotectRange(uint64(pageNum)*PageSize, PageSize, Inaccessible)
 }
 
+// MutateAccess changes protection for a single page
 func (r *RAM) MutateAccess(index uint64, access RamAccess, mode MemoryAccessMode) {
 	if mode == Wrap {
 		index = index % RamSize
 	}
-
-	pageNum := uint32(index / PageSize)
-	r.setPageAccess(pageNum, access)
+	pageStart := (index / PageSize) * PageSize
+	r.mprotectRange(pageStart, PageSize, access)
 }
 
+// MutateAccessRange changes protection for a range using mprotect
 func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode MemoryAccessMode) {
 	if length == 0 {
 		return
@@ -275,21 +278,52 @@ func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode Mem
 	if mode == NoWrap && (start >= RamSize || RamSize-start < length) {
 		return
 	}
-	actualStart := start
 	if mode == Wrap {
-		actualStart = start % RamSize
+		start = start % RamSize
 	}
-	startPage := uint32(actualStart / PageSize)
-	endPage := uint32((actualStart + length - 1) / PageSize)
-	for pageNum := startPage; pageNum <= endPage; pageNum++ {
-		r.setPageAccess(pageNum, access)
+	r.mprotectRange(start, length, access)
+}
+
+// mprotectRange sets OS-level page protection for a memory range
+func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
+	if length == 0 {
+		return
+	}
+
+	// Align start down to page boundary and adjust length
+	alignedStart := (start / PageSize) * PageSize
+	alignedEnd := ((start + length + PageSize - 1) / PageSize) * PageSize
+	alignedLength := alignedEnd - alignedStart
+
+	var prot int
+	switch access {
+	case Inaccessible:
+		prot = unix.PROT_NONE
+	case Immutable:
+		prot = unix.PROT_READ
+	case Mutable:
+		prot = unix.PROT_READ | unix.PROT_WRITE
+	}
+
+	pagePtr := uintptr(unsafe.Pointer(&r.buffer[0])) + uintptr(alignedStart)
+	err := unix.Mprotect(unsafe.Slice((*byte)(unsafe.Pointer(pagePtr)), alignedLength), prot)
+	if err != nil {
+		panic(fmt.Sprintf("mprotect failed: start=0x%x length=0x%x access=%d err=%v", alignedStart, alignedLength, access, err))
+	}
+
+	// Update pageAccess bitmap to stay in sync with mprotect
+	startPage := alignedStart / PageSize
+	endPage := alignedEnd / PageSize
+	for p := startPage; p < endPage; p++ {
+		r.pageAccess[p] = access
 	}
 }
 
-func (r *RAM) ClearMemoryAccessExceptions() {
-	r.minMemoryAccessException = nil
+// GetBuffer returns the underlying buffer for direct JIT access
+func (r *RAM) GetBuffer() []byte {
+	return r.buffer
 }
 
-func (r *RAM) GetMinMemoryAccessException() *RamIndex {
-	return r.minMemoryAccessException
-}
+// Legacy compatibility stubs (no longer needed with hardware protection)
+func (r *RAM) ClearMemoryAccessExceptions()           {}
+func (r *RAM) GetMinMemoryAccessException() *RamIndex { return nil }
