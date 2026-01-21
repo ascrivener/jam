@@ -52,12 +52,11 @@ type ParsedInstruction struct {
 }
 
 type PVM struct {
-	InstructionCounter types.Register
-	DynamicJumpTable   []types.Register
-	State              *State
-	program            []byte
-	opcodes            bitsequence.BitSequence
-	// ParsedInstructions          []ParsedInstruction
+	InstructionCounter       types.Register
+	DynamicJumpTable         []types.Register
+	State                    *State
+	program                  []byte
+	opcodes                  bitsequence.BitSequence
 	PvmICToParsedInstruction []*ParsedInstruction
 }
 
@@ -334,8 +333,7 @@ func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason Exit
 	}()
 
 	for {
-		instruction := pvm.PvmICToParsedInstruction[pvm.InstructionCounter]
-		exitReason = pvm.executeInstruction(instruction)
+		exitReason = pvm.executeInstruction()
 		if exitReason == ExitReasonGo {
 			continue
 		}
@@ -379,7 +377,8 @@ func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason Exit
 	}
 }
 
-func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
+func (pvm *PVM) executeInstruction() ExitReason {
+	instruction := pvm.PvmICToParsedInstruction[pvm.InstructionCounter]
 	pvm.State.Gas--
 	if instruction == nil {
 		return ExitReasonPanic
