@@ -1,12 +1,26 @@
 package pvm
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"jam/pkg/bitsequence"
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
 	"reflect"
+	"sync"
+)
+
+type cachedProgram struct {
+	instructions       []byte
+	opcodes            bitsequence.BitSequence
+	dynamicJumpTable   []types.Register
+	parsedInstructions []*ParsedInstruction
+}
+
+var (
+	programCache   = make(map[[32]byte]*cachedProgram)
+	programCacheMu sync.RWMutex
 )
 
 // extractFaultAddress attempts to extract the faulting address from a runtime error
@@ -96,46 +110,55 @@ type PVM struct {
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
-	instructions, opcodes, dynamicJumpTable, ok := Deblob(programBlob)
-	if !ok {
-		return nil
+	hash := sha256.Sum256(programBlob)
+
+	programCacheMu.RLock()
+	cached, ok := programCache[hash]
+	programCacheMu.RUnlock()
+
+	if ok {
+		return &PVM{
+			InstructionCounter: instructionCounter,
+			DynamicJumpTable:   cached.dynamicJumpTable,
+			State: &State{
+				Gas:       types.SignedGasValue(gas),
+				Registers: registers,
+				RAM:       ram,
+			},
+			program:                  cached.instructions,
+			opcodes:                  cached.opcodes,
+			PvmICToParsedInstruction: cached.parsedInstructions,
+		}
 	}
 
-	pvm := &PVM{
-		InstructionCounter: instructionCounter,
-		DynamicJumpTable:   dynamicJumpTable,
-		State: &State{
-			Gas:       types.SignedGasValue(gas),
-			Registers: registers,
-			RAM:       ram,
-		},
-		program: instructions,
-		opcodes: opcodes,
-		// ParsedInstructions:       make([]ParsedInstruction, opcodeCount),
-		PvmICToParsedInstruction: make([]*ParsedInstruction, len(instructions)),
+	instructions, opcodes, dynamicJumpTable, deblobOk := Deblob(programBlob)
+	if !deblobOk {
+		return nil
 	}
 
 	if len(instructions) == 0 {
 		return nil
 	}
 
+	parsedInstructions := make([]*ParsedInstruction, len(instructions))
+
 	pc := 0
 	previousPCIsTerminating := false
 	for pc < len(instructions) {
 		nextPC := pc + 1
-		for nextPC < len(instructions) && !pvm.opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
+		for nextPC < len(instructions) && !opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
 			nextPC++
 		}
 
-		opcode := pvm.program[0]
+		opcode := instructions[0]
 		operandExtractor := dispatchTable[0].ExtractOperands
-		if instructionInfo := dispatchTable[pvm.program[pc]]; instructionInfo != nil && pvm.opcodes.BitAt(pc) {
-			opcode = pvm.program[pc]
+		if instructionInfo := dispatchTable[instructions[pc]]; instructionInfo != nil && opcodes.BitAt(pc) {
+			opcode = instructions[pc]
 			operandExtractor = instructionInfo.ExtractOperands
 		}
 
 		skipLength := nextPC - pc - 1
-		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
+		ra, rb, rd, vx, vy := operandExtractor(instructions, pc, skipLength)
 
 		parsedInstruction := &ParsedInstruction{
 			PC:         types.Register(pc),
@@ -153,20 +176,41 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			previousPCIsTerminating = false
 		}
 
-		if nextPC < len(instructions) && dispatchTable[pvm.program[nextPC]] != nil && opcodes.BitAt(nextPC) {
-			if terminationOpcodes[pvm.program[pc]] && opcodes.BitAt(pc) {
+		if nextPC < len(instructions) && dispatchTable[instructions[nextPC]] != nil && opcodes.BitAt(nextPC) {
+			if terminationOpcodes[instructions[pc]] && opcodes.BitAt(pc) {
 				previousPCIsTerminating = true
 			} else if pc == 0 {
 				parsedInstruction.BeginsBlock = true
 			}
 		}
 
-		pvm.PvmICToParsedInstruction[pc] = parsedInstruction
+		parsedInstructions[pc] = parsedInstruction
 
 		pc = nextPC
 	}
 
-	return pvm
+	// Cache the result
+	programCacheMu.Lock()
+	programCache[hash] = &cachedProgram{
+		instructions:       instructions,
+		opcodes:            opcodes,
+		dynamicJumpTable:   dynamicJumpTable,
+		parsedInstructions: parsedInstructions,
+	}
+	programCacheMu.Unlock()
+
+	return &PVM{
+		InstructionCounter: instructionCounter,
+		DynamicJumpTable:   dynamicJumpTable,
+		State: &State{
+			Gas:       types.SignedGasValue(gas),
+			Registers: registers,
+			RAM:       ram,
+		},
+		program:                  instructions,
+		opcodes:                  opcodes,
+		PvmICToParsedInstruction: parsedInstructions,
+	}
 }
 
 func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) *PVM {
