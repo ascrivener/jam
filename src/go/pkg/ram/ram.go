@@ -3,6 +3,7 @@ package ram
 import (
 	"fmt"
 	"jam/pkg/constants"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -55,9 +56,8 @@ func TotalSizeNeededPages(size int) int {
 }
 
 type RAM struct {
-	buffer          []byte      // mmap'd 4GB virtual address space (mprotect enforces permissions)
-	pageAccess      []RamAccess // tracks access level for each page (mirrors mprotect state)
-	BeginningOfHeap *RamIndex   // nil if no heap
+	buffer          []byte    // mmap'd 4GB virtual address space (mprotect enforces permissions)
+	BeginningOfHeap *RamIndex // nil if no heap
 }
 
 // BufferBase returns the base address of the RAM buffer for computing fault offsets
@@ -92,8 +92,7 @@ func NewEmptyRAM() *RAM {
 	}
 
 	return &RAM{
-		buffer:     buffer,
-		pageAccess: make([]RamAccess, NumRamPages), // all pages start as Inaccessible
+		buffer: buffer,
 	}
 }
 
@@ -186,7 +185,8 @@ func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, fn fu
 	fn(r.buffer[index : index+uint64(length)])
 }
 
-// RangeHasInaccessible checks if any page in range is inaccessible
+// RangeHas checks if any page in range has the given access level
+// For Inaccessible, we probe the memory to see if it faults
 func (r *RAM) RangeHasInaccessible(start, length uint64, mode MemoryAccessMode) bool {
 	if length == 0 {
 		return false
@@ -195,23 +195,11 @@ func (r *RAM) RangeHasInaccessible(start, length uint64, mode MemoryAccessMode) 
 		start = start % RamSize
 	}
 
-	// overflow-safe bounds check - out of bounds = inaccessible
-	if start >= RamSize || length > RamSize-start {
-		return true
-	}
-
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-
-	for p := startPage; p <= endPage; p++ {
-		if r.pageAccess[p] == Inaccessible {
-			return true
-		}
-	}
-	return false
+	// Check if we can read the range - if we fault, it's inaccessible
+	return !r.canRead(start, length)
 }
 
-// RangeUniformMutable checks if all pages in range are mutable
+// RangeUniform checks if all pages in range have the given access level
 func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) bool {
 	if length == 0 {
 		return true
@@ -220,6 +208,15 @@ func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) b
 		start = start % RamSize
 	}
 
+	return r.canWrite(start, length)
+}
+
+var probeSink uint32 // package-level observable state
+
+func (r *RAM) canRead(start, length uint64) (readable bool) {
+	if length == 0 {
+		return true
+	}
 	// overflow-safe bounds check
 	if start >= RamSize || length > RamSize-start {
 		return false
@@ -228,11 +225,54 @@ func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) b
 	startPage := start / PageSize
 	endPage := (start + length - 1) / PageSize
 
-	for p := startPage; p <= endPage; p++ {
-		if r.pageAccess[p] != Mutable {
-			return false
+	defer func() {
+		if recover() != nil {
+			readable = false
 		}
+	}()
+
+	var acc uint32
+	for p := startPage; p <= endPage; p++ {
+		acc += uint32(r.buffer[p*PageSize])
 	}
+
+	// Make it observable: atomic store prevents DCE of the reads.
+	atomic.StoreUint32(&probeSink, acc)
+
+	return true
+}
+
+// canWrite probes if all pages in range are writable (won't fault on write)
+//
+//go:noinline
+func (r *RAM) canWrite(start, length uint64) (writable bool) {
+	if length == 0 {
+		return true
+	}
+	// overflow-safe bounds check
+	if start >= RamSize || length > RamSize-start {
+		return false
+	}
+
+	defer func() {
+		if recover() != nil {
+			writable = false
+		}
+	}()
+
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+
+	for p := startPage; p <= endPage; p++ {
+		ptr := (*uint32)(unsafe.Pointer(&r.buffer[p*PageSize]))
+
+		// real write: swap toggled value
+		old := atomic.LoadUint32(ptr)
+		newv := old ^ 0x1
+		atomic.StoreUint32(ptr, newv) // will fault if not writable
+		atomic.StoreUint32(ptr, old)  // restore (also requires writable, but only reached if first succeeded)
+	}
+
 	return true
 }
 
@@ -294,12 +334,6 @@ func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
 		panic(fmt.Sprintf("mprotect failed: start=0x%x length=0x%x access=%d err=%v", alignedStart, alignedLength, access, err))
 	}
 
-	// Update our tracking array to match mprotect state
-	startPageNum := alignedStart / PageSize
-	endPageNum := alignedEnd / PageSize
-	for p := startPageNum; p < endPageNum; p++ {
-		r.pageAccess[p] = access
-	}
 }
 
 // GetBuffer returns the underlying buffer for direct JIT access
