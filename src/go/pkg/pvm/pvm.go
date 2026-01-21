@@ -29,64 +29,61 @@ func extractFaultAddress(err error) uintptr {
 }
 
 type ParsedInstruction struct {
-	PC         types.Register
-	Opcode     byte
-	SkipLength int
-	Ra, Rb, Rd int
-	Vx, Vy     types.Register
+	PC          types.Register
+	Opcode      byte
+	SkipLength  int
+	Ra, Rb, Rd  int
+	Vx, Vy      types.Register
+	BeginsBlock bool
 }
 
-type BasicBlock struct {
-	Instructions []ParsedInstruction
-	CompiledCode []byte
-}
+// func runBlock[X any](block *BasicBlock, pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
+// 	for idx := block.StartIdx; idx < block.EndIdx; idx++ {
+// 		instruction := pvm.ParsedInstructions[idx]
+// 		exitReason = pvm.executeInstruction(instruction)
+// 		if exitReason == ExitReasonGo {
+// 			continue
+// 		}
+// 		if pvm.State.Gas < 0 {
+// 			exitReason = ExitReasonOutOfGas
+// 		} else if exitReason.IsSimple() &&
+// 			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+// 			pvm.InstructionCounter = 0
+// 		}
 
-func runBlock[X any](block *BasicBlock, pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	for _, instruction := range block.Instructions {
-		exitReason = pvm.executeInstruction(instruction)
-		if exitReason == ExitReasonGo {
-			continue
-		}
-		if pvm.State.Gas < 0 {
-			exitReason = ExitReasonOutOfGas
-		} else if exitReason.IsSimple() &&
-			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
-			pvm.InstructionCounter = 0
-		}
+// 		// Handle host calls inline if host function provided
+// 		if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
+// 			if hostFunc != nil {
+// 				hostCall := exitReason.ComplexExitReason.Parameter
+// 				postHostCallExitReason, hostErr := hostFunc(
+// 					HostFunctionIdentifier(hostCall),
+// 					&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
+// 				)
 
-		// Handle host calls inline if host function provided
-		if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
-			if hostFunc != nil {
-				hostCall := exitReason.ComplexExitReason.Parameter
-				postHostCallExitReason, hostErr := hostFunc(
-					HostFunctionIdentifier(hostCall),
-					&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
-				)
+// 				if hostErr != nil {
+// 					return ExitReason{}, hostErr
+// 				}
 
-				if hostErr != nil {
-					return ExitReason{}, hostErr
-				}
+// 				if postHostCallExitReason.IsComplex() &&
+// 					postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
+// 					return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
+// 				}
 
-				if postHostCallExitReason.IsComplex() &&
-					postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
-					return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
-				}
+// 				if *postHostCallExitReason.SimpleExitReason == ExitGo {
+// 					continue
+// 				}
 
-				if *postHostCallExitReason.SimpleExitReason == ExitGo {
-					continue
-				}
+// 				return postHostCallExitReason, nil
+// 			} else {
+// 				// No host function, return to caller (Invoke case)
+// 				return exitReason, nil
+// 			}
+// 		}
 
-				return postHostCallExitReason, nil
-			} else {
-				// No host function, return to caller (Invoke case)
-				return exitReason, nil
-			}
-		}
-
-		return exitReason, nil
-	}
-	return ExitReasonGo, nil
-}
+// 		return exitReason, nil
+// 	}
+// 	return ExitReasonGo, nil
+// }
 
 type PVM struct {
 	InstructionCounter types.Register
@@ -94,8 +91,8 @@ type PVM struct {
 	State              *State
 	program            []byte
 	opcodes            bitsequence.BitSequence
-	blockCache         map[types.Register]*BasicBlock
-	validBlockStarts   bitsequence.BitSequence
+	// ParsedInstructions          []ParsedInstruction
+	PvmICToParsedInstruction []*ParsedInstruction
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -112,43 +109,62 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			Registers: registers,
 			RAM:       ram,
 		},
-		program:    instructions,
-		opcodes:    opcodes,
-		blockCache: make(map[types.Register]*BasicBlock),
+		program: instructions,
+		opcodes: opcodes,
+		// ParsedInstructions:       make([]ParsedInstruction, opcodeCount),
+		PvmICToParsedInstruction: make([]*ParsedInstruction, len(instructions)),
 	}
 
-	// Precompute valid block starts
-	// Start with all zeros BitSequence, then set bits for valid block starts
-	validStarts, err := bitsequence.NewBitSequence(len(instructions))
-	if err != nil {
+	if len(instructions) == 0 {
 		return nil
 	}
 
-	// PC 0 is always a valid block start
-	if len(instructions) > 0 {
-		if dispatchTable[pvm.program[0]] != nil && opcodes.BitAt(0) {
-			validStarts.SetBit(0)
+	pc := 0
+	previousPCIsTerminating := false
+	for pc < len(instructions) {
+		nextPC := pc + 1
+		for nextPC < len(instructions) && !pvm.opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
+			nextPC++
 		}
-	}
 
-	// Find termination opcodes and mark the next opcode as a valid block start
-	for pc := 1; pc < len(instructions); pc++ {
-		// If this is a termination opcode, find the next opcode within 24 bytes
-		if terminationOpcodes[pvm.program[pc]] && opcodes.BitAt(pc) {
-			// Scan forward to find next opcode (within 24 bytes)
-			for nextPC := pc + 1; nextPC < len(instructions) && (nextPC-pc) <= 24; nextPC++ {
-				if dispatchTable[pvm.program[nextPC]] != nil && opcodes.BitAt(nextPC) {
-					// Found next opcode - it's a valid block start
-					validStarts.SetBit(nextPC)
-					// Jump outer loop forward to this position since we know everything in between isn't a termination
-					pc = nextPC - 1 // -1 because the loop will increment
-					break
-				}
+		opcode := pvm.program[0]
+		operandExtractor := dispatchTable[0].ExtractOperands
+		if instructionInfo := dispatchTable[pvm.program[pc]]; instructionInfo != nil && pvm.opcodes.BitAt(pc) {
+			opcode = pvm.program[pc]
+			operandExtractor = instructionInfo.ExtractOperands
+		}
+
+		skipLength := nextPC - pc - 1
+		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
+
+		parsedInstruction := &ParsedInstruction{
+			PC:         types.Register(pc),
+			Opcode:     opcode,
+			SkipLength: skipLength,
+			Ra:         ra,
+			Rb:         rb,
+			Rd:         rd,
+			Vx:         vx,
+			Vy:         vy,
+		}
+
+		if previousPCIsTerminating {
+			parsedInstruction.BeginsBlock = true
+			previousPCIsTerminating = false
+		}
+
+		if nextPC < len(instructions) && dispatchTable[pvm.program[nextPC]] != nil && opcodes.BitAt(nextPC) {
+			if terminationOpcodes[pvm.program[pc]] && opcodes.BitAt(pc) {
+				previousPCIsTerminating = true
+			} else if pc == 0 {
+				parsedInstruction.BeginsBlock = true
 			}
 		}
-	}
 
-	pvm.validBlockStarts = *validStarts
+		pvm.PvmICToParsedInstruction[pc] = parsedInstruction
+
+		pc = nextPC
+	}
 
 	return pvm
 }
@@ -264,71 +280,74 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func (pvm *PVM) getOrCreateBlock() *BasicBlock {
-	pc := pvm.InstructionCounter
-	if block, ok := pvm.blockCache[pc]; ok {
-		return block
-	}
-	return pvm.parseInstructionsFrom(pc)
-}
+// func (pvm *PVM) getOrCreateBlock() *BasicBlock {
+// 	pc := pvm.InstructionCounter
+// 	if block, ok := pvm.blockCache[pc]; ok {
+// 		return block
+// 	}
+// 	return pvm.parseInstructionsFrom(pc)
+// }
 
-func (pvm *PVM) parseInstructionsFrom(startPC types.Register) *BasicBlock {
+// func (pvm *PVM) parseInstructionsFrom(startPC types.Register) *BasicBlock {
 
-	programLen := len(pvm.program)
+// 	programLen := len(pvm.program)
 
-	defaultExtractor := dispatchTable[0].ExtractOperands
-	pc := int(startPC)
-	var instructions []ParsedInstruction
+// 	defaultExtractor := dispatchTable[0].ExtractOperands
+// 	pc := int(startPC)
+// 	startIdx := len(pvm.ParsedInstructions)
 
-	for {
-		nextPC := pc + 1
-		for nextPC < programLen && !pvm.opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
-			nextPC++
-		}
+// 	for {
+// 		nextPC := pc + 1
+// 		for nextPC < programLen && !pvm.opcodes.BitAt(nextPC) && (nextPC-pc) <= 24 {
+// 			nextPC++
+// 		}
 
-		opcode := byte(0) // trap instruction
-		if pc < programLen {
-			opcode = pvm.program[pc]
-		}
+// 		opcode := byte(0) // trap instruction
+// 		if pc < programLen {
+// 			opcode = pvm.program[pc]
+// 		}
 
-		operandExtractor := defaultExtractor
-		if instructionInfo := dispatchTable[opcode]; instructionInfo != nil {
-			operandExtractor = instructionInfo.ExtractOperands
-		}
+// 		operandExtractor := defaultExtractor
+// 		if instructionInfo := dispatchTable[opcode]; instructionInfo != nil {
+// 			operandExtractor = instructionInfo.ExtractOperands
+// 		}
 
-		skipLength := nextPC - pc - 1
-		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
+// 		skipLength := nextPC - pc - 1
+// 		ra, rb, rd, vx, vy := operandExtractor(pvm.program, pc, skipLength)
 
-		instructions = append(instructions, ParsedInstruction{
-			PC:         types.Register(pc),
-			Opcode:     opcode,
-			SkipLength: skipLength,
-			Ra:         ra,
-			Rb:         rb,
-			Rd:         rd,
-			Vx:         vx,
-			Vy:         vy,
-		})
+// 		pvm.ParsedInstructions = append(pvm.ParsedInstructions, ParsedInstruction{
+// 			PC:         types.Register(pc),
+// 			Opcode:     opcode,
+// 			SkipLength: skipLength,
+// 			Ra:         ra,
+// 			Rb:         rb,
+// 			Rd:         rd,
+// 			Vx:         vx,
+// 			Vy:         vy,
+// 		})
 
-		if terminationOpcodes[opcode] || pc >= programLen {
-			break
-		}
-		pc = nextPC
-	}
+// 		if terminationOpcodes[opcode] || pc >= programLen {
+// 			break
+// 		}
+// 		pc = nextPC
+// 	}
 
-	if len(instructions) == 0 {
-		return nil
-	}
+// 	endIdx := len(pvm.ParsedInstructions)
 
-	block := &BasicBlock{
-		Instructions: instructions,
-		// CompiledCode: pvm.compileBlock(instructions),
-	}
+// 	if endIdx == startIdx {
+// 		return nil
+// 	}
 
-	pvm.blockCache[startPC] = block
+// 	block := &BasicBlock{
+// 		StartIdx: types.Register(startIdx),
+// 		EndIdx:   types.Register(endIdx),
+// 		// CompiledCode: pvm.compileBlock(instructions),
+// 	}
 
-	return block
-}
+// 	pvm.blockCache[startPC] = block
+
+// 	return block
+// }
 
 func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
 	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
@@ -388,25 +407,58 @@ func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason Exit
 	}()
 
 	for {
-		block := pvm.getOrCreateBlock()
-		if block == nil {
-			return ExitReasonPanic, nil
+		instruction := pvm.PvmICToParsedInstruction[pvm.InstructionCounter]
+		exitReason = pvm.executeInstruction(instruction)
+		if exitReason == ExitReasonGo {
+			continue
+		}
+		if pvm.State.Gas < 0 {
+			exitReason = ExitReasonOutOfGas
+		} else if exitReason.IsSimple() &&
+			(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
+			pvm.InstructionCounter = 0
 		}
 
-		exitReason, err = runBlock(block, pvm, hostFunc, hostArg)
-		if err != nil {
-			return ExitReason{}, err
+		// Handle host calls inline if host function provided
+		if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
+			if hostFunc != nil {
+				hostCall := exitReason.ComplexExitReason.Parameter
+				postHostCallExitReason, hostErr := hostFunc(
+					HostFunctionIdentifier(hostCall),
+					&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
+				)
+
+				if hostErr != nil {
+					return ExitReason{}, hostErr
+				}
+
+				if postHostCallExitReason.IsComplex() &&
+					postHostCallExitReason.ComplexExitReason.Type == ExitPageFault {
+					return ExitReason{}, fmt.Errorf("host call returning fault unhandled")
+				}
+
+				if *postHostCallExitReason.SimpleExitReason == ExitGo {
+					continue
+				}
+
+				return postHostCallExitReason, nil
+			} else {
+				// No host function, return to caller (Invoke case)
+				return exitReason, nil
+			}
 		}
-		if exitReason != ExitReasonGo {
-			return exitReason, nil
-		}
+
+		return exitReason, nil
 	}
 }
 
-func (pvm *PVM) executeInstruction(instruction ParsedInstruction) ExitReason {
+func (pvm *PVM) executeInstruction(instruction *ParsedInstruction) ExitReason {
+	pvm.State.Gas--
+	if instruction == nil {
+		return ExitReasonPanic
+	}
 	handler := dispatchTable[instruction.Opcode].Handler
-	pvm.State.Gas -= types.SignedGasValue(1)
-	exitReason, nextIC := handler(pvm, instruction)
+	exitReason, nextIC := handler(pvm, *instruction)
 	pvm.InstructionCounter = nextIC
 	return exitReason
 }

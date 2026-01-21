@@ -61,7 +61,8 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if b >= types.Register(len(pvm.program)) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
-	if !pvm.validBlockStarts.BitAt(int(b)) {
+	parsedInstruction := pvm.PvmICToParsedInstruction[int(b)]
+	if parsedInstruction == nil || !parsedInstruction.BeginsBlock {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
@@ -85,7 +86,8 @@ func djump(pvm *PVM, a uint32) (ExitReason, types.Register) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	// Check if target is a valid basic block start
-	if !pvm.validBlockStarts.BitAt(int(target)) {
+	parsedInstruction := pvm.PvmICToParsedInstruction[int(target)]
+	if parsedInstruction == nil || !parsedInstruction.BeginsBlock {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, target
