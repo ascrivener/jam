@@ -57,28 +57,36 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 	if !C {
 		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
-	if int(b) >= pvm.InstructionsLength {
+	// Bounds check before casting to int
+	if b >= types.Register(len(pvm.program)) {
+		return ExitReasonPanic, pvm.InstructionCounter
+	}
+	if !pvm.validBlockStarts.BitAt(int(b)) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, b
 }
 
-func djump(pvm *PVM, a uint32, defaultNextInstructionCounter types.Register) (ExitReason, types.Register) {
+func djump(pvm *PVM, a uint32) (ExitReason, types.Register) {
 
 	if a == (1<<32)-(1<<16) { // ??
-		return ExitReasonHalt, defaultNextInstructionCounter
+		return ExitReasonHalt, pvm.InstructionCounter
 	}
 
 	if a == 0 || a > uint32(len(pvm.DynamicJumpTable)*constants.DynamicAddressAlignmentFactor) || a%uint32(constants.DynamicAddressAlignmentFactor) != 0 {
-		return ExitReasonPanic, defaultNextInstructionCounter
+		return ExitReasonPanic, pvm.InstructionCounter
 	}
 
 	index := (a / uint32(constants.DynamicAddressAlignmentFactor)) - 1
 	target := pvm.DynamicJumpTable[index]
 
+	// Bounds check before casting to int
+	if target >= types.Register(len(pvm.program)) {
+		return ExitReasonPanic, pvm.InstructionCounter
+	}
 	// Check if target is a valid basic block start
-	if int(target) >= pvm.InstructionsLength {
-		return ExitReasonPanic, defaultNextInstructionCounter
+	if !pvm.validBlockStarts.BitAt(int(target)) {
+		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	return ExitReasonGo, target
 }

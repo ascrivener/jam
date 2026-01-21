@@ -13,6 +13,16 @@ type BitSequence struct {
 	bitLen int    // number of bits stored in the sequence
 }
 
+// NewBitSequence creates a new BitSequence with all bits initialized to zero.
+func NewBitSequence(bitLen int) (*BitSequence, error) {
+	requiredBytes := (bitLen + 7) / 8
+	buf := make([]byte, requiredBytes)
+	return &BitSequence{
+		buf:    buf,
+		bitLen: bitLen,
+	}, nil
+}
+
 // FromBytesLSBWithLength creates a new BitSequence with a specific bit length,
 // reading bits from least significant (bit 0) to most significant (bit 7) within each byte.
 // It verifies that the provided byte slice is the correct size for the requested bit length,
@@ -55,6 +65,14 @@ func (bs *BitSequence) BitAt(i int) bool {
 // Len returns the total number of bits in the sequence.
 func (bs *BitSequence) Len() int {
 	return bs.bitLen
+}
+
+// SetBit sets the bit at position i to 1.
+// It panics if i is out of range.
+func (bs *BitSequence) SetBit(i int) {
+	byteIndex := i >> 3
+	bitPos := i & 7
+	bs.buf[byteIndex] |= (1 << uint(bitPos))
 }
 
 // CoreBitMask represents a fixed-length array of bits.

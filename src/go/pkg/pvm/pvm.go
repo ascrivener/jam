@@ -89,13 +89,13 @@ func runBlock[X any](block *BasicBlock, pvm *PVM, hostFunc HostFunction[X], host
 }
 
 type PVM struct {
-	InstructionsLength int
 	InstructionCounter types.Register
 	DynamicJumpTable   []types.Register
 	State              *State
 	program            []byte
 	opcodes            bitsequence.BitSequence
 	blockCache         map[types.Register]*BasicBlock
+	validBlockStarts   bitsequence.BitSequence
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -104,8 +104,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		return nil
 	}
 
-	return &PVM{
-		InstructionsLength: len(instructions),
+	pvm := &PVM{
 		InstructionCounter: instructionCounter,
 		DynamicJumpTable:   dynamicJumpTable,
 		State: &State{
@@ -117,6 +116,41 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		opcodes:    opcodes,
 		blockCache: make(map[types.Register]*BasicBlock),
 	}
+
+	// Precompute valid block starts
+	// Start with all zeros BitSequence, then set bits for valid block starts
+	validStarts, err := bitsequence.NewBitSequence(len(instructions))
+	if err != nil {
+		return nil
+	}
+
+	// PC 0 is always a valid block start
+	if len(instructions) > 0 {
+		if dispatchTable[pvm.program[0]] != nil && opcodes.BitAt(0) {
+			validStarts.SetBit(0)
+		}
+	}
+
+	// Find termination opcodes and mark the next opcode as a valid block start
+	for pc := 1; pc < len(instructions); pc++ {
+		// If this is a termination opcode, find the next opcode within 24 bytes
+		if terminationOpcodes[pvm.program[pc]] && opcodes.BitAt(pc) {
+			// Scan forward to find next opcode (within 24 bytes)
+			for nextPC := pc + 1; nextPC < len(instructions) && (nextPC-pc) <= 24; nextPC++ {
+				if dispatchTable[pvm.program[nextPC]] != nil && opcodes.BitAt(nextPC) {
+					// Found next opcode - it's a valid block start
+					validStarts.SetBit(nextPC)
+					// Jump outer loop forward to this position since we know everything in between isn't a termination
+					pc = nextPC - 1 // -1 because the loop will increment
+					break
+				}
+			}
+		}
+	}
+
+	pvm.validBlockStarts = *validStarts
+
+	return pvm
 }
 
 func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) *PVM {
@@ -235,35 +269,12 @@ func (pvm *PVM) getOrCreateBlock() *BasicBlock {
 	if block, ok := pvm.blockCache[pc]; ok {
 		return block
 	}
-	return pvm.parseBlockFrom(pc)
+	return pvm.parseInstructionsFrom(pc)
 }
 
-func (pvm *PVM) parseBlockFrom(startPC types.Register) *BasicBlock {
+func (pvm *PVM) parseInstructionsFrom(startPC types.Register) *BasicBlock {
+
 	programLen := len(pvm.program)
-	if int(startPC) >= programLen {
-		return nil
-	}
-
-	if !pvm.opcodes.BitAt(int(startPC)) {
-		return nil
-	}
-
-	if instructionInfo := dispatchTable[pvm.program[startPC]]; instructionInfo == nil {
-		return nil
-	}
-
-	// Blocks can only start at PC 0 or after a termination opcode
-	if startPC != 0 {
-		// Rewind to find the previous opcode
-		prevPC := startPC - 1
-		for prevPC > 0 && !pvm.opcodes.BitAt(int(prevPC)) && (startPC-prevPC) <= 24 {
-			prevPC--
-		}
-		// Check if previous opcode is a termination opcode
-		if !terminationOpcodes[pvm.program[prevPC]] {
-			return nil
-		}
-	}
 
 	defaultExtractor := dispatchTable[0].ExtractOperands
 	pc := int(startPC)
