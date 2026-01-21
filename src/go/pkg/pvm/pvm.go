@@ -12,8 +12,6 @@ import (
 )
 
 type cachedProgram struct {
-	instructions       []byte
-	opcodes            bitsequence.BitSequence
 	dynamicJumpTable   []types.Register
 	parsedInstructions []*ParsedInstruction
 }
@@ -55,7 +53,6 @@ type PVM struct {
 	InstructionCounter       types.Register
 	DynamicJumpTable         []types.Register
 	State                    *State
-	program                  []byte
 	PvmICToParsedInstruction []*ParsedInstruction
 }
 
@@ -75,7 +72,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 				Registers: registers,
 				RAM:       ram,
 			},
-			program:                  cached.instructions,
 			PvmICToParsedInstruction: cached.parsedInstructions,
 		}
 	}
@@ -141,8 +137,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	// Cache the result
 	programCacheMu.Lock()
 	programCache[hash] = &cachedProgram{
-		instructions:       instructions,
-		opcodes:            opcodes,
 		dynamicJumpTable:   dynamicJumpTable,
 		parsedInstructions: parsedInstructions,
 	}
@@ -156,7 +150,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			Registers: registers,
 			RAM:       ram,
 		},
-		program:                  instructions,
 		PvmICToParsedInstruction: parsedInstructions,
 	}
 }

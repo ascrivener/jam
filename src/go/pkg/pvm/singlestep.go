@@ -58,7 +58,7 @@ func branch(pvm *PVM, skipLength int, b types.Register, C bool) (ExitReason, typ
 		return ExitReasonGo, pvm.nextInstructionCounter(skipLength)
 	}
 	// Bounds check before casting to int
-	if b >= types.Register(len(pvm.program)) {
+	if b >= types.Register(len(pvm.PvmICToParsedInstruction)) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	parsedInstruction := pvm.PvmICToParsedInstruction[int(b)]
@@ -82,7 +82,7 @@ func djump(pvm *PVM, a uint32) (ExitReason, types.Register) {
 	target := pvm.DynamicJumpTable[index]
 
 	// Bounds check before casting to int
-	if target >= types.Register(len(pvm.program)) {
+	if target >= types.Register(len(pvm.PvmICToParsedInstruction)) {
 		return ExitReasonPanic, pvm.InstructionCounter
 	}
 	// Check if target is a valid basic block start
