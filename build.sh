@@ -41,7 +41,9 @@ cd "${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
 
 CGO_ENABLED=1 \
     go build -o "${PROJECT_ROOT}/bin/jamzilla-tiny" \
-    -ldflags="-s -w" -tags=netgo -trimpath
+    -ldflags="-s -w" \
+    -tags=netgo,osusergo \
+    -trimpath
 
 echo -e "${GREEN}Build completed successfully!${NC}"
 echo -e "${BLUE}Binary: ${PROJECT_ROOT}/bin/jamzilla-tiny${NC}"
