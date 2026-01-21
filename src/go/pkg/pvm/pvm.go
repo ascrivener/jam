@@ -56,7 +56,6 @@ type PVM struct {
 	DynamicJumpTable         []types.Register
 	State                    *State
 	program                  []byte
-	opcodes                  bitsequence.BitSequence
 	PvmICToParsedInstruction []*ParsedInstruction
 }
 
@@ -77,7 +76,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 				RAM:       ram,
 			},
 			program:                  cached.instructions,
-			opcodes:                  cached.opcodes,
 			PvmICToParsedInstruction: cached.parsedInstructions,
 		}
 	}
@@ -159,7 +157,6 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 			RAM:       ram,
 		},
 		program:                  instructions,
-		opcodes:                  opcodes,
 		PvmICToParsedInstruction: parsedInstructions,
 	}
 }
