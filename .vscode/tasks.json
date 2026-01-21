@@ -187,6 +187,17 @@
                 "isDefault": true
             },
             "problemMatcher": []
+        },
+        {
+            "label": "build-optimized-jamzilla-tiny",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/src/go && CGO_ENABLED=1 go build -tags=netgo -trimpath -o ${workspaceFolder}/bin/jamzilla-tiny ./cmd/fuzzer/fuzzserver",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
         }
     ],
     "inputs": [

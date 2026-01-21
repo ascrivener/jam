@@ -2,9 +2,9 @@ package ram
 
 import (
 	"fmt"
-	"unsafe"
-
 	"jam/pkg/constants"
+	"sync/atomic"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -211,51 +211,68 @@ func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) b
 	return r.canWrite(start, length)
 }
 
-// canRead probes if all pages in range are readable (won't fault on read)
+var probeSink uint32 // package-level observable state
+
 func (r *RAM) canRead(start, length uint64) (readable bool) {
 	if length == 0 {
 		return true
 	}
-	if start+length > RamSize {
+	// overflow-safe bounds check
+	if start >= RamSize || length > RamSize-start {
 		return false
 	}
+
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+
 	defer func() {
 		if recover() != nil {
 			readable = false
 		}
 	}()
-	// Probe first byte of each page in range
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-	var sink byte
+
+	var acc uint32
 	for p := startPage; p <= endPage; p++ {
-		sink = r.buffer[p*PageSize]
+		acc += uint32(r.buffer[p*PageSize])
 	}
-	_ = sink
+
+	// Make it observable: atomic store prevents DCE of the reads.
+	atomic.StoreUint32(&probeSink, acc)
+
 	return true
 }
 
 // canWrite probes if all pages in range are writable (won't fault on write)
+//
+//go:noinline
 func (r *RAM) canWrite(start, length uint64) (writable bool) {
 	if length == 0 {
 		return true
 	}
-	if start+length > RamSize {
+	// overflow-safe bounds check
+	if start >= RamSize || length > RamSize-start {
 		return false
 	}
+
 	defer func() {
 		if recover() != nil {
 			writable = false
 		}
 	}()
-	// Probe each page by writing
+
 	startPage := start / PageSize
 	endPage := (start + length - 1) / PageSize
+
 	for p := startPage; p <= endPage; p++ {
-		ptr := &r.buffer[p*PageSize]
-		tmp := *ptr
-		*ptr = tmp
+		ptr := (*uint32)(unsafe.Pointer(&r.buffer[p*PageSize]))
+
+		// real write: swap toggled value
+		old := atomic.LoadUint32(ptr)
+		newv := old ^ 0x1
+		atomic.StoreUint32(ptr, newv) // will fault if not writable
+		atomic.StoreUint32(ptr, old)  // restore (also requires writable, but only reached if first succeeded)
 	}
+
 	return true
 }
 

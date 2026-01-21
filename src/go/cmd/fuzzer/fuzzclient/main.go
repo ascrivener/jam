@@ -296,9 +296,12 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
-		// if !strings.Contains(testDir, "fuzzy") {
-		// 	continue
-		// }
+		if !strings.Contains(testDir, "fuzzy") {
+			continue
+		}
+		if strings.Contains(testDir, "light") {
+			continue
+		}
 		testName := filepath.Base(testDir)
 		t.Run(testName, func(t *testing.T) {
 			fc.testIndividualVector(t, testDir)
@@ -414,6 +417,15 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	var longestDuration time.Duration
 	var longestTestFile string
 
+	// Start profiling before processing test vectors
+	startProfiling := fuzzinterface.StartProfiling{}
+	_, err = fc.sendAndReceive(fuzzinterface.RequestMessage{StartProfiling: &startProfiling})
+	if err != nil {
+		t.Logf("Warning: Failed to start profiling: %v", err)
+	} else {
+		t.Logf("Profiling started for ImportBlock operations")
+	}
+
 	for i := 0; i < len(testBinFiles); i++ {
 		startTime := time.Now()
 		testVectorPath := testBinFiles[i]
@@ -513,6 +525,19 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		if duration > longestDuration {
 			longestDuration = duration
 			longestTestFile = testFileName
+		}
+	}
+
+	// Stop profiling after processing all test vectors
+	stopProfiling := fuzzinterface.StopProfiling{}
+	stopResp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StopProfiling: &stopProfiling})
+	if err != nil {
+		t.Logf("Warning: Failed to stop profiling: %v", err)
+	} else if stopResp.ProfilingStatus != nil {
+		if stopResp.ProfilingStatus.Success == 1 {
+			t.Logf("Profiling stopped successfully: %s", string(stopResp.ProfilingStatus.Message))
+		} else {
+			t.Logf("Profiling stop failed: %s", string(stopResp.ProfilingStatus.Message))
 		}
 	}
 

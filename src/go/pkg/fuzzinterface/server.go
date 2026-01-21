@@ -328,6 +328,11 @@ func (s *Server) handleStartProfiling(data []byte) (ResponseMessage, error) {
 		s.cpuProfile.Close()
 		s.cpuProfile = nil
 	}
+	if s.traceFile != nil {
+		trace.Stop()
+		s.traceFile.Close()
+		s.traceFile = nil
+	}
 
 	// Enable blocking profile collection
 	runtime.SetBlockProfileRate(1) // Capture all blocking events
