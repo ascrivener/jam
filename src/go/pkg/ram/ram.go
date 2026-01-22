@@ -21,6 +21,19 @@ var MinValidRamIndex RamIndex = MajorZoneSize
 // probeSink prevents the compiler from optimizing away memory probes
 var probeSink byte
 
+// probeXOR is always 0, but the compiler can't prove it at compile time
+// This forces the XOR operation to actually execute
+var probeXOR byte = 0
+
+// probeWrite forces a single-byte write that cannot be optimized away
+// XORs with probeXOR (always 0) - compiler can't prove it's a no-op since
+// probeXOR could theoretically be modified at runtime
+//
+//go:noinline
+func probeWrite(p *byte) {
+	*p ^= probeXOR
+}
+
 type Arguments []byte
 
 func NewArguments(value []byte) (a Arguments, e error) {
@@ -144,40 +157,51 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	}
 	if mode == Wrap {
 		index = index % RamSize
-		// Handle wrap-around: if access crosses RamSize boundary, split it
-		if index+length > RamSize {
-			result := make([]byte, length)
-			firstPart := RamSize - index
-			copy(result[:firstPart], r.buffer[index:RamSize])
-			copy(result[firstPart:], r.buffer[0:length-firstPart]) // will fault on low memory
-			return result
-		}
 	}
 	return r.buffer[index : index+length]
 }
 
-// InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
-// Returns nil if a segmentation fault occurs (accessing protected memory)
-func (r *RAM) InspectRangeSafe(index, length uint64, mode MemoryAccessMode) (result []byte) {
+// canRead probes the memory range to check if it's readable
+// Panics if any page in the range is not readable
+func (r *RAM) CanRead(index, length uint64) (ok bool) {
 	defer func() {
 		if recover() != nil {
-			result = nil
+			ok = false
 		}
 	}()
-
-	data := r.InspectRange(index, length, mode)
-
-	// Probe through the slice at page boundaries to trigger any segfaults
+	// Probe within the actual range at page boundaries
 	// Use probeSink to prevent compiler from optimizing away the reads
-	for i := uint64(0); i < length; i += PageSize {
-		probeSink = data[i]
+	endIndex := index + length
+	for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
+		probeSink = r.buffer[i]
 	}
-	// Also probe the last byte if not already covered
-	if length > 0 {
-		probeSink = data[length-1]
-	}
+	return true
+}
 
-	return data
+// canWrite probes the memory range to check if it's writable
+// Panics if any page in the range is not writable
+func (r *RAM) CanWrite(index, length uint64) (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	// Probe within the actual range at page boundaries
+	// For write operations, we need to actually write to trigger write protection faults
+	endIndex := index + length
+	for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
+		probeWrite(&r.buffer[i])
+	}
+	return true
+}
+
+// InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
+// Returns nil if a segmentation fault occurs (accessing protected memory)
+func (r *RAM) InspectRangeSafe(index, length uint64) (result []byte) {
+	if !r.CanRead(index, length) {
+		return nil
+	}
+	return r.InspectRange(index, length, NoWrap)
 }
 
 // Mutate writes a single byte (hardware protection enforced)
@@ -189,38 +213,23 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) {
 }
 
 // MutateRange writes bytes via callback (hardware protection enforced)
-func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, fn func([]byte)) {
+func (r *RAM) MutateRange(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
 	if length == 0 {
 		return
 	}
 	if mode == Wrap {
 		index = index % RamSize
-		// Handle wrap-around: if access crosses RamSize boundary, split it
-		if index+uint64(length) > RamSize {
-			tmp := make([]byte, length)
-			firstPart := RamSize - index
-			copy(tmp[:firstPart], r.buffer[index:RamSize])
-			copy(tmp[firstPart:], r.buffer[0:uint64(length)-firstPart]) // will fault on low memory
-			fn(tmp)
-			// Write back
-			copy(r.buffer[index:RamSize], tmp[:firstPart])
-			copy(r.buffer[0:uint64(length)-firstPart], tmp[firstPart:]) // will fault on low memory
-			return
-		}
 	}
-	fn(r.buffer[index : index+uint64(length)])
+	fn(r.buffer[index : index+length])
 }
 
 // MutateRangeSafe writes bytes via callback with panic recovery (hardware protection enforced)
 // Returns false if a segmentation fault occurs (accessing protected memory)
-func (r *RAM) MutateRangeSafe(index uint64, length int, mode MemoryAccessMode, fn func([]byte)) (ok bool) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			// Segfault occurred - return false to indicate inaccessible memory
-			ok = false
-		}
-	}()
-	r.MutateRange(index, length, mode, fn)
+func (r *RAM) MutateRangeSafe(index, length uint64, fn func([]byte)) (ok bool) {
+	if !r.CanWrite(index, length) {
+		return false
+	}
+	r.MutateRange(index, length, NoWrap, fn)
 	return true
 }
 

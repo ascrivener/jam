@@ -216,7 +216,7 @@ func handleOneRegOneImmOneOff(pvm *PVM, instruction ParsedInstruction) (ExitReas
 	case 90: // branch_gt_s_imm
 		cond = int64(pvm.State.Registers[instruction.Ra]) > int64(instruction.Vx)
 	default:
-		panic(fmt.Sprintf("handleBranchImm: unexpected opcode %d", instruction))
+		panic(fmt.Sprintf("handleBranchImm: unexpected opcode %d", instruction.Opcode))
 	}
 
 	// Execute the branch. The branch() function returns the exit reason

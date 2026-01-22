@@ -1,0 +1,41 @@
+FROM rust:1.83-bookworm
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.22 (detect architecture automatically)
+ARG TARGETARCH
+RUN GOARCH=${TARGETARCH:-amd64} && \
+    wget -q https://go.dev/dl/go1.22.0.linux-${GOARCH}.tar.gz && \
+    tar -C /usr/local -xzf go1.22.0.linux-${GOARCH}.tar.gz && \
+    rm go1.22.0.linux-${GOARCH}.tar.gz
+
+# Add Go to PATH
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Copy entire workspace
+COPY . .
+
+# Run build script
+RUN chmod +x build.sh && ./build.sh
+
+# Environment variables
+ENV USE_SOCKET=true
+
+# Run: start server, run tests on both directories, cleanup
+CMD ./bin/jamzilla-tiny -socket /tmp/jam_target.sock & \
+    SERVER_PID=$! && \
+    sleep 2 && \
+    cd src/go/cmd/fuzzer/fuzzclient && \
+    echo "=== Running tests on fuzz-reports/0.7.2/traces ===" && \
+    TEST_VECTORS_DIR=/app/jam-conformance/fuzz-reports/0.7.2/traces go test -v -run TestConformanceVectors && \
+    echo "=== Running tests on test-vectors/traces ===" && \
+    TEST_VECTORS_DIR=/app/jam-conformance/test-vectors/traces go test -v -run TestConformanceVectors; \
+    TEST_EXIT=$?; \
+    kill $SERVER_PID 2>/dev/null || true; \
+    exit $TEST_EXIT
