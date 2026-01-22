@@ -534,6 +534,20 @@ func (tx *TrackedTx) SetStateRoot(stateRoot [32]byte) {
 	tx.stateRoot = stateRoot
 }
 
+// ClearAll wipes all data from the database using DeleteRange
+func (tx *TrackedTx) ClearAll() error {
+	// Clear in-memory state
+	tx.memory = make(map[[31]byte][]byte)
+	tx.flushCache = nil
+	tx.stateRoot = [32]byte{}
+
+	// Delete all keys in the database using DeleteRange
+	// Pebble keys are byte strings, so we delete from empty to max byte
+	start := []byte{0x00}
+	end := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	return tx.batch.DeleteRange(start, end, nil)
+}
+
 func (tx *TrackedTx) CreateChild() *TrackedTx {
 	child := &TrackedTx{
 		batch:     tx.batch,

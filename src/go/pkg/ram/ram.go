@@ -3,7 +3,6 @@ package ram
 import (
 	"fmt"
 	"jam/pkg/constants"
-	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -138,7 +137,7 @@ func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) byte {
 // InspectRange returns a slice of bytes (hardware protection enforced)
 func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	if length == 0 {
-		return nil
+		return []byte{}
 	}
 	if mode == Wrap {
 		index = index % RamSize
@@ -152,6 +151,19 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 		}
 	}
 	return r.buffer[index : index+length]
+}
+
+// InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
+// Returns nil if a segmentation fault occurs (accessing protected memory)
+func (r *RAM) InspectRangeSafe(index, length uint64, mode MemoryAccessMode) (result []byte) {
+	defer func() {
+		rec := recover()
+		if rec != nil {
+			// Segfault occurred - return nil to indicate inaccessible memory
+			result = nil
+		}
+	}()
+	return r.InspectRange(index, length, mode)
 }
 
 // Mutate writes a single byte (hardware protection enforced)
@@ -185,94 +197,16 @@ func (r *RAM) MutateRange(index uint64, length int, mode MemoryAccessMode, fn fu
 	fn(r.buffer[index : index+uint64(length)])
 }
 
-// RangeHas checks if any page in range has the given access level
-// For Inaccessible, we probe the memory to see if it faults
-func (r *RAM) RangeHasInaccessible(start, length uint64, mode MemoryAccessMode) bool {
-	if length == 0 {
-		return false
-	}
-	if mode == Wrap {
-		start = start % RamSize
-	}
-
-	// Check if we can read the range - if we fault, it's inaccessible
-	return !r.canRead(start, length)
-}
-
-// RangeUniform checks if all pages in range have the given access level
-func (r *RAM) RangeUniformMutable(start, length uint64, mode MemoryAccessMode) bool {
-	if length == 0 {
-		return true
-	}
-	if mode == Wrap {
-		start = start % RamSize
-	}
-
-	return r.canWrite(start, length)
-}
-
-var probeSink uint32 // package-level observable state
-
-func (r *RAM) canRead(start, length uint64) (readable bool) {
-	if length == 0 {
-		return true
-	}
-	// overflow-safe bounds check
-	if start >= RamSize || length > RamSize-start {
-		return false
-	}
-
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-
+// MutateRangeSafe writes bytes via callback with panic recovery (hardware protection enforced)
+// Returns false if a segmentation fault occurs (accessing protected memory)
+func (r *RAM) MutateRangeSafe(index uint64, length int, mode MemoryAccessMode, fn func([]byte)) (ok bool) {
 	defer func() {
-		if recover() != nil {
-			readable = false
+		if rec := recover(); rec != nil {
+			// Segfault occurred - return false to indicate inaccessible memory
+			ok = false
 		}
 	}()
-
-	var acc uint32
-	for p := startPage; p <= endPage; p++ {
-		acc += uint32(r.buffer[p*PageSize])
-	}
-
-	// Make it observable: atomic store prevents DCE of the reads.
-	atomic.StoreUint32(&probeSink, acc)
-
-	return true
-}
-
-// canWrite probes if all pages in range are writable (won't fault on write)
-//
-//go:noinline
-func (r *RAM) canWrite(start, length uint64) (writable bool) {
-	if length == 0 {
-		return true
-	}
-	// overflow-safe bounds check
-	if start >= RamSize || length > RamSize-start {
-		return false
-	}
-
-	defer func() {
-		if recover() != nil {
-			writable = false
-		}
-	}()
-
-	startPage := start / PageSize
-	endPage := (start + length - 1) / PageSize
-
-	for p := startPage; p <= endPage; p++ {
-		ptr := (*uint32)(unsafe.Pointer(&r.buffer[p*PageSize]))
-
-		// real write: swap toggled value
-		old := atomic.LoadUint32(ptr)
-		newv := old ^ 0x1
-		atomic.StoreUint32(ptr, newv) // will fault if not writable
-		atomic.StoreUint32(ptr, old)  // restore (also requires writable, but only reached if first succeeded)
-	}
-
+	r.MutateRange(index, length, mode, fn)
 	return true
 }
 

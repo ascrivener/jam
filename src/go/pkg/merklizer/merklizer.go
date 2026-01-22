@@ -61,6 +61,11 @@ func collectLeaves(tx *staterepository.TrackedTx, nodeHash [32]byte, state *Stat
 }
 
 func (s *State) OverwriteCurrentState(tx *staterepository.TrackedTx) error {
+	// Wipe the entire database
+	if err := tx.ClearAll(); err != nil {
+		return fmt.Errorf("failed to clear database: %w", err)
+	}
+
 	// Insert all state KVs from this state
 	for _, kv := range *s {
 		staterepository.SetStateKV(tx, kv.OriginalKey, kv.Value)

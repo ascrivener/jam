@@ -283,8 +283,8 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 		if *postRunExitReason.SimpleExitReason == ExitHalt {
 			start := uint64(pvm.State.Registers[7])
 			len := uint64(pvm.State.Registers[8])
-			if !pvm.State.RAM.RangeHasInaccessible(start, len, ram.NoWrap) {
-				blob := pvm.State.RAM.InspectRange(start, len, ram.NoWrap)
+			blob := pvm.State.RAM.InspectRangeSafe(start, len, ram.NoWrap)
+			if blob != nil {
 				blobCopy := make([]byte, len)
 				copy(blobCopy, blob)
 				return types.NewExecutionExitReasonBlob(blobCopy), gasUsed, nil
