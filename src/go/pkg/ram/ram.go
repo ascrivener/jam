@@ -18,6 +18,9 @@ const (
 
 var MinValidRamIndex RamIndex = MajorZoneSize
 
+// probeSink prevents the compiler from optimizing away memory probes
+var probeSink byte
+
 type Arguments []byte
 
 func NewArguments(value []byte) (a Arguments, e error) {
@@ -157,13 +160,24 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 // Returns nil if a segmentation fault occurs (accessing protected memory)
 func (r *RAM) InspectRangeSafe(index, length uint64, mode MemoryAccessMode) (result []byte) {
 	defer func() {
-		rec := recover()
-		if rec != nil {
-			// Segfault occurred - return nil to indicate inaccessible memory
+		if recover() != nil {
 			result = nil
 		}
 	}()
-	return r.InspectRange(index, length, mode)
+
+	data := r.InspectRange(index, length, mode)
+
+	// Probe through the slice at page boundaries to trigger any segfaults
+	// Use probeSink to prevent compiler from optimizing away the reads
+	for i := uint64(0); i < length; i += PageSize {
+		probeSink = data[i]
+	}
+	// Also probe the last byte if not already covered
+	if length > 0 {
+		probeSink = data[length-1]
+	}
+
+	return data
 }
 
 // Mutate writes a single byte (hardware protection enforced)
