@@ -42,7 +42,8 @@ echo -e "${BLUE}Building jamzilla-tiny...${NC}"
 mkdir -p "${PROJECT_ROOT}/bin"
 cd "${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
 
-CGO_ENABLED=1 \
+# GOAMD64=v3 enables AVX2 instructions (matches x86-64-v3 Rust target)
+GOAMD64=v3 CGO_ENABLED=1 \
     go build -o "${PROJECT_ROOT}/bin/jamzilla-tiny" \
     -ldflags="-s -w" \
     -trimpath
