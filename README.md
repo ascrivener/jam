@@ -2,7 +2,7 @@
 
 A high-performance implementation of the JAM (Join-Accumulate Machine) protocol in Go with Rust cryptographic primitives.
 
-> **Platform Requirements**: This implementation requires **Linux x86-64** due to JIT compilation and memory protection features (mmap/mprotect). macOS and Windows are not supported.
+> **Platform Requirements**: This implementation requires **Linux x86-64** (modern CPUs from 2013+ with AVX2 support) due to JIT compilation and memory protection features (mmap/mprotect). A **4KB page size** is required. macOS and Windows are not supported.
 
 ## Quick Start
 

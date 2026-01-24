@@ -24,9 +24,10 @@ fi
 # Build Rust FFI library
 echo -e "${BLUE}Building Rust FFI library...${NC}"
 cd "${PROJECT_ROOT}/src/bandersnatch_ffi"
-# For CPU-specific optimizations (faster but less portable), uncomment:
+# For maximum performance on your specific CPU (least portable), use:
 # RUSTFLAGS="-C target-cpu=native" cargo build --release
-cargo build --release
+# Default: x86-64-v3 targets modern CPUs (2013+ Intel Haswell / 2017+ AMD Zen) with AVX2
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
 echo -e "${GREEN}Rust FFI library built${NC}"
 
 # Generate constants
