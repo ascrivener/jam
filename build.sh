@@ -24,6 +24,8 @@ fi
 # Build Rust FFI library
 echo -e "${BLUE}Building Rust FFI library...${NC}"
 cd "${PROJECT_ROOT}/src/bandersnatch_ffi"
+# For CPU-specific optimizations (faster but less portable), uncomment:
+# RUSTFLAGS="-C target-cpu=native" cargo build --release
 cargo build --release
 echo -e "${GREEN}Rust FFI library built${NC}"
 
@@ -42,7 +44,6 @@ cd "${PROJECT_ROOT}/src/go/cmd/fuzzer/fuzzserver"
 CGO_ENABLED=1 \
     go build -o "${PROJECT_ROOT}/bin/jamzilla-tiny" \
     -ldflags="-s -w" \
-    -tags=netgo,osusergo \
     -trimpath
 
 echo -e "${GREEN}Build completed successfully!${NC}"
