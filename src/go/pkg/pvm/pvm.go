@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"jam/pkg/bitsequence"
+	"jam/pkg/pvm/jit"
 	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
@@ -14,7 +15,7 @@ import (
 type cachedProgram struct {
 	dynamicJumpTable   []types.Register
 	parsedInstructions []*ParsedInstruction
-	jitContext         interface{} // *jit.ProgramContext - keeps memory alive and supports trampolines
+	jitContext         *jit.ProgramContext
 }
 
 var (
@@ -55,7 +56,7 @@ type PVM struct {
 	DynamicJumpTable         []types.Register
 	State                    *State
 	PvmICToParsedInstruction []*ParsedInstruction
-	JITContext               interface{} // *jit.ProgramContext for mid-block entry
+	JITContext               *jit.ProgramContext
 }
 
 func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {

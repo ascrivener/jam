@@ -16,32 +16,6 @@ const (
 	ModeJIT                              // Fast, production
 )
 
-// Global JIT runtime (shared across PVM instances)
-var (
-	jitInitialized bool
-)
-
-// initJIT initializes the global JIT runtime
-func initJIT() error {
-	if jitInitialized {
-		return nil
-	}
-
-	// Check environment variable for JIT disable
-	if os.Getenv("PVM_MODE") == "interpreter" {
-		jitInitialized = true
-		return nil
-	}
-
-	// Install signal handler (one-time global setup)
-	if err := jit.InstallSignalHandler(); err != nil {
-		return err
-	}
-
-	jitInitialized = true
-	return nil
-}
-
 // GetExecutionMode returns the current execution mode based on environment
 func GetExecutionMode() ExecutionMode {
 	if os.Getenv("PVM_MODE") == "interpreter" {
@@ -73,11 +47,7 @@ func convertParsedInstructions(pvmInstructions []*ParsedInstruction) []*jit.Pars
 
 // CompileForJIT compiles the PVM's program for JIT execution
 // Returns the ProgramContext that must be kept alive as long as the compiled code is used
-func (pvm *PVM) CompileForJIT() (interface{}, error) {
-	if err := initJIT(); err != nil {
-		return nil, err
-	}
-
+func (pvm *PVM) CompileForJIT() (*jit.ProgramContext, error) {
 	jitInstructions := convertParsedInstructions(pvm.PvmICToParsedInstruction)
 	ctx, err := jit.CompileProgram(jitInstructions)
 	if err != nil {
@@ -92,7 +62,7 @@ func (pvm *PVM) CompileForJIT() (interface{}, error) {
 
 // RunJIT executes the PVM using JIT-compiled code where available
 func RunJIT[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	ctx := pvm.JITContext.(*jit.ProgramContext)
+	ctx := pvm.JITContext
 
 	// Pin goroutine to OS thread so we can set up thread-local signal handler once
 	runtime.LockOSThread()
