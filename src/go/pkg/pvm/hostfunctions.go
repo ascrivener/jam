@@ -1278,7 +1278,7 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 			}
 			n++
 		}
-		u := ram.NewEmptyRAM()
+		u := ram.NewEmptyRAM(GetExecutionMode() == ModeJIT)
 		ctx.State.Registers[7] = types.Register(n)
 		ctx.Argument.IntegratedPVMs[n] = IntegratedPVM{
 			ProgramCode:        p,

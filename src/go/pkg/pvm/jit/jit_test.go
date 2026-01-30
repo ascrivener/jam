@@ -1186,7 +1186,7 @@ func TestMemoryInvalidAccess(t *testing.T) {
 	}
 
 	// Create state with real RAM (4GB mmap with mprotect)
-	realRAM := ram.NewEmptyRAM()
+	realRAM := ram.NewEmptyRAM(true) // JIT mode uses hardware protection
 	state := &StateWithRealRAM{
 		Gas:       100,
 		Registers: [13]types.Register{},
@@ -1239,6 +1239,7 @@ func TestSbrkBasic(t *testing.T) {
 		[]byte{},           // arguments
 		0,                  // z (extra heap pages)
 		4096,               // stackSize
+		true,               // hardwareProtection (JIT mode)
 	)
 
 	// Get the initial heap end before sbrk
@@ -1304,7 +1305,7 @@ func TestSbrkNoHeap(t *testing.T) {
 	}
 
 	// Create state with empty RAM (no heap initialized)
-	realRAM := ram.NewEmptyRAM()
+	realRAM := ram.NewEmptyRAM(true) // JIT mode uses hardware protection
 
 	state := &StateWithRealRAM{
 		Gas:       100,
@@ -1353,6 +1354,7 @@ func TestSbrkZeroPages(t *testing.T) {
 		[]byte{},           // arguments
 		0,                  // z
 		4096,               // stackSize
+		true,               // hardwareProtection (JIT mode)
 	)
 
 	initialHeapEnd := uint64(0)

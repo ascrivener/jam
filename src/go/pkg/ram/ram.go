@@ -3,6 +3,7 @@ package ram
 import (
 	"fmt"
 	"jam/pkg/constants"
+	"runtime/debug"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -71,8 +72,10 @@ func TotalSizeNeededPages(size int) int {
 }
 
 type RAM struct {
-	buffer          []byte    // mmap'd 4GB virtual address space (mprotect enforces permissions)
-	BeginningOfHeap *RamIndex // nil if no heap
+	buffer             []byte      // mmap'd 4GB virtual address space
+	permissions        []RamAccess // software permission tracking (1 byte per page)
+	hardwareProtection bool        // if true, use mprotect (for JIT); if false, software-only (for interpreter)
+	BeginningOfHeap    *RamIndex   // nil if no heap
 }
 
 // BufferBase returns the base address of the RAM buffer for computing fault offsets
@@ -94,25 +97,84 @@ func (r *RAM) AddressToIndex(addr uintptr) *RamIndex {
 	return &idx
 }
 
-func NewEmptyRAM() *RAM {
-	// 4GB virtual address space via mmap, starts as PROT_NONE (inaccessible)
+// checkReadPermission returns the first faulting address, or 0 if all bytes are readable
+// Only used in interpreter mode (hardwareProtection=false)
+func (r *RAM) checkReadPermission(start, length uint64) uint64 {
+	if length == 0 {
+		return 0
+	}
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	for page := startPage; page <= endPage; page++ {
+		if r.permissions[page] == Inaccessible {
+			// Return max(page start, request start) as the faulting address
+			pageStart := page * PageSize
+			if pageStart > start {
+				return pageStart
+			}
+			return start
+		}
+	}
+	return 0
+}
+
+// checkWritePermission returns the first faulting address, or 0 if all bytes are writable
+// Only used in interpreter mode (hardwareProtection=false)
+func (r *RAM) checkWritePermission(start, length uint64) uint64 {
+	if length == 0 {
+		return 0
+	}
+	startPage := start / PageSize
+	endPage := (start + length - 1) / PageSize
+	for page := startPage; page <= endPage; page++ {
+		if r.permissions[page] != Mutable {
+			// Return max(page start, request start) as the faulting address
+			pageStart := page * PageSize
+			if pageStart > start {
+				return pageStart
+			}
+			return start
+		}
+	}
+	return 0
+}
+
+// NewEmptyRAM creates a new RAM instance
+// If hardwareProtection is true (JIT mode), uses mprotect for hardware enforcement
+// If hardwareProtection is false (interpreter mode), uses software-only permission checks
+func NewEmptyRAM(hardwareProtection bool) *RAM {
+	var prot int
+	if hardwareProtection {
+		// JIT mode: start as PROT_NONE, mprotect will set permissions as needed
+		prot = unix.PROT_NONE
+	} else {
+		// Interpreter mode: allocate as fully accessible, software checks enforce permissions
+		prot = unix.PROT_READ | unix.PROT_WRITE
+	}
+
 	buffer, err := unix.Mmap(
 		-1, 0,
 		RamSize,
-		unix.PROT_NONE,
+		prot,
 		unix.MAP_PRIVATE|unix.MAP_ANONYMOUS,
 	)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to mmap RAM: %v", err))
 	}
 
+	// Software permission tracking - all pages start as Inaccessible
+	permissions := make([]RamAccess, NumRamPages)
+	// Default value is 0 which is Inaccessible, so no initialization loop needed
+
 	return &RAM{
-		buffer: buffer,
+		buffer:             buffer,
+		permissions:        permissions,
+		hardwareProtection: hardwareProtection,
 	}
 }
 
-func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
-	ram := NewEmptyRAM()
+func NewRAM(readData, writeData, arguments []byte, z, stackSize int, hardwareProtection bool) *RAM {
+	ram := NewEmptyRAM(hardwareProtection)
 	heapStart := RamIndex(2*MajorZoneSize + TotalSizeNeededMajorZones(len(readData)))
 
 	// read-only section: set writable first, write data, then make immutable
@@ -142,15 +204,19 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int) *RAM {
 	return ram
 }
 
-// Inspect returns a byte at the given index (hardware protection enforced)
+// Inspect returns a byte at the given index (software permission check + hardware protection)
 func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) byte {
 	if mode == Wrap {
 		index = index % RamSize
 	}
+	if faultAddr := r.checkReadPermission(index, 1); faultAddr != 0 {
+		panic(fmt.Sprintf("read access violation at 0x%x", faultAddr))
+	}
 	return r.buffer[index]
 }
 
-// InspectRange returns a slice of bytes (hardware protection enforced)
+// InspectRange returns a copy of bytes from the buffer (software permission check)
+// Returns a NEW slice (not a view into the buffer) to avoid mprotect issues
 func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	if length == 0 {
 		return []byte{}
@@ -161,38 +227,52 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	return r.buffer[index : index+length]
 }
 
-// canRead probes the memory range to check if it's readable
-// Panics if any page in the range is not readable
+// CanRead checks if a memory range is readable
+// JIT mode: uses probe-based check (actual memory access with recover)
+// Interpreter mode: uses software permission array
 func (r *RAM) CanRead(index, length uint64) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
+	if r.hardwareProtection {
+		// JIT mode: probe memory via actual reads
+		// SetPanicOnFault makes SIGSEGV recoverable via panic/recover
+		prev := debug.SetPanicOnFault(true)
+		defer debug.SetPanicOnFault(prev)
+		defer func() {
+			if recover() != nil {
+				ok = false
+			}
+		}()
+		endIndex := index + length
+		for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
+			probeSink = r.buffer[i]
 		}
-	}()
-	// Probe within the actual range at page boundaries
-	// Use probeSink to prevent compiler from optimizing away the reads
-	endIndex := index + length
-	for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
-		probeSink = r.buffer[i]
+		return true
 	}
-	return true
+	// Interpreter mode: use software permission array
+	return r.checkReadPermission(index, length) == 0
 }
 
-// canWrite probes the memory range to check if it's writable
-// Panics if any page in the range is not writable
+// CanWrite checks if a memory range is writable
+// JIT mode: uses probe-based check (actual memory access with recover)
+// Interpreter mode: uses software permission array
 func (r *RAM) CanWrite(index, length uint64) (ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
+	if r.hardwareProtection {
+		// JIT mode: probe memory via actual writes
+		// SetPanicOnFault makes SIGSEGV recoverable via panic/recover
+		prev := debug.SetPanicOnFault(true)
+		defer debug.SetPanicOnFault(prev)
+		defer func() {
+			if recover() != nil {
+				ok = false
+			}
+		}()
+		endIndex := index + length
+		for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
+			probeWrite(&r.buffer[i])
 		}
-	}()
-	// Probe within the actual range at page boundaries
-	// For write operations, we need to actually write to trigger write protection faults
-	endIndex := index + length
-	for i := index; i < endIndex; i = (i/PageSize + 1) * PageSize {
-		probeWrite(&r.buffer[i])
+		return true
 	}
-	return true
+	// Interpreter mode: use software permission array
+	return r.checkWritePermission(index, length) == 0
 }
 
 // InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
@@ -204,15 +284,18 @@ func (r *RAM) InspectRangeSafe(index, length uint64) (result []byte) {
 	return r.InspectRange(index, length, NoWrap)
 }
 
-// Mutate writes a single byte (hardware protection enforced)
+// Mutate writes a single byte (software permission check + hardware protection)
 func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) {
 	if mode == Wrap {
 		index = index % RamSize
 	}
+	if faultAddr := r.checkWritePermission(index, 1); faultAddr != 0 {
+		panic(fmt.Sprintf("write access violation at 0x%x", faultAddr))
+	}
 	r.buffer[index] = newByte
 }
 
-// MutateRange writes bytes via callback (hardware protection enforced)
+// MutateRange writes bytes via callback (software permission check + hardware protection)
 func (r *RAM) MutateRange(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
 	if length == 0 {
 		return
@@ -265,7 +348,7 @@ func (r *RAM) MutateAccessRange(start, length uint64, access RamAccess, mode Mem
 	r.mprotectRange(start, length, access)
 }
 
-// mprotectRange sets OS-level page protection for a memory range
+// mprotectRange sets software permissions and optionally hardware protection for a memory range
 func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
 	if length == 0 {
 		return
@@ -276,21 +359,30 @@ func (r *RAM) mprotectRange(start, length uint64, access RamAccess) {
 	alignedEnd := ((start + length + PageSize - 1) / PageSize) * PageSize
 	alignedLength := alignedEnd - alignedStart
 
-	var prot int
-	switch access {
-	case Inaccessible:
-		prot = unix.PROT_NONE
-	case Immutable:
-		prot = unix.PROT_READ
-	case Mutable:
-		prot = unix.PROT_READ | unix.PROT_WRITE
-	}
+	// Update hardware protection only if enabled (JIT mode)
+	if r.hardwareProtection {
+		var prot int
+		switch access {
+		case Inaccessible:
+			prot = unix.PROT_NONE
+		case Immutable:
+			prot = unix.PROT_READ
+		case Mutable:
+			prot = unix.PROT_READ | unix.PROT_WRITE
+		}
 
-	err := unix.Mprotect(unsafe.Slice((*byte)(unsafe.Add(unsafe.Pointer(&r.buffer[0]), alignedStart)), alignedLength), prot)
-	if err != nil {
-		panic(fmt.Sprintf("mprotect failed: start=0x%x length=0x%x access=%d err=%v", alignedStart, alignedLength, access, err))
+		err := unix.Mprotect(unsafe.Slice((*byte)(unsafe.Add(unsafe.Pointer(&r.buffer[0]), alignedStart)), alignedLength), prot)
+		if err != nil {
+			panic(fmt.Sprintf("mprotect failed: start=0x%x length=0x%x access=%d err=%v", alignedStart, alignedLength, access, err))
+		}
+	} else {
+		// Update software permission array
+		startPage := alignedStart / PageSize
+		endPage := alignedEnd / PageSize
+		for page := startPage; page < endPage; page++ {
+			r.permissions[page] = access
+		}
 	}
-
 }
 
 // GetBuffer returns the underlying buffer for direct JIT access

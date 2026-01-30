@@ -9,6 +9,7 @@ import (
 	"jam/pkg/serializer"
 	"jam/pkg/types"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -233,7 +234,7 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	regs[7] = ram.RamSize - ram.MajorZoneSize - ram.ArgumentsZoneSize
 	regs[8] = types.Register(len(arguments))
 
-	return c, regs, ram.NewRAM(o, w, arguments, z, s), true
+	return c, regs, ram.NewRAM(o, w, arguments, z, s, GetExecutionMode() == ModeJIT), true
 }
 
 func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, ok bool) {
@@ -324,7 +325,26 @@ func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason Exit
 func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			// Memory fault likely occurred - try to extract faulting address
+			// Check for software permission violation panic (from RAM access methods)
+			if errStr, ok := r.(string); ok {
+				if strings.Contains(errStr, "access violation at 0x") {
+					var addr uint64
+					if strings.Contains(errStr, "read access violation") {
+						fmt.Sscanf(errStr, "read access violation at 0x%x", &addr)
+					} else if strings.Contains(errStr, "write access violation") {
+						fmt.Sscanf(errStr, "write access violation at 0x%x", &addr)
+					}
+					if addr < uint64(ram.MinValidRamIndex) {
+						exitReason = ExitReasonPanic
+					} else {
+						parameter := types.Register(addr) // addr is already page-aligned
+						exitReason = NewComplexExitReason(ExitPageFault, parameter)
+					}
+					pvm.InstructionCounter = 0
+					return
+				}
+			}
+			// Fallback: try to extract faulting address from runtime error (for JIT or unexpected faults)
 			if e, ok := r.(error); ok {
 				addr := extractFaultAddress(e)
 				if addr != 0 {

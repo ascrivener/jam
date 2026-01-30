@@ -297,10 +297,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
 		testName := filepath.Base(testDir)
-		// if !strings.Contains(testName, "storage") {
-		// 	continue
-		// }
-		// if strings.Contains(testName, "light") {
+		// if !strings.Contains(testName, "1768067359_9734") {
 		// 	continue
 		// }
 		t.Run(testName, func(t *testing.T) {

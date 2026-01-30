@@ -125,7 +125,7 @@ func (c *Compiler) emitEpilogueWithReg(exitReason uint64, nextPCReg Reg) {
 //   - We save/restore: byte length (on stack)
 func (c *Compiler) emitSbrk(rd, ra int) {
 	const (
-		RAMBeginningOfHeapOffset = 24
+		RAMBeginningOfHeapOffset = 56 // Updated: buffer(24) + permissions(24) + hardwareProtection(8)
 		SysMprotect              = 10
 		ProtReadWrite            = 3 // PROT_READ | PROT_WRITE
 	)
