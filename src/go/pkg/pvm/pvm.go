@@ -14,6 +14,7 @@ import (
 type cachedProgram struct {
 	dynamicJumpTable   []types.Register
 	parsedInstructions []*ParsedInstruction
+	jitContext         interface{} // *jit.ProgramContext - keeps memory alive and supports trampolines
 }
 
 var (
@@ -54,9 +55,10 @@ type PVM struct {
 	DynamicJumpTable         []types.Register
 	State                    *State
 	PvmICToParsedInstruction []*ParsedInstruction
+	JITContext               interface{} // *jit.ProgramContext for mid-block entry
 }
 
-func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
+func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	hash := sha256.Sum256(programBlob)
 
 	programCacheMu.RLock()
@@ -64,7 +66,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	programCacheMu.RUnlock()
 
 	if ok {
-		return &PVM{
+		pvm := &PVM{
 			InstructionCounter: instructionCounter,
 			DynamicJumpTable:   cached.dynamicJumpTable,
 			State: &State{
@@ -73,16 +75,18 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 				RAM:       ram,
 			},
 			PvmICToParsedInstruction: cached.parsedInstructions,
+			JITContext:               cached.jitContext, // Reuse cached JIT context for trampolines
 		}
+		return pvm, nil
 	}
 
 	instructions, opcodes, dynamicJumpTable, deblobOk := Deblob(programBlob)
 	if !deblobOk {
-		return nil
+		return nil, nil
 	}
 
 	if len(instructions) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	parsedInstructions := make([]*ParsedInstruction, len(instructions))
@@ -134,15 +138,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		pc = nextPC
 	}
 
-	// Cache the result
-	programCacheMu.Lock()
-	programCache[hash] = &cachedProgram{
-		dynamicJumpTable:   dynamicJumpTable,
-		parsedInstructions: parsedInstructions,
-	}
-	programCacheMu.Unlock()
-
-	return &PVM{
+	pvm := &PVM{
 		InstructionCounter: instructionCounter,
 		DynamicJumpTable:   dynamicJumpTable,
 		State: &State{
@@ -152,12 +148,29 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		},
 		PvmICToParsedInstruction: parsedInstructions,
 	}
+
+	// Compile for JIT execution
+	jitContext, err := pvm.CompileForJIT()
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result including JIT blocks and context
+	programCacheMu.Lock()
+	programCache[hash] = &cachedProgram{
+		dynamicJumpTable:   dynamicJumpTable,
+		parsedInstructions: parsedInstructions,
+		jitContext:         jitContext,
+	}
+	programCacheMu.Unlock()
+
+	return pvm, nil
 }
 
-func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) *PVM {
+func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
@@ -266,7 +279,10 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 }
 
 func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
-	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
+	pvm, err := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
+	if err != nil {
+		return types.ExecutionExitReason{}, 0, err
+	}
 	if pvm == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
@@ -297,6 +313,14 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 }
 
 func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
+	// Use JIT execution if available
+	if GetExecutionMode() == ModeJIT {
+		return RunJIT(pvm, hostFunc, hostArg)
+	}
+	return runInterpreter(pvm, hostFunc, hostArg)
+}
+
+func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// Memory fault likely occurred - try to extract faulting address

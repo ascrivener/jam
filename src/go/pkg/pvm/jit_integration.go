@@ -2,9 +2,9 @@ package pvm
 
 import (
 	"jam/pkg/pvm/jit"
-	"jam/pkg/ram"
 	"jam/pkg/types"
 	"os"
+	"runtime"
 	"unsafe"
 )
 
@@ -18,8 +18,7 @@ const (
 
 // Global JIT runtime (shared across PVM instances)
 var (
-	globalJITRuntime *jit.Runtime
-	jitInitialized   bool
+	jitInitialized bool
 )
 
 // initJIT initializes the global JIT runtime
@@ -34,11 +33,11 @@ func initJIT() error {
 		return nil
 	}
 
-	rt, err := jit.NewRuntime()
-	if err != nil {
+	// Install signal handler (one-time global setup)
+	if err := jit.InstallSignalHandler(); err != nil {
 		return err
 	}
-	globalJITRuntime = rt
+
 	jitInitialized = true
 	return nil
 }
@@ -49,21 +48,6 @@ func GetExecutionMode() ExecutionMode {
 		return ModeInterpreter
 	}
 	return ModeJIT
-}
-
-// SetJITEnabled enables or disables JIT at runtime
-func SetJITEnabled(enabled bool) {
-	if globalJITRuntime != nil {
-		globalJITRuntime.SetEnabled(enabled)
-	}
-}
-
-// JITStats returns JIT compilation statistics
-func JITStats() jit.Stats {
-	if globalJITRuntime == nil {
-		return jit.Stats{}
-	}
-	return globalJITRuntime.Stats()
 }
 
 // convertParsedInstructions converts PVM ParsedInstructions to JIT ParsedInstructions
@@ -88,57 +72,43 @@ func convertParsedInstructions(pvmInstructions []*ParsedInstruction) []*jit.Pars
 }
 
 // CompileForJIT compiles the PVM's program for JIT execution
-func (pvm *PVM) CompileForJIT() error {
+// Returns the ProgramContext that must be kept alive as long as the compiled code is used
+func (pvm *PVM) CompileForJIT() (interface{}, error) {
 	if err := initJIT(); err != nil {
-		return err
-	}
-
-	if globalJITRuntime == nil || !globalJITRuntime.Enabled() {
-		return nil
+		return nil, err
 	}
 
 	jitInstructions := convertParsedInstructions(pvm.PvmICToParsedInstruction)
-	return globalJITRuntime.CompileProgram(jitInstructions, pvm.DynamicJumpTable)
+	ctx, err := jit.CompileProgram(jitInstructions)
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return nil, nil
+	}
+	pvm.JITContext = ctx
+	return ctx, nil
 }
 
 // RunJIT executes the PVM using JIT-compiled code where available
 func RunJIT[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			if e, ok := r.(error); ok {
-				addr := extractFaultAddress(e)
-				if addr != 0 {
-					ramIdx := pvm.State.RAM.AddressToIndex(addr)
-					if ramIdx != nil {
-						if *ramIdx < ram.MinValidRamIndex {
-							exitReason = ExitReasonPanic
-						} else {
-							parameter := types.Register(ram.PageSize * (*ramIdx / ram.PageSize))
-							exitReason = NewComplexExitReason(ExitPageFault, parameter)
-						}
-						pvm.InstructionCounter = 0
-						return
-					}
-				}
-			}
-			err = nil
-			exitReason = ExitReasonPanic
-		}
-	}()
+	ctx := pvm.JITContext.(*jit.ProgramContext)
 
-	// Fall back to interpreter if JIT not available
-	if globalJITRuntime == nil || !globalJITRuntime.Enabled() {
-		return Run(pvm, hostFunc, hostArg)
-	}
+	// Pin goroutine to OS thread so we can set up thread-local signal handler once
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// Now safe to activate once - goroutine won't migrate to another thread
+	ctx.Activate()
 
 	for {
-		// Try to get compiled block for current PC
-		block := globalJITRuntime.GetBlock(pvm.InstructionCounter)
+		// Try to get compiled block for current PC (supports mid-block entry via trampolines)
+		entryPoint := ctx.GetBlockEntryPoint(pvm.InstructionCounter)
 
-		if block != nil {
+		if entryPoint != 0 {
 			// Execute JIT-compiled block
 			statePtr := unsafe.Pointer(pvm.State)
-			exitEncoded, nextPC := globalJITRuntime.ExecuteBlock(block, statePtr)
+			exitEncoded, nextPC := jit.ExecuteBlockPtr(entryPoint, statePtr)
 
 			pvm.InstructionCounter = types.Register(nextPC)
 
@@ -230,12 +200,4 @@ func RunJIT[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason E
 			return exitReason, nil
 		}
 	}
-}
-
-// RunWithMode runs the PVM with the specified execution mode
-func RunWithMode[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X, mode ExecutionMode) (ExitReason, error) {
-	if mode == ModeJIT {
-		return RunJIT(pvm, hostFunc, hostArg)
-	}
-	return Run(pvm, hostFunc, hostArg)
 }

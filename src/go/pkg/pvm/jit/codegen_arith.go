@@ -251,9 +251,16 @@ func (c *Compiler) emitMulUpper(opcode byte, rd, ra, rb int) {
 		c.asm.emit(rexW(0, srcB), 0xF7, modRM(0xC0, 4, srcB)) // mul srcB
 		c.asm.MovRegReg(ScratchReg3, RDX)
 	case 215: // mul_upper_s_u
-		// Signed * unsigned upper
-		c.asm.emit(rexW(0, srcB), 0xF7, modRM(0xC0, 4, srcB))
-		c.asm.MovRegReg(ScratchReg3, RDX)
+		// Signed * unsigned upper: upper(a*b) - b if a < 0
+		// First do unsigned multiply
+		c.asm.emit(rexW(0, srcB), 0xF7, modRM(0xC0, 4, srcB)) // mul srcB (unsigned)
+		c.asm.MovRegReg(ScratchReg3, RDX)                     // Save upper result
+		// If srcA was negative, subtract srcB from upper result
+		c.asm.TestRegReg(srcA, srcA)
+		skipAdjust := c.asm.Offset()
+		c.asm.JnsNear(0) // Jump if not sign (srcA >= 0)
+		c.asm.SubRegReg(ScratchReg3, srcB)
+		c.patchJumpNear(skipAdjust)
 	}
 	c.storePvmReg(rd, ScratchReg3)
 }

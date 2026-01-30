@@ -107,7 +107,6 @@ type CompiledBlock struct {
 type Compiler struct {
 	execMem *ExecutableMemory
 	asm     *Assembler
-	blocks  map[types.Register]*CompiledBlock
 
 	// Compilation state
 	currentBlock *CompiledBlock
@@ -125,14 +124,27 @@ type pendingJump struct {
 func NewCompiler(execMem *ExecutableMemory) *Compiler {
 	return &Compiler{
 		execMem: execMem,
-		blocks:  make(map[types.Register]*CompiledBlock),
 	}
 }
 
 // CompileBlock compiles a single basic block starting at the given PC
-func (c *Compiler) CompileBlock(instructions []*ParsedInstruction, startPC types.Register, dynamicJumpTable []types.Register) (*CompiledBlock, error) {
-	// Estimate code size (generous estimate: 64 bytes per instruction)
-	estimatedSize := 64 * 100 // Start with room for 100 instructions
+func (c *Compiler) CompileBlock(instructions []*ParsedInstruction, startPC types.Register) (*CompiledBlock, error) {
+	// Count instructions in this block to estimate size
+	blockInstrCount := 0
+	for pc := int(startPC); pc < len(instructions); {
+		instr := instructions[pc]
+		if instr == nil {
+			blockInstrCount++
+			break
+		}
+		if pc != int(startPC) && instr.BeginsBlock {
+			break
+		}
+		blockInstrCount++
+		pc = pc + 1 + instr.SkipLength
+	}
+	// 256 bytes per instruction (branches emit 2 exits), minimum 1024 bytes for prologue/epilogue overhead
+	estimatedSize := max(256*blockInstrCount, 1024)
 
 	addr, buf, err := c.execMem.Allocate(estimatedSize)
 	if err != nil {
@@ -152,35 +164,42 @@ func (c *Compiler) CompileBlock(instructions []*ParsedInstruction, startPC types
 	// Emit block prologue
 	c.emitPrologue()
 
-	// Compile instructions until we hit a terminating instruction
+	// Compile instructions until we hit a block boundary
 	pc := startPC
+	lastPC := startPC
 	for {
 		if int(pc) >= len(instructions) {
+			block.EndPC = lastPC
 			break
 		}
 
 		instr := instructions[pc]
-		if instr == nil {
-			// Invalid instruction - emit panic exit
-			c.emitExitPanic()
+
+		// Check for block boundary (BeginsBlock signals previous instruction was terminating)
+		if pc != startPC && instr != nil && instr.BeginsBlock {
+			// Previous instruction ended the block, no need to emit exit
+			// (terminating instructions already emit their own exits)
+			block.EndPC = lastPC
 			break
 		}
 
 		// Record label for this PC (for intra-block jumps)
 		c.labelOffsets[pc] = c.asm.Offset()
 
-		// Emit gas decrement
+		// Emit gas decrement first (matching interpreter which does Gas-- before checking nil)
 		c.emitGasCheck()
 
-		// Compile the instruction
-		nextPC := c.compileInstruction(instr, dynamicJumpTable)
-
-		// Check if this was a terminating instruction
-		if isTerminatingOpcode(instr.Opcode) {
+		if instr == nil {
+			// Invalid instruction - emit panic exit (gas already charged above)
+			c.emitExitPanic()
 			block.EndPC = pc
 			break
 		}
 
+		// Compile the instruction
+		nextPC := c.compileInstruction(instr)
+
+		lastPC = pc
 		pc = nextPC
 	}
 
@@ -189,7 +208,6 @@ func (c *Compiler) CompileBlock(instructions []*ParsedInstruction, startPC types
 
 	block.CodeSize = c.asm.Offset()
 	block.LabelOffsets = c.labelOffsets // Preserve for mid-block entry
-	c.blocks[startPC] = block
 
 	return block, nil
 }
@@ -323,7 +341,7 @@ func (c *Compiler) getPvmReg(pvmReg int, scratch Reg) Reg {
 }
 
 // compileInstruction generates code for a single PVM instruction
-func (c *Compiler) compileInstruction(instr *ParsedInstruction, dynamicJumpTable []types.Register) types.Register {
+func (c *Compiler) compileInstruction(instr *ParsedInstruction) types.Register {
 	nextPC := instr.PC + 1 + types.Register(instr.SkipLength)
 
 	switch instr.Opcode {
@@ -371,7 +389,7 @@ func (c *Compiler) compileInstruction(instr *ParsedInstruction, dynamicJumpTable
 		c.emitMoveReg(instr.Rd, instr.Ra)
 
 	case 101: // sbrk - needs special handling (calls into Go)
-		c.emitSbrk(instr.Rd, instr.Ra, nextPC)
+		c.emitSbrk(instr.Rd, instr.Ra)
 
 	case 102, 103: // count_set_bits_64/32
 		c.emitPopcnt(instr.Opcode, instr.Rd, instr.Ra)
@@ -596,15 +614,6 @@ func (c *Compiler) GenerateTrampoline(targetBlock *CompiledBlock, pc types.Regis
 	}
 
 	return tramp, nil
-}
-
-func isTerminatingOpcode(opcode byte) bool {
-	switch opcode {
-	case 0, 1, 40, 50, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 170, 171, 172, 173, 174, 175, 180:
-		return true
-	default:
-		return false
-	}
 }
 
 // ParsedInstruction mirrors the PVM's ParsedInstruction for the JIT

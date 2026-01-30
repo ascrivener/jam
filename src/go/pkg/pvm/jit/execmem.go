@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultCodeSize = 16 * 1024 * 1024 // 16MB default
+	DefaultCodeSize = 16 * 1024 * 1024 // 16MB default (used for initial runtime setup)
 )
 
 // ExecutableMemory manages mmap'd memory with execute permissions for JIT code
@@ -99,4 +99,25 @@ func (em *ExecutableMemory) Used() int {
 // Capacity returns the total capacity
 func (em *ExecutableMemory) Capacity() int {
 	return len(em.buffer)
+}
+
+// GetBounds returns the start and end addresses of the executable memory region
+func (em *ExecutableMemory) GetBounds() (start, end uintptr) {
+	if len(em.buffer) == 0 {
+		return 0, 0
+	}
+	start = em.BaseAddress()
+	end = start + uintptr(len(em.buffer))
+	return
+}
+
+// GetBytes returns a copy of the bytes at the given address
+func (em *ExecutableMemory) GetBytes(addr uintptr, size int) []byte {
+	offset := int(addr - em.BaseAddress())
+	if offset < 0 || offset+size > len(em.buffer) {
+		return nil
+	}
+	result := make([]byte, size)
+	copy(result, em.buffer[offset:offset+size])
+	return result
 }

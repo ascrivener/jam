@@ -1445,7 +1445,10 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			registers[i] = types.Register(serializer.DecodeLittleEndian(registersData[i*8 : i*8+8]))
 		}
 
-		pvm := NewPVM(targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
+		pvm, err := NewPVM(targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
+		if err != nil {
+			return ExitReason{}, err
+		}
 		if pvm == nil {
 			ctx.State.Registers[7] = types.Register(InnerPanic)
 			return ExitReasonGo, nil

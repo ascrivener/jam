@@ -653,6 +653,11 @@ func (a *Assembler) JsNear(rel32 int32) {
 	a.emitInt32(rel32)
 }
 
+func (a *Assembler) JnsNear(rel32 int32) {
+	a.emit(0x0F, 0x89)
+	a.emitInt32(rel32)
+}
+
 // JmpRel32: jmp rel32
 func (a *Assembler) JmpRel32(rel32 int32) {
 	a.emit(0xE9)
@@ -949,4 +954,9 @@ func (a *Assembler) Cmovle(dst, src Reg) { // cmovle dst, src (move if less/equa
 func (a *Assembler) MulHi(dst, src Reg) {
 	// Alternative using regular mul: mul src puts high bits in RDX, low in RAX
 	a.emit(rexW(0, src), 0xF7, modRM(0xC0, 4, src))
+}
+
+// Syscall: syscall instruction
+func (a *Assembler) Syscall() {
+	a.emit(0x0F, 0x05)
 }

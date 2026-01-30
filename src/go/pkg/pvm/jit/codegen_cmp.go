@@ -7,8 +7,8 @@ import "jam/pkg/types"
 func (c *Compiler) emitSetLtImm(opcode byte, ra, rb int, vx types.Register) {
 	src := c.getPvmReg(rb, ScratchReg1)
 	c.asm.MovRegImm64(ScratchReg2, uint64(vx))
+	c.asm.XorRegReg(ScratchReg3, ScratchReg3) // Zero before compare (XOR clobbers flags)
 	c.asm.CmpRegReg(src, ScratchReg2)
-	c.asm.XorRegReg(ScratchReg3, ScratchReg3)
 	if opcode == 136 { // set_lt_u_imm
 		c.asm.Setb(ScratchReg3)
 	} else { // set_lt_s_imm (137)
@@ -21,8 +21,8 @@ func (c *Compiler) emitSetLtImm(opcode byte, ra, rb int, vx types.Register) {
 func (c *Compiler) emitSetGtImm(opcode byte, ra, rb int, vx types.Register) {
 	src := c.getPvmReg(rb, ScratchReg1)
 	c.asm.MovRegImm64(ScratchReg2, uint64(vx))
+	c.asm.XorRegReg(ScratchReg3, ScratchReg3) // Zero before compare (XOR clobbers flags)
 	c.asm.CmpRegReg(src, ScratchReg2)
-	c.asm.XorRegReg(ScratchReg3, ScratchReg3)
 	if opcode == 142 { // set_gt_u_imm
 		c.asm.Seta(ScratchReg3)
 	} else { // set_gt_s_imm (143)
@@ -35,8 +35,8 @@ func (c *Compiler) emitSetGtImm(opcode byte, ra, rb int, vx types.Register) {
 func (c *Compiler) emitSetLt(opcode byte, rd, ra, rb int) {
 	srcA := c.getPvmReg(ra, ScratchReg1)
 	srcB := c.getPvmReg(rb, ScratchReg2)
+	c.asm.XorRegReg(ScratchReg3, ScratchReg3) // Zero before compare (XOR clobbers flags)
 	c.asm.CmpRegReg(srcA, srcB)
-	c.asm.XorRegReg(ScratchReg3, ScratchReg3)
 	if opcode == 216 { // set_lt_u
 		c.asm.Setb(ScratchReg3)
 	} else { // set_lt_s (217)
