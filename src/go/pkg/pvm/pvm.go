@@ -151,10 +151,14 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		PvmICToParsedInstruction: parsedInstructions,
 	}
 
-	// Compile for JIT execution
-	jitContext, err := pvm.CompileForJIT()
-	if err != nil {
-		return nil, err
+	// Compile for JIT execution only if in JIT mode
+	var jitContext *jit.ProgramContext
+	if GetExecutionMode() == ModeJIT {
+		var err error
+		jitContext, err = pvm.CompileForJIT()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Cache the result including JIT blocks and context
