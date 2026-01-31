@@ -219,7 +219,7 @@
             "showLog": true,
             "env": {
                 "GODEBUG": "gctrace=1",
-                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/test-vectors/traces",
+                "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/fuzz-reports/0.7.2/traces",
                 "USE_SOCKET": "false",
                 "PVM_MODE": "interpreter",
             }

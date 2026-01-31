@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"jam/pkg/bitsequence"
 	"jam/pkg/pvm/jit"
-	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
-	"reflect"
 	"strings"
 	"sync"
 )
@@ -23,25 +21,6 @@ var (
 	programCache   = make(map[[32]byte]*cachedProgram)
 	programCacheMu sync.RWMutex
 )
-
-// extractFaultAddress attempts to extract the faulting address from a runtime error
-// The runtime.errorAddressString type has an unexported "addr" field we access via reflection
-func extractFaultAddress(err error) uintptr {
-	v := reflect.ValueOf(err)
-	// Handle pointer types
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	// Look for "addr" field in the struct
-	if v.Kind() == reflect.Struct {
-		addrField := v.FieldByName("addr")
-		if addrField.IsValid() && addrField.CanUint() {
-			addr := uintptr(addrField.Uint())
-			return addr
-		}
-	}
-	return 0
-}
 
 type ParsedInstruction struct {
 	PC          types.Register
@@ -60,7 +39,7 @@ type PVM struct {
 	JITContext               *jit.ProgramContext
 }
 
-func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
+func NewPVM(programBlob []byte, registers [13]types.Register, ram *RAM, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	hash := sha256.Sum256(programBlob)
 
 	programCacheMu.RLock()
@@ -173,7 +152,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	return pvm, nil
 }
 
-func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
+func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
 		return nil, nil
@@ -181,7 +160,7 @@ func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructio
 	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
 
-func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]types.Register, r *ram.RAM, ok bool) {
+func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, regs [13]types.Register, r *RAM, ok bool) {
 	offset := 0
 
 	if offset+3 > len(p) {
@@ -229,16 +208,16 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	}
 	c = p[offset : offset+int(L_c)]
 
-	if 5*ram.MajorZoneSize+ram.TotalSizeNeededMajorZones(L_o)+ram.TotalSizeNeededMajorZones(L_w+z*ram.PageSize)+ram.TotalSizeNeededMajorZones(int(s))+ram.ArgumentsZoneSize > ram.RamSize {
+	if 5*MajorZoneSize+TotalSizeNeededMajorZones(L_o)+TotalSizeNeededMajorZones(L_w+z*PageSize)+TotalSizeNeededMajorZones(int(s))+ArgumentsZoneSize > RamSize {
 		return nil, regs, nil, false
 	}
 
-	regs[0] = ram.RamSize - ram.MajorZoneSize
-	regs[1] = ram.RamSize - 2*ram.MajorZoneSize - ram.ArgumentsZoneSize
-	regs[7] = ram.RamSize - ram.MajorZoneSize - ram.ArgumentsZoneSize
+	regs[0] = RamSize - MajorZoneSize
+	regs[1] = RamSize - 2*MajorZoneSize - ArgumentsZoneSize
+	regs[7] = RamSize - MajorZoneSize - ArgumentsZoneSize
 	regs[8] = types.Register(len(arguments))
 
-	return c, regs, ram.NewRAM(o, w, arguments, z, s, GetExecutionMode() == ModeJIT), true
+	return c, regs, NewRAM(o, w, arguments, z, s, GetExecutionMode() == ModeJIT), true
 }
 
 func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, ok bool) {
@@ -284,7 +263,7 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
+func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
 	pvm, err := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
 	if err != nil {
 		return types.ExecutionExitReason{}, 0, err
@@ -338,7 +317,7 @@ func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exit
 					} else if strings.Contains(errStr, "write access violation") {
 						fmt.Sscanf(errStr, "write access violation at 0x%x", &addr)
 					}
-					if addr < uint64(ram.MinValidRamIndex) {
+					if addr < uint64(MinValidRamIndex) {
 						exitReason = ExitReasonPanic
 					} else {
 						parameter := types.Register(addr) // addr is already page-aligned
@@ -346,23 +325,6 @@ func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exit
 					}
 					pvm.InstructionCounter = 0
 					return
-				}
-			}
-			// Fallback: try to extract faulting address from runtime error (for JIT or unexpected faults)
-			if e, ok := r.(error); ok {
-				addr := extractFaultAddress(e)
-				if addr != 0 {
-					ramIdx := pvm.State.RAM.AddressToIndex(addr)
-					if ramIdx != nil {
-						if *ramIdx < ram.MinValidRamIndex {
-							exitReason = ExitReasonPanic
-						} else {
-							parameter := types.Register(ram.PageSize * (*ramIdx / ram.PageSize))
-							exitReason = NewComplexExitReason(ExitPageFault, parameter)
-						}
-						pvm.InstructionCounter = 0
-						return
-					}
 				}
 			}
 			// Can't determine the address - this is unexpected, return error

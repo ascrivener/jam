@@ -6,7 +6,6 @@ import (
 
 	"jam/pkg/constants"
 	"jam/pkg/historicallookup"
-	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
@@ -40,7 +39,7 @@ func IsAuthorized(workpackage wp.WorkPackage, core types.CoreIndex) (types.Execu
 
 type IntegratedPVM struct {
 	ProgramCode        []byte
-	RAM                *ram.RAM
+	RAM                *RAM
 	InstructionCounter types.Register
 }
 

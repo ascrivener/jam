@@ -1,8 +1,9 @@
-package ram
+package pvm
 
 import (
 	"fmt"
 	"jam/pkg/constants"
+	"jam/pkg/types"
 	"runtime/debug"
 	"unsafe"
 
@@ -205,19 +206,22 @@ func NewRAM(readData, writeData, arguments []byte, z, stackSize int, hardwarePro
 }
 
 // Inspect returns a byte at the given index (software permission check + hardware protection)
-func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) byte {
+func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) (byte, ExitReason) {
 	if mode == Wrap {
 		index = index % RamSize
 	}
 	if faultAddr := r.checkReadPermission(index, 1); faultAddr != 0 {
-		panic(fmt.Sprintf("read access violation at 0x%x", faultAddr))
+		if faultAddr < uint64(MinValidRamIndex) {
+			return 0, ExitReasonPanic
+		}
+		return 0, NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
 	}
-	return r.buffer[index]
+	return r.buffer[index], ExitReasonGo
 }
 
 // InspectRange returns a copy of bytes from the buffer (software permission check)
 // Returns a NEW slice (not a view into the buffer) to avoid mprotect issues
-func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
+func (r *RAM) InspectRangeHF(index, length uint64, mode MemoryAccessMode) []byte {
 	if length == 0 {
 		return []byte{}
 	}
@@ -225,6 +229,25 @@ func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 		index = index % RamSize
 	}
 	return r.buffer[index : index+length]
+}
+
+func (r *RAM) InspectRange(index, length uint64) ([]byte, ExitReason) {
+	if faultAddr := r.checkReadPermission(index, length); faultAddr != 0 {
+		if faultAddr < uint64(MinValidRamIndex) {
+			return nil, ExitReasonPanic
+		}
+		return nil, NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
+	}
+	return r.InspectRangeHF(index, length, Wrap), ExitReasonGo
+}
+
+// InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
+// Returns nil if a segmentation fault occurs (accessing protected memory)
+func (r *RAM) InspectRangeSafe(index, length uint64) (result []byte) {
+	if !r.CanRead(index, length) {
+		return nil
+	}
+	return r.InspectRangeHF(index, length, NoWrap)
 }
 
 // CanRead checks if a memory range is readable
@@ -275,28 +298,23 @@ func (r *RAM) CanWrite(index, length uint64) (ok bool) {
 	return r.checkWritePermission(index, length) == 0
 }
 
-// InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
-// Returns nil if a segmentation fault occurs (accessing protected memory)
-func (r *RAM) InspectRangeSafe(index, length uint64) (result []byte) {
-	if !r.CanRead(index, length) {
-		return nil
-	}
-	return r.InspectRange(index, length, NoWrap)
-}
-
 // Mutate writes a single byte (software permission check + hardware protection)
-func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) {
+func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) ExitReason {
 	if mode == Wrap {
 		index = index % RamSize
 	}
 	if faultAddr := r.checkWritePermission(index, 1); faultAddr != 0 {
-		panic(fmt.Sprintf("write access violation at 0x%x", faultAddr))
+		if faultAddr < uint64(MinValidRamIndex) {
+			return ExitReasonPanic
+		}
+		return NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
 	}
 	r.buffer[index] = newByte
+	return ExitReasonGo
 }
 
 // MutateRange writes bytes via callback (software permission check + hardware protection)
-func (r *RAM) MutateRange(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
+func (r *RAM) MutateRangeHF(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
 	if length == 0 {
 		return
 	}
@@ -308,11 +326,24 @@ func (r *RAM) MutateRange(index, length uint64, mode MemoryAccessMode, fn func([
 
 // MutateRangeSafe writes bytes via callback with panic recovery (hardware protection enforced)
 // Returns false if a segmentation fault occurs (accessing protected memory)
+func (r *RAM) MutateRange(index, length uint64, fn func([]byte)) ExitReason {
+	if faultAddr := r.checkWritePermission(index, length); faultAddr != 0 {
+		if faultAddr < uint64(MinValidRamIndex) {
+			return ExitReasonPanic
+		}
+		return NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
+	}
+	r.MutateRangeHF(index, length, Wrap, fn)
+	return ExitReasonGo
+}
+
+// MutateRangeSafe writes bytes via callback with panic recovery (hardware protection enforced)
+// Returns false if a segmentation fault occurs (accessing protected memory)
 func (r *RAM) MutateRangeSafe(index, length uint64, fn func([]byte)) (ok bool) {
 	if !r.CanWrite(index, length) {
 		return false
 	}
-	r.MutateRange(index, length, NoWrap, fn)
+	r.MutateRangeHF(index, length, NoWrap, fn)
 	return true
 }
 
