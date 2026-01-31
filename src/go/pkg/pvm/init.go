@@ -1,6 +1,7 @@
 package pvm
 
 func init() {
+
 	dispatchTable = [256]*InstructionInfo{
 		0:   {Handler: handleTrap, ExtractOperands: extractTrap},
 		1:   {Handler: handleFallthrough, ExtractOperands: extractFallthrough},

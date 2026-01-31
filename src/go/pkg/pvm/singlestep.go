@@ -5,14 +5,13 @@ import (
 	"math/bits"
 
 	"jam/pkg/constants"
-	"jam/pkg/ram"
 	"jam/pkg/types"
 )
 
 type State struct {
 	Gas       types.SignedGasValue
 	Registers [13]types.Register
-	RAM       *ram.RAM
+	RAM       *RAM
 }
 
 type InstructionHandler func(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register)

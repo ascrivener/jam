@@ -4,41 +4,22 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"jam/pkg/bitsequence"
-	"jam/pkg/ram"
+	"jam/pkg/pvm/jit"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
-	"reflect"
 	"sync"
 )
 
 type cachedProgram struct {
 	dynamicJumpTable   []types.Register
 	parsedInstructions []*ParsedInstruction
+	jitContext         *jit.ProgramContext
 }
 
 var (
 	programCache   = make(map[[32]byte]*cachedProgram)
 	programCacheMu sync.RWMutex
 )
-
-// extractFaultAddress attempts to extract the faulting address from a runtime error
-// The runtime.errorAddressString type has an unexported "addr" field we access via reflection
-func extractFaultAddress(err error) uintptr {
-	v := reflect.ValueOf(err)
-	// Handle pointer types
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	// Look for "addr" field in the struct
-	if v.Kind() == reflect.Struct {
-		addrField := v.FieldByName("addr")
-		if addrField.IsValid() && addrField.CanUint() {
-			addr := uintptr(addrField.Uint())
-			return addr
-		}
-	}
-	return 0
-}
 
 type ParsedInstruction struct {
 	PC          types.Register
@@ -54,9 +35,10 @@ type PVM struct {
 	DynamicJumpTable         []types.Register
 	State                    *State
 	PvmICToParsedInstruction []*ParsedInstruction
+	JITContext               *jit.ProgramContext
 }
 
-func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, instructionCounter types.Register, gas types.GasValue) *PVM {
+func NewPVM(programBlob []byte, registers [13]types.Register, ram *RAM, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	hash := sha256.Sum256(programBlob)
 
 	programCacheMu.RLock()
@@ -64,7 +46,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 	programCacheMu.RUnlock()
 
 	if ok {
-		return &PVM{
+		pvm := &PVM{
 			InstructionCounter: instructionCounter,
 			DynamicJumpTable:   cached.dynamicJumpTable,
 			State: &State{
@@ -73,16 +55,18 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 				RAM:       ram,
 			},
 			PvmICToParsedInstruction: cached.parsedInstructions,
+			JITContext:               cached.jitContext, // Reuse cached JIT context for trampolines
 		}
+		return pvm, nil
 	}
 
 	instructions, opcodes, dynamicJumpTable, deblobOk := Deblob(programBlob)
 	if !deblobOk {
-		return nil
+		return nil, nil
 	}
 
 	if len(instructions) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	parsedInstructions := make([]*ParsedInstruction, len(instructions))
@@ -134,15 +118,7 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		pc = nextPC
 	}
 
-	// Cache the result
-	programCacheMu.Lock()
-	programCache[hash] = &cachedProgram{
-		dynamicJumpTable:   dynamicJumpTable,
-		parsedInstructions: parsedInstructions,
-	}
-	programCacheMu.Unlock()
-
-	return &PVM{
+	pvm := &PVM{
 		InstructionCounter: instructionCounter,
 		DynamicJumpTable:   dynamicJumpTable,
 		State: &State{
@@ -152,17 +128,38 @@ func NewPVM(programBlob []byte, registers [13]types.Register, ram *ram.RAM, inst
 		},
 		PvmICToParsedInstruction: parsedInstructions,
 	}
+
+	// Compile for JIT execution only if in JIT mode
+	var jitContext *jit.ProgramContext
+	if GetExecutionMode() == ModeJIT {
+		var err error
+		jitContext, err = pvm.CompileForJIT()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Cache the result including JIT blocks and context
+	programCacheMu.Lock()
+	programCache[hash] = &cachedProgram{
+		dynamicJumpTable:   dynamicJumpTable,
+		parsedInstructions: parsedInstructions,
+		jitContext:         jitContext,
+	}
+	programCacheMu.Unlock()
+
+	return pvm, nil
 }
 
-func InitializePVM(programCodeFormat []byte, arguments ram.Arguments, instructionCounter types.Register, gas types.GasValue) *PVM {
+func InitializePVM(programCodeFormat []byte, arguments Arguments, instructionCounter types.Register, gas types.GasValue) (*PVM, error) {
 	programBlob, registers, ram, ok := decodeProgramCodeFormat(programCodeFormat, arguments)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	return NewPVM(programBlob, registers, ram, instructionCounter, gas)
 }
 
-func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs [13]types.Register, r *ram.RAM, ok bool) {
+func decodeProgramCodeFormat(p []byte, arguments Arguments) (c []byte, regs [13]types.Register, r *RAM, ok bool) {
 	offset := 0
 
 	if offset+3 > len(p) {
@@ -210,16 +207,16 @@ func decodeProgramCodeFormat(p []byte, arguments ram.Arguments) (c []byte, regs 
 	}
 	c = p[offset : offset+int(L_c)]
 
-	if 5*ram.MajorZoneSize+ram.TotalSizeNeededMajorZones(L_o)+ram.TotalSizeNeededMajorZones(L_w+z*ram.PageSize)+ram.TotalSizeNeededMajorZones(int(s))+ram.ArgumentsZoneSize > ram.RamSize {
+	if 5*MajorZoneSize+TotalSizeNeededMajorZones(L_o)+TotalSizeNeededMajorZones(L_w+z*PageSize)+TotalSizeNeededMajorZones(int(s))+ArgumentsZoneSize > RamSize {
 		return nil, regs, nil, false
 	}
 
-	regs[0] = ram.RamSize - ram.MajorZoneSize
-	regs[1] = ram.RamSize - 2*ram.MajorZoneSize - ram.ArgumentsZoneSize
-	regs[7] = ram.RamSize - ram.MajorZoneSize - ram.ArgumentsZoneSize
+	regs[0] = RamSize - MajorZoneSize
+	regs[1] = RamSize - 2*MajorZoneSize - ArgumentsZoneSize
+	regs[7] = RamSize - MajorZoneSize - ArgumentsZoneSize
 	regs[8] = types.Register(len(arguments))
 
-	return c, regs, ram.NewRAM(o, w, arguments, z, s), true
+	return c, regs, NewRAM(o, w, arguments, z, s, GetExecutionMode() == ModeJIT), true
 }
 
 func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, ok bool) {
@@ -265,8 +262,11 @@ func Deblob(p []byte) (c []byte, k bitsequence.BitSequence, j []types.Register, 
 	return c, k, jArr, true
 }
 
-func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments ram.Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
-	pvm := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
+func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Register, gas types.GasValue, arguments Arguments, f HostFunction[X], x *X) (types.ExecutionExitReason, types.GasValue, error) {
+	pvm, err := InitializePVM(programCodeFormat, arguments, instructionCounter, gas)
+	if err != nil {
+		return types.ExecutionExitReason{}, 0, err
+	}
 	if pvm == nil {
 		return types.NewExecutionExitReasonError(types.ExecutionErrorPanic), 0, nil
 	}
@@ -297,31 +297,14 @@ func RunWithArgs[X any](programCodeFormat []byte, instructionCounter types.Regis
 }
 
 func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			// Memory fault likely occurred - try to extract faulting address
-			if e, ok := r.(error); ok {
-				addr := extractFaultAddress(e)
-				if addr != 0 {
-					ramIdx := pvm.State.RAM.AddressToIndex(addr)
-					if ramIdx != nil {
-						if *ramIdx < ram.MinValidRamIndex {
-							exitReason = ExitReasonPanic
-						} else {
-							parameter := types.Register(ram.PageSize * (*ramIdx / ram.PageSize))
-							exitReason = NewComplexExitReason(ExitPageFault, parameter)
-						}
-						pvm.InstructionCounter = 0
-						return
-					}
-				}
-			}
-			// Can't determine the address - this is unexpected, return error
-			err = fmt.Errorf("unexpected panic in PVM execution: %v", r)
-			exitReason = ExitReason{}
-		}
-	}()
+	// Use JIT execution if available
+	if GetExecutionMode() == ModeJIT {
+		return RunJIT(pvm, hostFunc, hostArg)
+	}
+	return runInterpreter(pvm, hostFunc, hostArg)
+}
 
+func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
 	for {
 		exitReason = pvm.executeInstruction()
 		if exitReason == ExitReasonGo {

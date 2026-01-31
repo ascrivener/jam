@@ -297,7 +297,7 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
 		testName := filepath.Base(testDir)
-		// if !strings.Contains(testName, "1768864701") {
+		// if !strings.Contains(testName, "1768067359_9734") {
 		// 	continue
 		// }
 		t.Run(testName, func(t *testing.T) {
@@ -414,7 +414,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 	var longestDuration time.Duration
 	var longestTestFile string
 
-	// // Start profiling before processing test vectors
+	// Start profiling before processing test vectors
 	// startProfiling := fuzzinterface.StartProfiling{}
 	// _, err = fc.sendAndReceive(fuzzinterface.RequestMessage{StartProfiling: &startProfiling})
 	// if err != nil {
@@ -525,7 +525,7 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		}
 	}
 
-	// // Stop profiling after processing all test vectors
+	// Stop profiling after processing all test vectors
 	// stopProfiling := fuzzinterface.StopProfiling{}
 	// stopResp, err := fc.sendAndReceive(fuzzinterface.RequestMessage{StopProfiling: &stopProfiling})
 	// if err != nil {

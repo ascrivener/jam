@@ -2,7 +2,6 @@ package pvm
 
 import (
 	"bytes"
-	"runtime/debug"
 	"sort"
 	"sync"
 
@@ -118,7 +117,6 @@ func ParallelizedAccumulation(tx *staterepository.TrackedTx, accumulationStateCo
 		wg.Add(1)
 		go func(sIndex types.ServiceIndex) {
 			defer wg.Done()
-			debug.SetPanicOnFault(true) // Enable recoverable memory faults for this goroutine
 
 			// Create child transaction for this goroutine
 			childTx := tx.CreateChild()

@@ -50,3 +50,4 @@ GOAMD64=v3 CGO_ENABLED=1 \
 
 echo -e "${GREEN}Build completed successfully!${NC}"
 echo -e "${BLUE}Binary: ${PROJECT_ROOT}/bin/jamzilla-tiny${NC}"
+echo -e "${BLUE}Default mode: interpreter (use PVM_MODE=jit for JIT recompiler)${NC}"

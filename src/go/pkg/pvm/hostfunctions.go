@@ -7,7 +7,6 @@ import (
 
 	"jam/pkg/constants"
 	"jam/pkg/historicallookup"
-	"jam/pkg/ram"
 	"jam/pkg/serializer"
 	"jam/pkg/serviceaccount"
 	"jam/pkg/staterepository"
@@ -1278,7 +1277,7 @@ func Machine(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitRea
 			}
 			n++
 		}
-		u := ram.NewEmptyRAM()
+		u := NewEmptyRAM(GetExecutionMode() == ModeJIT)
 		ctx.State.Registers[7] = types.Register(n)
 		ctx.Argument.IntegratedPVMs[n] = IntegratedPVM{
 			ProgramCode:        p,
@@ -1316,7 +1315,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		}
 
 		// Copy the memory
-		ctx.State.RAM.MutateRange(uint64(o), uint64(z), ram.NoWrap, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(o), uint64(z), NoWrap, func(dest []byte) {
 			copy(dest, data)
 		})
 
@@ -1342,15 +1341,15 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 		}
 
 		// Check for invalid memory range
-		if r > 4 || p < 16 || p+c >= (1<<32)/ram.PageSize {
+		if r > 4 || p < 16 || p+c >= (1<<32)/PageSize {
 			ctx.State.Registers[7] = types.Register(HostCallHuh)
 			return ExitReasonGo, nil
 		}
 
 		if r > 2 {
 			// Check accessibility of the entire page range
-			startOffset := uint64(p) * ram.PageSize
-			totalLength := uint64(c) * ram.PageSize
+			startOffset := uint64(p) * PageSize
+			totalLength := uint64(c) * PageSize
 			if !targetPVM.RAM.CanRead(startOffset, totalLength) {
 				ctx.State.Registers[7] = types.Register(HostCallHuh)
 				return ExitReasonGo, nil
@@ -1363,8 +1362,8 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 			}
 		}
 
-		indexStart := uint64(p * ram.PageSize)
-		indexEnd := indexStart + uint64(c*ram.PageSize)
+		indexStart := uint64(p * PageSize)
+		indexEnd := indexStart + uint64(c*PageSize)
 
 		switch r {
 		case 0:
@@ -1373,10 +1372,10 @@ func Pages(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReaso
 			}
 		case 1:
 		case 3:
-			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, ram.Immutable, ram.NoWrap)
+			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, Immutable, NoWrap)
 		case 2:
 		case 4:
-			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, ram.Mutable, ram.NoWrap)
+			targetPVM.RAM.MutateAccessRange(indexStart, indexEnd, Mutable, NoWrap)
 		}
 
 		// Set result to OK
@@ -1429,8 +1428,8 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			return ExitReasonPanic, nil
 		}
 
-		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, ram.NoWrap)
-		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, ram.NoWrap)
+		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, NoWrap)
+		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, NoWrap)
 
 		// Check if integrated PVM exists
 		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
@@ -1445,7 +1444,10 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			registers[i] = types.Register(serializer.DecodeLittleEndian(registersData[i*8 : i*8+8]))
 		}
 
-		pvm := NewPVM(targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
+		pvm, err := NewPVM(targetPVM.ProgramCode, registers, targetPVM.RAM, targetPVM.InstructionCounter, gas)
+		if err != nil {
+			return ExitReason{}, err
+		}
 		if pvm == nil {
 			ctx.State.Registers[7] = types.Register(InnerPanic)
 			return ExitReasonGo, nil
@@ -1456,12 +1458,12 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 		}
 
 		// Update memory with new gas and registers
-		ctx.State.RAM.MutateRange(uint64(o), 8, ram.NoWrap, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(o), 8, NoWrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Gas))
 		})
 
 		for i := range 13 {
-			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, ram.NoWrap, func(dest []byte) {
+			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, NoWrap, func(dest []byte) {
 				binary.LittleEndian.PutUint64(dest, uint64(ctx.State.Registers[i]))
 			})
 		}
@@ -1576,7 +1578,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 			ctx.State.Registers[7] = types.Register(len(preImage))
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), uint64(l), ram.NoWrap, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), uint64(l), NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}
@@ -1644,7 +1646,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRange(uint64(o), uint64(l), ram.NoWrap, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), uint64(l), NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}
