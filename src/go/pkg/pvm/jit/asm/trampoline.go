@@ -1,3 +1,5 @@
+//go:build linux && amd64
+
 // Package asm provides pure Go assembly routines for JIT execution.
 // This is a separate package to avoid mixing cgo and Go assembly.
 package asm
