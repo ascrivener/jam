@@ -46,26 +46,31 @@ func extractLoadImm64(instructions []byte, pc int, skipLength int) (ra, rb, rd i
 }
 
 func handleTwoImmValues(pvm *PVM, instruction ParsedInstruction) (ExitReason, types.Register) {
+	exitReason := ExitReasonGo
+	nextPC := pvm.nextInstructionCounter(instruction.SkipLength)
 	// Use the opcode from the instruction parameter
 	switch instruction.Opcode {
 	case 30: // store_imm_u8
-		pvm.State.RAM.Mutate(uint64(instruction.Vx), byte(instruction.Vy), Wrap)
+		exitReason = pvm.State.RAM.Mutate(uint64(instruction.Vx), byte(instruction.Vy), Wrap)
 	case 31: // store_imm_u16
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 2, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(instruction.Vy))
 		})
 	case 32: // store_imm_u32
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 4, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(instruction.Vy))
 		})
 	case 33: // store_imm_u64
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 8, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(instruction.Vy))
 		})
 	default:
 		panic(fmt.Sprintf("handleStoreImmGroup: unexpected opcode %d", instruction.Opcode))
 	}
-	return ExitReasonGo, pvm.nextInstructionCounter(instruction.SkipLength)
+	if exitReason != ExitReasonGo {
+		nextPC = pvm.InstructionCounter
+	}
+	return exitReason, nextPC
 }
 
 func extractTwoImmValues(instructions []byte, pc int, skipLength int) (ra, rb, rd int, vx, vy types.Register) {
@@ -98,67 +103,45 @@ func handleOneRegOneImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	case 51: // load_imm
 		pvm.State.Registers[instruction.Ra] = instruction.Vx
 	case 52: // load_u8
-		value, er := pvm.State.RAM.Inspect(uint64(instruction.Vx), Wrap)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		} else {
-			pvm.State.Registers[instruction.Ra] = types.Register(value)
-		}
+		var value byte
+		value, exitReason = pvm.State.RAM.Inspect(uint64(instruction.Vx), Wrap)
+		pvm.State.Registers[instruction.Ra] = types.Register(value)
 	case 53: // load_i8
-		value, er := pvm.State.RAM.Inspect(uint64(instruction.Vx), Wrap)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var value byte
+		value, exitReason = pvm.State.RAM.Inspect(uint64(instruction.Vx), Wrap)
 		pvm.State.Registers[instruction.Ra] = types.Register(int8(value))
 	case 54: // load_u16
-		data, er := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var data []byte
+		data, exitReason = pvm.State.RAM.InspectRangeInterpreter(uint64(instruction.Vx), 2)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(data))
 	case 55: // load_i16
-		data, er := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 2)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var data []byte
+		data, exitReason = pvm.State.RAM.InspectRangeInterpreter(uint64(instruction.Vx), 2)
 		pvm.State.Registers[instruction.Ra] = types.Register(int16(binary.LittleEndian.Uint16(data)))
 	case 56: // load_u32
-		data, er := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var data []byte
+		data, exitReason = pvm.State.RAM.InspectRangeInterpreter(uint64(instruction.Vx), 4)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(data))
 	case 57: // load_i32
-		data, er := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 4)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var data []byte
+		data, exitReason = pvm.State.RAM.InspectRangeInterpreter(uint64(instruction.Vx), 4)
 		pvm.State.Registers[instruction.Ra] = types.Register(int32(binary.LittleEndian.Uint32(data)))
 	case 58: // load_u64
-		data, er := pvm.State.RAM.InspectRange(uint64(instruction.Vx), 8)
-		if er != ExitReasonGo {
-			exitReason = er
-			nextPC = pvm.InstructionCounter
-		}
+		var data []byte
+		data, exitReason = pvm.State.RAM.InspectRangeInterpreter(uint64(instruction.Vx), 8)
 		pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint64(data))
 	case 59: // store_u8
-		pvm.State.RAM.Mutate(uint64(instruction.Vx), uint8(pvm.State.Registers[instruction.Ra]), Wrap)
+		exitReason = pvm.State.RAM.Mutate(uint64(instruction.Vx), uint8(pvm.State.Registers[instruction.Ra]), Wrap)
 	case 60: // store_u16
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 2, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 2, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[instruction.Ra]))
 		})
 	case 61: // store_u32
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 4, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 4, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[instruction.Ra]))
 		})
 	case 62: // store_u64
-		pvm.State.RAM.MutateRange(uint64(instruction.Vx), 8, func(dest []byte) {
+		exitReason = pvm.State.RAM.MutateRangeInterpreter(uint64(instruction.Vx), 8, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 		})
 	default:
@@ -189,15 +172,15 @@ func handleOneRegTwoImm(pvm *PVM, instruction ParsedInstruction) (ExitReason, ty
 	case 70: // store_imm_ind_u8
 		pvm.State.RAM.Mutate(uint64(addr), byte(instruction.Vy), Wrap)
 	case 71: // store_imm_ind_u16
-		pvm.State.RAM.MutateRange(uint64(addr), 2, func(dest []byte) {
+		pvm.State.RAM.MutateRangeInterpreter(uint64(addr), 2, func(dest []byte) {
 			binary.LittleEndian.PutUint16(dest, uint16(instruction.Vy))
 		})
 	case 72: // store_imm_ind_u32
-		pvm.State.RAM.MutateRange(uint64(addr), 4, func(dest []byte) {
+		pvm.State.RAM.MutateRangeInterpreter(uint64(addr), 4, func(dest []byte) {
 			binary.LittleEndian.PutUint32(dest, uint32(instruction.Vy))
 		})
 	case 73: // store_imm_ind_u64
-		pvm.State.RAM.MutateRange(uint64(addr), 8, func(dest []byte) {
+		pvm.State.RAM.MutateRangeInterpreter(uint64(addr), 8, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(instruction.Vy))
 		})
 	default:
@@ -668,20 +651,20 @@ func handleStoreIndU8(pvm *PVM, instruction ParsedInstruction) ExitReason {
 }
 
 func handleStoreIndU16(pvm *PVM, instruction ParsedInstruction) ExitReason {
-	return pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, func(dest []byte) {
+	return pvm.State.RAM.MutateRangeInterpreter(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 2, func(dest []byte) {
 		binary.LittleEndian.PutUint16(dest, uint16(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
 func handleStoreIndU32(pvm *PVM, instruction ParsedInstruction) ExitReason {
-	return pvm.State.RAM.MutateRange(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, func(dest []byte) {
+	return pvm.State.RAM.MutateRangeInterpreter(uint64(pvm.State.Registers[instruction.Rb]+types.Register(instruction.Vx)), 4, func(dest []byte) {
 		binary.LittleEndian.PutUint32(dest, uint32(pvm.State.Registers[instruction.Ra]))
 	})
 }
 
 func handleStoreIndU64(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	return pvm.State.RAM.MutateRange(addr, 8, func(dest []byte) {
+	return pvm.State.RAM.MutateRangeInterpreter(addr, 8, func(dest []byte) {
 		binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Registers[instruction.Ra]))
 	})
 }
@@ -702,35 +685,35 @@ func handleLoadIndI8(pvm *PVM, instruction ParsedInstruction) ExitReason {
 
 func handleLoadIndU16(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value, err := pvm.State.RAM.InspectRange(addr, 2)
+	value, err := pvm.State.RAM.InspectRangeInterpreter(addr, 2)
 	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint16(value))
 	return err
 }
 
 func handleLoadIndI16(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value, err := pvm.State.RAM.InspectRange(addr, 2)
+	value, err := pvm.State.RAM.InspectRangeInterpreter(addr, 2)
 	pvm.State.Registers[instruction.Ra] = types.Register(int16(binary.LittleEndian.Uint16(value)))
 	return err
 }
 
 func handleLoadIndU32(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value, err := pvm.State.RAM.InspectRange(addr, 4)
+	value, err := pvm.State.RAM.InspectRangeInterpreter(addr, 4)
 	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint32(value))
 	return err
 }
 
 func handleLoadIndI32(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value, err := pvm.State.RAM.InspectRange(addr, 4)
+	value, err := pvm.State.RAM.InspectRangeInterpreter(addr, 4)
 	pvm.State.Registers[instruction.Ra] = types.Register(int32(binary.LittleEndian.Uint32(value)))
 	return err
 }
 
 func handleLoadIndU64(pvm *PVM, instruction ParsedInstruction) ExitReason {
 	addr := uint64(pvm.State.Registers[instruction.Rb] + types.Register(instruction.Vx))
-	value, err := pvm.State.RAM.InspectRange(addr, 8)
+	value, err := pvm.State.RAM.InspectRangeInterpreter(addr, 8)
 	pvm.State.Registers[instruction.Ra] = types.Register(binary.LittleEndian.Uint64(value))
 	return err
 }

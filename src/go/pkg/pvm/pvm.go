@@ -7,7 +7,6 @@ import (
 	"jam/pkg/pvm/jit"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
-	"strings"
 	"sync"
 )
 
@@ -306,33 +305,6 @@ func Run[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason Exit
 }
 
 func runInterpreter[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			// Check for software permission violation panic (from RAM access methods)
-			if errStr, ok := r.(string); ok {
-				if strings.Contains(errStr, "access violation at 0x") {
-					var addr uint64
-					if strings.Contains(errStr, "read access violation") {
-						fmt.Sscanf(errStr, "read access violation at 0x%x", &addr)
-					} else if strings.Contains(errStr, "write access violation") {
-						fmt.Sscanf(errStr, "write access violation at 0x%x", &addr)
-					}
-					if addr < uint64(MinValidRamIndex) {
-						exitReason = ExitReasonPanic
-					} else {
-						parameter := types.Register(addr) // addr is already page-aligned
-						exitReason = NewComplexExitReason(ExitPageFault, parameter)
-					}
-					pvm.InstructionCounter = 0
-					return
-				}
-			}
-			// Can't determine the address - this is unexpected, return error
-			err = fmt.Errorf("unexpected panic in PVM execution: %v", r)
-			exitReason = ExitReason{}
-		}
-	}()
-
 	for {
 		exitReason = pvm.executeInstruction()
 		if exitReason == ExitReasonGo {

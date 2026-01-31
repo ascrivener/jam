@@ -1315,7 +1315,7 @@ func Peek(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReason
 		}
 
 		// Copy the memory
-		ctx.State.RAM.MutateRangeHF(uint64(o), uint64(z), NoWrap, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(o), uint64(z), NoWrap, func(dest []byte) {
 			copy(dest, data)
 		})
 
@@ -1428,8 +1428,8 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 			return ExitReasonPanic, nil
 		}
 
-		gasData := ctx.State.RAM.InspectRangeHF(uint64(o), 8, NoWrap)
-		registersData := ctx.State.RAM.InspectRangeHF(uint64(o+8), 112, NoWrap)
+		gasData := ctx.State.RAM.InspectRange(uint64(o), 8, NoWrap)
+		registersData := ctx.State.RAM.InspectRange(uint64(o+8), 112, NoWrap)
 
 		// Check if integrated PVM exists
 		targetPVM, ok := ctx.Argument.IntegratedPVMs[uint64(n)]
@@ -1458,12 +1458,12 @@ func Invoke(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence]) (ExitReas
 		}
 
 		// Update memory with new gas and registers
-		ctx.State.RAM.MutateRangeHF(uint64(o), 8, NoWrap, func(dest []byte) {
+		ctx.State.RAM.MutateRange(uint64(o), 8, NoWrap, func(dest []byte) {
 			binary.LittleEndian.PutUint64(dest, uint64(pvm.State.Gas))
 		})
 
 		for i := range 13 {
-			ctx.State.RAM.MutateRangeHF(uint64(o+8)+uint64(i*8), 8, NoWrap, func(dest []byte) {
+			ctx.State.RAM.MutateRange(uint64(o+8)+uint64(i*8), 8, NoWrap, func(dest []byte) {
 				binary.LittleEndian.PutUint64(dest, uint64(ctx.State.Registers[i]))
 			})
 		}
@@ -1578,7 +1578,7 @@ func Lookup(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, s
 			ctx.State.Registers[7] = types.Register(len(preImage))
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRangeHF(uint64(o), uint64(l), NoWrap, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), uint64(l), NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}
@@ -1646,7 +1646,7 @@ func HistoricalLookup(ctx *HostFunctionContext[IntegratedPVMsAndExportSequence],
 			ctx.State.Registers[7] = types.Register(preImageLen)
 			if l > 0 {
 				slicedData := preImage[int(f):int(f+l)]
-				ctx.State.RAM.MutateRangeHF(uint64(o), uint64(l), NoWrap, func(dest []byte) {
+				ctx.State.RAM.MutateRange(uint64(o), uint64(l), NoWrap, func(dest []byte) {
 					copy(dest, slicedData)
 				})
 			}

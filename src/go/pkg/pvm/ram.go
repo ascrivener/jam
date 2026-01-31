@@ -221,7 +221,7 @@ func (r *RAM) Inspect(index uint64, mode MemoryAccessMode) (byte, ExitReason) {
 
 // InspectRange returns a copy of bytes from the buffer (software permission check)
 // Returns a NEW slice (not a view into the buffer) to avoid mprotect issues
-func (r *RAM) InspectRangeHF(index, length uint64, mode MemoryAccessMode) []byte {
+func (r *RAM) InspectRange(index, length uint64, mode MemoryAccessMode) []byte {
 	if length == 0 {
 		return []byte{}
 	}
@@ -231,14 +231,14 @@ func (r *RAM) InspectRangeHF(index, length uint64, mode MemoryAccessMode) []byte
 	return r.buffer[index : index+length]
 }
 
-func (r *RAM) InspectRange(index, length uint64) ([]byte, ExitReason) {
+func (r *RAM) InspectRangeInterpreter(index, length uint64) ([]byte, ExitReason) {
 	if faultAddr := r.checkReadPermission(index, length); faultAddr != 0 {
 		if faultAddr < uint64(MinValidRamIndex) {
 			return nil, ExitReasonPanic
 		}
 		return nil, NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
 	}
-	return r.InspectRangeHF(index, length, Wrap), ExitReasonGo
+	return r.InspectRange(index, length, Wrap), ExitReasonGo
 }
 
 // InspectRangeSafe returns a slice of bytes with panic recovery (hardware protection enforced)
@@ -247,7 +247,7 @@ func (r *RAM) InspectRangeSafe(index, length uint64) (result []byte) {
 	if !r.CanRead(index, length) {
 		return nil
 	}
-	return r.InspectRangeHF(index, length, NoWrap)
+	return r.InspectRange(index, length, NoWrap)
 }
 
 // CanRead checks if a memory range is readable
@@ -314,7 +314,7 @@ func (r *RAM) Mutate(index uint64, newByte byte, mode MemoryAccessMode) ExitReas
 }
 
 // MutateRange writes bytes via callback (software permission check + hardware protection)
-func (r *RAM) MutateRangeHF(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
+func (r *RAM) MutateRange(index, length uint64, mode MemoryAccessMode, fn func([]byte)) {
 	if length == 0 {
 		return
 	}
@@ -326,14 +326,14 @@ func (r *RAM) MutateRangeHF(index, length uint64, mode MemoryAccessMode, fn func
 
 // MutateRangeSafe writes bytes via callback with panic recovery (hardware protection enforced)
 // Returns false if a segmentation fault occurs (accessing protected memory)
-func (r *RAM) MutateRange(index, length uint64, fn func([]byte)) ExitReason {
+func (r *RAM) MutateRangeInterpreter(index, length uint64, fn func([]byte)) ExitReason {
 	if faultAddr := r.checkWritePermission(index, length); faultAddr != 0 {
 		if faultAddr < uint64(MinValidRamIndex) {
 			return ExitReasonPanic
 		}
 		return NewComplexExitReason(ExitPageFault, types.Register(faultAddr))
 	}
-	r.MutateRangeHF(index, length, Wrap, fn)
+	r.MutateRange(index, length, Wrap, fn)
 	return ExitReasonGo
 }
 
@@ -343,7 +343,7 @@ func (r *RAM) MutateRangeSafe(index, length uint64, fn func([]byte)) (ok bool) {
 	if !r.CanWrite(index, length) {
 		return false
 	}
-	r.MutateRangeHF(index, length, NoWrap, fn)
+	r.MutateRange(index, length, NoWrap, fn)
 	return true
 }
 
