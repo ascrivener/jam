@@ -4,8 +4,6 @@ package jit
 
 import "jam/pkg/types"
 
-// Bit manipulation code generation
-
 func (c *Compiler) emitPopcnt(opcode byte, rd, ra int) {
 	src := c.getPvmReg(ra, ScratchReg1)
 	if opcode == 102 { // popcnt64
@@ -68,8 +66,6 @@ func (c *Compiler) emitBswap(rd, ra int) {
 	c.storePvmReg(rd, ScratchReg2)
 }
 
-// Logical operations
-
 func (c *Compiler) emitAnd(rd, ra, rb int) {
 	srcA := c.getPvmReg(ra, ScratchReg1)
 	srcB := c.getPvmReg(rb, ScratchReg2)
@@ -120,8 +116,6 @@ func (c *Compiler) emitXnor(rd, ra, rb int) {
 	c.asm.NotReg(ScratchReg3)
 	c.storePvmReg(rd, ScratchReg3)
 }
-
-// Immediate logical operations
 
 func (c *Compiler) emitAndImm(ra, rb int, vx types.Register) {
 	src := c.getPvmReg(rb, ScratchReg1)

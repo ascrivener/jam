@@ -4,8 +4,6 @@ package jit
 
 import "jam/pkg/types"
 
-// Memory operation code generation
-
 // emitLoad: load from memory at address vx
 func (c *Compiler) emitLoad(opcode byte, ra int, addr types.Register) {
 	c.asm.MovRegImm64(ScratchReg1, uint64(addr))

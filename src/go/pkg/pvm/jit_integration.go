@@ -18,12 +18,15 @@ const (
 	ModeJIT                              // Fast, production
 )
 
-// GetExecutionMode returns the current execution mode based on environment
+// GetExecutionMode returns the execution mode
 func GetExecutionMode() ExecutionMode {
-	if os.Getenv("PVM_MODE") == "interpreter" {
+	if envMode := os.Getenv("PVM_MODE"); envMode != "" {
+		if envMode == "jit" {
+			return ModeJIT
+		}
 		return ModeInterpreter
 	}
-	return ModeJIT
+	return ModeInterpreter
 }
 
 // convertParsedInstructions converts PVM ParsedInstructions to JIT ParsedInstructions

@@ -4,8 +4,6 @@ package jit
 
 import "jam/pkg/types"
 
-// Arithmetic code generation
-
 // emitArith32: 32-bit arithmetic (add, sub, mul)
 func (c *Compiler) emitArith32(opcode byte, rd, ra, rb int) {
 	srcA := c.getPvmReg(ra, ScratchReg1)

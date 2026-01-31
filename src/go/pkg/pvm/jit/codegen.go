@@ -4,8 +4,6 @@ package jit
 
 import "jam/pkg/types"
 
-// Code generation methods for each PVM instruction
-
 // emitLoadImm64: ra = vx (64-bit immediate)
 func (c *Compiler) emitLoadImm64(ra int, vx types.Register) {
 	c.asm.MovRegImm64(ScratchReg1, uint64(vx))
