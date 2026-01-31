@@ -12,9 +12,10 @@ const (
 	ModeJIT                              // Fast, production (not available on this platform)
 )
 
-// GetExecutionMode returns the current execution mode based on environment
-// On non-Linux platforms, always returns interpreter mode
+// GetExecutionMode always returns interpreter mode on non-Linux platforms
+// JIT is only available on linux/amd64
 func GetExecutionMode() ExecutionMode {
+	// Ignore PVM_MODE environment variable - JIT is not available on this platform
 	return ModeInterpreter
 }
 
@@ -23,7 +24,8 @@ func (pvm *PVM) CompileForJIT() (*jit.ProgramContext, error) {
 	return nil, nil
 }
 
-// RunJIT falls back to interpreter on non-Linux platforms
+// RunJIT is unreachable on non-Linux platforms since GetExecutionMode() always returns ModeInterpreter
+// This stub exists only to satisfy the compiler
 func RunJIT[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason ExitReason, err error) {
-	return runInterpreter(pvm, hostFunc, hostArg)
+	panic("RunJIT should never be called on non-Linux platforms")
 }

@@ -139,37 +139,14 @@ func RunJIT[X any](pvm *PVM, hostFunc HostFunction[X], hostArg *X) (exitReason E
 				return ExitReasonOutOfGas, nil
 			}
 		} else {
-			// No compiled block - execute one instruction via interpreter
-			exitReason = pvm.executeInstruction()
-			if exitReason == ExitReasonGo {
-				continue
-			}
+			// No compiled block available - this shouldn't happen in JIT mode
+			// Decrement gas and check bounds before panicking
+			pvm.State.Gas--
 			if pvm.State.Gas < 0 {
-				exitReason = ExitReasonOutOfGas
-			} else if exitReason.IsSimple() &&
-				(*exitReason.SimpleExitReason == ExitPanic || *exitReason.SimpleExitReason == ExitHalt) {
-				pvm.InstructionCounter = 0
+				return ExitReasonOutOfGas, nil
 			}
-
-			if exitReason.IsComplex() && exitReason.ComplexExitReason.Type == ExitHostCall {
-				if hostFunc != nil {
-					hostCall := exitReason.ComplexExitReason.Parameter
-					postHostCallExitReason, hostErr := hostFunc(
-						HostFunctionIdentifier(hostCall),
-						&HostFunctionContext[X]{State: pvm.State, Argument: hostArg},
-					)
-					if hostErr != nil {
-						return ExitReason{}, hostErr
-					}
-					if *postHostCallExitReason.SimpleExitReason == ExitGo {
-						continue
-					}
-					return postHostCallExitReason, nil
-				}
-				return exitReason, nil
-			}
-
-			return exitReason, nil
+			pvm.InstructionCounter = 0
+			return ExitReasonPanic, nil
 		}
 	}
 }
