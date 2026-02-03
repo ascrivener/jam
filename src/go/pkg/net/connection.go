@@ -10,8 +10,8 @@ import (
 	"jam/pkg/block"
 	"jam/pkg/block/header"
 	"jam/pkg/serializer"
-	"jam/pkg/state"
 	"jam/pkg/staterepository"
+	"jam/pkg/statetransition"
 	"jam/pkg/types"
 	"log"
 	"sync"
@@ -270,6 +270,11 @@ func (c *jamnpsConnection) registerHandlers() {
 		return c.handleBlockAnnouncementStream(stream)
 	})
 
+	// Register handler for incoming block requests (CE 128)
+	c.registerHandler(StreamKindCE128BlockRequest, func(stream Stream) error {
+		return c.handleBlockRequest(stream)
+	})
+
 	// Register handler for incoming assurance distributions (CE 141)
 	err := c.HandleAssuranceDistributions(func(data []byte) error {
 		log.Printf("Received assurance distribution from validator %d: %d bytes",
@@ -327,13 +332,15 @@ func (c *jamnpsConnection) openRequiredBlockAnnouncementStreams(ctx context.Cont
 		log.Printf("Skipping UP 0 stream - not required for validator %d (not a grid neighbor)", c.validatorInfo.Index)
 		return
 	}
-	panic("unused rn")
-	// err := c.openBlockAnnouncementStream(ctx)
-	// if err != nil {
-	// 	log.Printf("Warning: Failed to open UP 0 stream for validator %s: %v", c.RemoteKey(), err)
-	// } else {
-	// 	log.Printf("Successfully opened UP 0 stream for validator %s", c.RemoteKey())
-	// }
+	// For testnet, open UP 0 stream to exchange handshakes
+	go func() {
+		err := c.openBlockAnnouncementStream()
+		if err != nil {
+			log.Printf("Warning: Failed to open UP 0 stream for validator %d: %v", c.validatorInfo.Index, err)
+		} else {
+			log.Printf("Successfully opened UP 0 stream for validator %d", c.validatorInfo.Index)
+		}
+	}()
 }
 
 // openBlockAnnouncementStream opens a UP 0 stream to a specific validator and performs handshake
@@ -380,23 +387,17 @@ func createHandshake() (Handshake, error) {
 		return Handshake{}, fmt.Errorf("failed to create read transaction: %w", err)
 	}
 	defer readTx.Close()
-	state, err := state.GetState(readTx)
-	if err != nil {
-		return Handshake{}, fmt.Errorf("failed to get state: %w", err)
-	}
-	// TODO: Get actual finalized block info from state
-	// For now, use placeholder values
-	latestFinalizedBlock := state.RecentActivity.RecentBlocks[len(state.RecentActivity.RecentBlocks)-1]
 
-	latestFinalizedBlockInfo, err := block.Get(nil, latestFinalizedBlock.HeaderHash)
+	// Get the current tip block for the handshake
+	tipBlock, err := block.GetTip(readTx)
 	if err != nil {
-		return Handshake{}, fmt.Errorf("failed to get latest finalized block info: %w", err)
+		return Handshake{}, fmt.Errorf("failed to get tip block: %w", err)
 	}
-	finalHash := blake2b.Sum256(serializer.Serialize(latestFinalizedBlockInfo.Block.Header))
-	finalSlot := latestFinalizedBlockInfo.Block.Header.TimeSlot
 
-	// TODO: Get actual leaves (descendants of finalized block with no known children)
-	// For now, use empty leaves array
+	finalHash := blake2b.Sum256(serializer.Serialize(tipBlock.Block.Header))
+	finalSlot := tipBlock.Block.Header.TimeSlot
+
+	// For testnet, use tip block as both finalized and leaf
 	leaves := []HandshakeLeaf{
 		{
 			HeaderHash: finalHash,
@@ -686,26 +687,173 @@ func (s *jamnpsStream) Kind() StreamKind {
 func (c *jamnpsConnection) processBlockAnnouncement(announcement *Announcement) error {
 
 	// Calculate the hash of the announced block (not the finalized block)
-	announcedBlockData := serializer.Serialize(announcement.Header)
-	announcedBlockHash := blake2b.Sum256(announcedBlockData)
+	announcedBlockHash := announcement.Header.Hash()
 
 	log.Printf("Announced block hash: %x", announcedBlockHash)
+	log.Printf("Announced block slot: %d", announcement.Header.TimeSlot)
 	log.Printf("Finalized block hash: %x", announcement.Final.HeaderHash)
 
-	// Request the actual announced block in a separate goroutine to avoid blocking the stream
-	go func() {
-		blocks, err := c.RequestBlocks(c.ctx, announcedBlockHash, DirectionAncestors, 1)
-		if err != nil {
-			log.Printf("Failed to request announced block from validator %d: %v", c.ValidatorIdx(), err)
-			// Don't propagate the error - just log it to keep the announcement stream alive
-			return
-		}
+	// Check if we already have this block
+	tx, err := staterepository.NewTrackedTx([32]byte{})
+	if err != nil {
+		log.Printf("Failed to create transaction for block check: %v", err)
+		return nil
+	}
+	defer tx.Close()
 
-		if len(blocks) > 0 {
-			log.Printf("Successfully received %d blocks from validator %d", len(blocks), c.ValidatorIdx())
+	existingBlock, err := block.Get(tx, announcedBlockHash)
+	if err == nil && existingBlock != nil {
+		log.Printf("Already have block %x, skipping import", announcedBlockHash)
+		return nil
+	}
+
+	// Request the full block in a separate goroutine to avoid blocking the stream
+	go func() {
+		if err := c.requestAndImportBlock(announcedBlockHash); err != nil {
+			log.Printf("Failed to import block %x from validator %d: %v", announcedBlockHash, c.ValidatorIdx(), err)
 		}
 	}()
 
 	// Always return nil to keep the announcement stream alive
+	return nil
+}
+
+// requestAndImportBlock requests a block and imports it via STF
+func (c *jamnpsConnection) requestAndImportBlock(blockHash [32]byte) error {
+	log.Printf("Requesting block %x from validator %d", blockHash, c.ValidatorIdx())
+
+	// Request the block
+	blockData, err := c.RequestFullBlock(c.ctx, blockHash)
+	if err != nil {
+		return fmt.Errorf("failed to request block: %w", err)
+	}
+
+	if blockData == nil {
+		return fmt.Errorf("received nil block data")
+	}
+
+	// Deserialize the block
+	var blk block.Block
+	if err := serializer.Deserialize(blockData, &blk); err != nil {
+		return fmt.Errorf("failed to deserialize block: %w", err)
+	}
+
+	log.Printf("Received block: slot=%d, parent=%x", blk.Header.TimeSlot, blk.Header.ParentHash)
+
+	// Import via STF
+	stateRoot, err := statetransition.STF(blk)
+	if err != nil {
+		return fmt.Errorf("STF failed: %w", err)
+	}
+
+	log.Printf("Successfully imported block %x with state root %x", blockHash, stateRoot)
+
+	// TODO: Broadcast to other grid neighbors (gossip)
+
+	return nil
+}
+
+// RequestFullBlock requests a single full block by hash
+func (c *jamnpsConnection) RequestFullBlock(ctx context.Context, hash [32]byte) ([]byte, error) {
+	// Open a block request stream
+	stream, err := c.OpenStream(StreamKindCE128BlockRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open block request stream: %w", err)
+	}
+	defer stream.Close()
+
+	// Encode request: Hash (32) + Direction (1) + MaxBlocks (4)
+	req := BlockRequest{
+		Hash:      hash,
+		Direction: DirectionAncestors,
+		MaxBlocks: 1,
+	}
+	data := serializer.Serialize(req)
+
+	// Write request
+	if err := WriteMessage(stream, data); err != nil {
+		return nil, fmt.Errorf("failed to write block request: %w", err)
+	}
+	stream.CloseWrite()
+
+	// Read response - expect a single block
+	response, err := ReadMessage(stream)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("peer has no blocks matching request")
+		}
+		return nil, fmt.Errorf("failed to read block response: %w", err)
+	}
+
+	if len(response) == 0 {
+		return nil, fmt.Errorf("received empty response")
+	}
+
+	return response, nil
+}
+
+// handleBlockRequest handles incoming CE 128 block requests
+func (c *jamnpsConnection) handleBlockRequest(stream Stream) error {
+	// Read the request
+	reqData, err := ReadMessage(stream)
+	if err != nil {
+		return fmt.Errorf("failed to read block request: %w", err)
+	}
+
+	// Parse the request
+	var req BlockRequest
+	if err := serializer.Deserialize(reqData, &req); err != nil {
+		return fmt.Errorf("failed to parse block request: %w", err)
+	}
+
+	log.Printf("Received block request from validator %d: hash=%x, direction=%d, maxBlocks=%d",
+		c.ValidatorIdx(), req.Hash, req.Direction, req.MaxBlocks)
+
+	// Create a transaction to read blocks
+	tx, err := staterepository.NewTrackedTx([32]byte{})
+	if err != nil {
+		return fmt.Errorf("failed to create transaction: %w", err)
+	}
+	defer tx.Close()
+
+	// Collect blocks to send
+	var blocks [][]byte
+	currentHash := req.Hash
+
+	for i := uint32(0); i < req.MaxBlocks; i++ {
+		// Get the block
+		blk, err := block.Get(tx, currentHash)
+		if err != nil {
+			// Block not found - stop here
+			log.Printf("Block %x not found, stopping at %d blocks", currentHash, len(blocks))
+			break
+		}
+
+		// Serialize the block (just the Block, not BlockWithInfo)
+		blockData := serializer.Serialize(blk.Block)
+		blocks = append(blocks, blockData)
+
+		// Move to next block based on direction
+		if req.Direction == DirectionAncestors {
+			// Move to parent
+			currentHash = blk.Block.Header.ParentHash
+		} else {
+			// DirectionDescendants - we'd need to track children, which we don't currently
+			// For now, just return the single block
+			break
+		}
+	}
+
+	// Send each block as a separate message
+	for _, blockData := range blocks {
+		if err := WriteMessage(stream, blockData); err != nil {
+			return fmt.Errorf("failed to write block: %w", err)
+		}
+	}
+
+	// Close write side to signal we're done
+	stream.CloseWrite()
+
+	log.Printf("Sent %d blocks to validator %d", len(blocks), c.ValidatorIdx())
 	return nil
 }

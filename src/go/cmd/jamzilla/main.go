@@ -14,6 +14,7 @@ import (
 
 	"jam/pkg/block"
 	"jam/pkg/block/header"
+	"jam/pkg/blockproducer"
 	"jam/pkg/merklizer"
 	"jam/pkg/net"
 	"jam/pkg/serializer"
@@ -29,6 +30,7 @@ type Config struct {
 	Id                 string            `json:"id"`                  // Network ID
 	GenesisState       map[string]string `json:"genesis_state"`       // Initial genesis state as key-value pairs
 	GenesisHeader      string            `json:"genesis_header"`      // Genesis header as hex string
+	Peers              []net.ConfigPeer  `json:"peers"`               // Peer list for testnet mode
 }
 
 // main initializes the application by parsing command-line flags, loading configuration,
@@ -124,8 +126,8 @@ func main() {
 		log.Fatalf("Failed to decode genesis header: %v", err)
 	}
 
-	header := header.Header{}
-	if err := serializer.Deserialize(headerBytes, &header); err != nil {
+	genesisHeader := header.Header{}
+	if err := serializer.Deserialize(headerBytes, &genesisHeader); err != nil {
 		log.Fatalf("Failed to deserialize genesis header: %v", err)
 	}
 
@@ -133,7 +135,7 @@ func main() {
 
 	blockWithInfo := block.BlockWithInfo{
 		Block: block.Block{
-			Header: header,
+			Header: genesisHeader,
 		},
 		Info: block.BlockInfo{
 			PosteriorStateRoot: root,
@@ -193,11 +195,14 @@ func main() {
 	chainID := fmt.Sprintf("%x", genesisHash[:4])
 	log.Printf("Using chain ID: %s", chainID)
 
+	// Determine listen address based on validator index
+	listenAddr := fmt.Sprintf(":%d", 40000+*devValidator)
+
 	// Create a network node for both outgoing and incoming connections
 	nodeOpts := net.NodeOptions{
 		PrivateKey:  privateKey,
 		ChainID:     chainID,
-		ListenAddr:  ":40000", // Listen on port 40000 for incoming connections
+		ListenAddr:  listenAddr,
 		DialTimeout: 10 * time.Second,
 	}
 
@@ -213,14 +218,55 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start the node. Initiate connections and UP 0 stream
-	if err := node.Start(ctx); err != nil {
+	// Choose peer provider based on config
+	var peerProvider net.PeerProvider
+	if len(config.Peers) > 0 {
+		// Testnet mode: use config-based peer discovery
+		log.Printf("Using testnet mode with %d configured peers", len(config.Peers))
+		peerProvider = net.NewConfigPeerProvider(*devValidator, privateKey, config.Peers)
+	} else {
+		// Production mode: use chain state for peer discovery
+		log.Printf("Using production mode with chain state peer discovery")
+		peerProvider, err = net.NewChainStatePeerProvider(privateKey)
+		if err != nil {
+			log.Fatalf("Failed to create chain state peer provider: %v", err)
+		}
+	}
+
+	// Start the node with the chosen peer provider
+	if err := node.StartWithProvider(ctx, peerProvider); err != nil {
 		log.Fatalf("Error starting network node: %v", err)
 	}
 	defer node.Close()
 
 	log.Printf("Network node started, listening at %s", node.Addr())
 
+	// Start the block producer
+	broadcastFunc := func(hdr header.Header) error {
+		// Get the current finalized block info
+		tx, err := staterepository.NewTrackedTx([32]byte{})
+		if err != nil {
+			return err
+		}
+		defer tx.Close()
+
+		tip, err := block.GetTip(tx)
+		if err != nil {
+			return err
+		}
+
+		// Use the parent as finalized for now (simplified)
+		return node.BroadcastBlockAnnouncement(hdr, tip.Block.Header.Hash(), tip.Block.Header.TimeSlot)
+	}
+
+	producer := blockproducer.NewProducer(*devValidator, bandersnatchSecretSeed, broadcastFunc)
+	producer.Start(ctx)
+	defer producer.Stop()
+
+	log.Printf("Block producer started for validator %d", *devValidator)
+
+	// Keep running until interrupted
+	log.Printf("Node %d running. Press Ctrl+C to stop.", *devValidator)
 	select {
 	case <-ctx.Done():
 		log.Println("Context cancelled, shutting down...")

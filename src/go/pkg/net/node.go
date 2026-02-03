@@ -3,18 +3,18 @@ package net
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"jam/pkg/state"
-	"jam/pkg/staterepository"
+	"jam/pkg/block/header"
+	"jam/pkg/serializer"
 	"jam/pkg/types"
 	"log"
 	"math"
@@ -226,7 +226,8 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	}
 
 	// Check that the certificate uses Ed25519
-	publicKey, ok := cert.PublicKey.([]byte)
+	// Go's x509 package returns ed25519.PublicKey for Ed25519 certificates
+	publicKey, ok := cert.PublicKey.(ed25519.PublicKey)
 	if !ok {
 		return fmt.Errorf("peer certificate does not use Ed25519 key")
 	}
@@ -252,37 +253,43 @@ func verifyPeerCertificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return nil
 }
 
-// Start starts the node. Initiate connections and UP 0 stream
+// Start starts the node using chain state for peer discovery (production mode)
+// Deprecated: Use StartWithProvider for more flexibility
 func (n *Node) Start(ctx context.Context) error {
-	readTx, err := staterepository.NewTrackedTx([32]byte{})
+	provider, err := NewChainStatePeerProvider(n.opts.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("failed to create read transaction: %w", err)
+		return fmt.Errorf("failed to create chain state peer provider: %w", err)
 	}
-	defer readTx.Close()
-	state, err := state.GetState(readTx)
+	return n.StartWithProvider(ctx, provider)
+}
+
+// StartWithProvider starts the node using the provided PeerProvider for peer discovery
+func (n *Node) StartWithProvider(ctx context.Context, provider PeerProvider) error {
+	// Get our own validator info
+	myInfo, err := provider.GetMyInfo()
 	if err != nil {
-		return fmt.Errorf("failed to get state: %w", err)
+		return fmt.Errorf("failed to get own validator info: %w", err)
+	}
+	n.myValidator = *myInfo
+
+	// Get all peers
+	peers, err := provider.GetPeers()
+	if err != nil {
+		return fmt.Errorf("failed to get peers: %w", err)
 	}
 
-	// Partition validators into two sets: those where I am the preferred initiator and those where I am not
-	// Extract public key from private key (last 32 bytes)
-	myKey := n.opts.PrivateKey[32:]
-	var iAmInitiator []ValidatorInfo
-	var theyAreInitiator []ValidatorInfo
+	totalValidators := provider.GetTotalValidators()
 
-	amValidator := false
-	for idx, validatorKeyset := range state.ValidatorKeysetsActive {
-		publicKey := validatorKeyset.ToEd25519PublicKey()
-		if bytes.Equal(publicKey[:], myKey) {
-			log.Printf("Skipping connection to self (validator %d)", idx)
-			n.myValidator = ValidatorInfo{Keyset: validatorKeyset, Index: idx}
-			amValidator = true
-			continue
-		}
+	// Partition peers into two sets: those where I am the preferred initiator and those where I am not
+	myKey := n.opts.PrivateKey[32:] // Extract public key from private key
+	var iAmInitiator []PeerInfo
+	var theyAreInitiator []PeerInfo
 
-		otherKey := publicKey[:]
+	for _, peer := range peers {
+		otherKey := peer.Ed25519[:]
 
-		// Check if we are the preferred initiator using the formula
+		// Check if we are the preferred initiator using the formula from JAMNP-S spec
+		// P(a, b) = a when (a[31] > 127) XOR (b[31] > 127) XOR (a < b)
 		myKeyLast := myKey[31] > 127
 		otherKeyLast := otherKey[31] > 127
 		myKeyLessThan := bytes.Compare(myKey, otherKey) < 0
@@ -291,18 +298,16 @@ func (n *Node) Start(ctx context.Context) error {
 		amPreferredInitiator := (myKeyLast != otherKeyLast) != myKeyLessThan
 
 		if amPreferredInitiator {
-			iAmInitiator = append(iAmInitiator, ValidatorInfo{Keyset: validatorKeyset, Index: idx})
+			iAmInitiator = append(iAmInitiator, peer)
 		} else {
-			theyAreInitiator = append(theyAreInitiator, ValidatorInfo{Keyset: validatorKeyset, Index: idx})
+			theyAreInitiator = append(theyAreInitiator, peer)
 		}
 	}
-	if !amValidator {
-		log.Fatalf("Failed to find self validator")
-	}
 
-	log.Printf("Partitioned validators: I am initiator for %d validators, waiting for %d validators to connect to me",
-		len(iAmInitiator), len(theyAreInitiator))
+	log.Printf("[Node %d] Partitioned %d peers: I initiate to %d, waiting for %d to connect",
+		n.myValidator.Index, len(peers), len(iAmInitiator), len(theyAreInitiator))
 
+	// Start listening
 	udpAddr, err := net.ResolveUDPAddr("udp", n.listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
@@ -320,6 +325,7 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 
 	n.listener = listener
+	log.Printf("[Node %d] Listening on %s", n.myValidator.Index, n.listenAddr)
 
 	// Use a WaitGroup to wait for both accepting and initiating connections to complete
 	var wg sync.WaitGroup
@@ -328,23 +334,195 @@ func (n *Node) Start(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		n.acceptConnections(ctx, theyAreInitiator, len(state.ValidatorKeysetsActive))
+		n.acceptConnectionsFromPeers(ctx, theyAreInitiator, totalValidators)
 	}()
 
-	// Start outbound connections to validators where I am the initiator
-	for _, v := range iAmInitiator {
+	// Start outbound connections to peers where I am the initiator
+	for _, peer := range iAmInitiator {
 		wg.Add(1)
-		go func(validator ValidatorInfo) {
+		go func(p PeerInfo) {
 			defer wg.Done()
-			n.initiateConnection(ctx, validator, len(state.ValidatorKeysetsActive))
-		}(v)
+			n.initiateConnectionToPeer(ctx, p, totalValidators)
+		}(peer)
 	}
 
 	// Wait for all connections (both incoming and outgoing) to be established
 	wg.Wait()
 
-	log.Printf("Network node started, listening at %s", n.listenAddr)
+	log.Printf("[Node %d] All %d peers connected", n.myValidator.Index, len(peers))
 	return nil
+}
+
+// acceptConnectionsFromPeers accepts incoming connections from expected peers
+func (n *Node) acceptConnectionsFromPeers(ctx context.Context, expectedPeers []PeerInfo, totalValidators int) {
+	if len(expectedPeers) == 0 {
+		log.Printf("[Node %d] No incoming connections expected", n.myValidator.Index)
+		return
+	}
+
+	// Create a map for faster lookup of expected peers by public key
+	expectedByKey := make(map[string]PeerInfo)
+	for _, peer := range expectedPeers {
+		expectedByKey[hex.EncodeToString(peer.Ed25519[:])] = peer
+	}
+
+	log.Printf("[Node %d] Waiting for %d incoming connections", n.myValidator.Index, len(expectedPeers))
+
+	// Channel to signal when a connection is successfully established
+	connectionEstablished := make(chan string, len(expectedPeers))
+	connectedPeers := make(map[string]bool)
+
+	// Channel to deliver new QUIC connections
+	newConnections := make(chan *quic.Conn, 1)
+
+	// Goroutine to accept connections and forward them to the channel
+	go func() {
+		for {
+			quicConn, err := n.listener.Accept(ctx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return // Context cancelled
+				}
+				log.Printf("[Node %d] Error accepting connection: %v", n.myValidator.Index, err)
+				continue
+			}
+
+			select {
+			case newConnections <- quicConn:
+				// Successfully forwarded
+			case <-ctx.Done():
+				quicConn.CloseWithError(0, "shutting down")
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case peerKey := <-connectionEstablished:
+			connectedPeers[peerKey] = true
+			log.Printf("[Node %d] Accepted connection from peer (%d/%d connected)",
+				n.myValidator.Index, len(connectedPeers), len(expectedPeers))
+
+			if len(connectedPeers) == len(expectedPeers) {
+				log.Printf("[Node %d] All expected incoming connections established", n.myValidator.Index)
+				return
+			}
+
+		case quicConn := <-newConnections:
+			go func(conn *quic.Conn) {
+				// Extract the peer's public key from the TLS certificate
+				tlsState := conn.ConnectionState().TLS
+				if len(tlsState.PeerCertificates) == 0 {
+					conn.CloseWithError(0, "no client certificate")
+					return
+				}
+
+				cert := tlsState.PeerCertificates[0]
+				remoteKey, ok := cert.PublicKey.(ed25519.PublicKey)
+				if !ok {
+					conn.CloseWithError(0, "invalid certificate key type")
+					return
+				}
+
+				remoteKeyStr := hex.EncodeToString(remoteKey)
+				peerInfo, isExpected := expectedByKey[remoteKeyStr]
+
+				if !isExpected {
+					conn.CloseWithError(0, "peer not in expected list")
+					log.Printf("[Node %d] Rejected unexpected connection from %s", n.myValidator.Index, remoteKeyStr[:16])
+					return
+				}
+
+				// Check if already connected
+				if _, exists := n.connections.Load(remoteKeyStr); exists {
+					conn.CloseWithError(0, "already connected")
+					return
+				}
+
+				// Create ValidatorInfo from PeerInfo
+				validatorInfo := peerInfoToValidatorInfo(peerInfo)
+
+				err := n.createAndStoreConnection(ctx, conn, validatorInfo, true, totalValidators)
+				if err != nil {
+					log.Printf("[Node %d] Failed to create connection for peer %d: %v",
+						n.myValidator.Index, peerInfo.Index, err)
+					return
+				}
+
+				select {
+				case connectionEstablished <- remoteKeyStr:
+				default:
+					log.Printf("[Node %d] Warning: Could not signal connection from peer %d",
+						n.myValidator.Index, peerInfo.Index)
+				}
+			}(quicConn)
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// initiateConnectionToPeer establishes an outbound connection to a peer
+func (n *Node) initiateConnectionToPeer(ctx context.Context, peer PeerInfo, totalValidators int) {
+	for attempts := 0; attempts < 3; attempts++ {
+		err := n.connectToPeer(ctx, peer, totalValidators)
+		if err == nil {
+			log.Printf("[Node %d] Connected to peer %d", n.myValidator.Index, peer.Index)
+			return
+		}
+
+		log.Printf("[Node %d] Connection attempt %d to peer %d failed: %v",
+			n.myValidator.Index, attempts+1, peer.Index, err)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+			continue
+		}
+	}
+
+	log.Printf("[Node %d] Failed to connect to peer %d after 3 attempts", n.myValidator.Index, peer.Index)
+}
+
+// connectToPeer establishes a connection to a specific peer
+func (n *Node) connectToPeer(ctx context.Context, peer PeerInfo, totalValidators int) error {
+	target := peer.Address
+
+	log.Printf("[Node %d] Connecting to peer %d at %s", n.myValidator.Index, peer.Index, target)
+
+	dialCtx, cancel := context.WithTimeout(ctx, n.opts.DialTimeout)
+	defer cancel()
+
+	conn, err := quic.DialAddrEarly(dialCtx, target, n.tlsConfig, n.quicConfig)
+	if err != nil {
+		return fmt.Errorf("failed to establish QUIC connection: %w", err)
+	}
+
+	validatorInfo := peerInfoToValidatorInfo(peer)
+
+	if err = n.createAndStoreConnection(ctx, conn, validatorInfo, false, totalValidators); err != nil {
+		return fmt.Errorf("failed to create and store connection: %w", err)
+	}
+
+	return nil
+}
+
+// peerInfoToValidatorInfo converts PeerInfo to ValidatorInfo
+func peerInfoToValidatorInfo(peer PeerInfo) ValidatorInfo {
+	var keyset types.ValidatorKeyset
+	if peer.Keyset != nil {
+		keyset = *peer.Keyset
+	} else {
+		// For config-based peers, create minimal keyset with Ed25519 key
+		copy(keyset[32:64], peer.Ed25519[:])
+	}
+	return ValidatorInfo{
+		Keyset: keyset,
+		Index:  peer.Index,
+	}
 }
 
 // createAndStoreConnection creates a JAMNP-S connection from a QUIC connection and stores it
@@ -360,173 +538,6 @@ func (n *Node) createAndStoreConnection(ctx context.Context, quicConn *quic.Conn
 
 	// Store the connection in the map
 	n.connections.Store(hex.EncodeToString(conn.RemoteKey()), conn)
-
-	return nil
-}
-
-// acceptConnections accepts incoming connections
-func (n *Node) acceptConnections(ctx context.Context, theyAreInitiator []ValidatorInfo, totalValidators int) {
-	// Create a map for faster lookup of expected validators by public key
-	expectedValidators := make(map[string]ValidatorInfo)
-	for _, validator := range theyAreInitiator {
-		publicKey := validator.Keyset.ToEd25519PublicKey()
-		expectedValidators[hex.EncodeToString(publicKey[:])] = validator
-	}
-
-	log.Printf("Accepting connections from %d expected validators", len(expectedValidators))
-
-	// Channel to signal when a connection is successfully established
-	connectionEstablished := make(chan string, len(expectedValidators))
-	connectedValidators := make(map[string]bool)
-
-	// Channel to deliver new QUIC connections
-	newConnections := make(chan *quic.Conn, 1)
-
-	// Goroutine to accept connections and forward them to the channel
-	go func() {
-		for {
-			quicConn, err := n.listener.Accept(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return // Context cancelled
-				}
-				fmt.Printf("Error accepting connection: %v\n", err)
-				continue
-			}
-
-			select {
-			case newConnections <- quicConn:
-				// Successfully forwarded
-			case <-ctx.Done():
-				quicConn.CloseWithError(0, "shutting down")
-				return
-			}
-		}
-	}()
-
-	for {
-		// Use blocking select to handle either connection signals or new connections
-		select {
-		case validatorKey := <-connectionEstablished:
-			connectedValidators[validatorKey] = true
-			log.Printf("Connected validator %s (%d/%d validators connected)",
-				validatorKey, len(connectedValidators), len(expectedValidators))
-
-			if len(connectedValidators) == len(expectedValidators) {
-				log.Printf("All %d expected validators have connected. Stopping acceptance of new connections.", len(expectedValidators))
-				return
-			}
-
-		case quicConn := <-newConnections:
-			// Handle the connection in a goroutine
-			go func(conn *quic.Conn) {
-				// Extract the peer's public key from the TLS certificate
-				tlsState := conn.ConnectionState().TLS
-				if len(tlsState.PeerCertificates) == 0 {
-					conn.CloseWithError(0, "no client certificate")
-					return
-				}
-
-				cert := tlsState.PeerCertificates[0]
-				remoteKey, ok := cert.PublicKey.([]byte)
-				if !ok {
-					conn.CloseWithError(0, "invalid certificate key type")
-					return
-				}
-
-				// Check if this validator is in the expected list
-				remoteKeyStr := fmt.Sprintf("%x", remoteKey)
-				validatorInfo, isExpected := expectedValidators[remoteKeyStr]
-
-				if !isExpected {
-					conn.CloseWithError(0, "validator not in expected initiator list")
-					fmt.Printf("Rejected connection from unexpected validator with key: %s\n", remoteKeyStr)
-					return
-				}
-
-				// Check if this validator has already connected by checking if it's already in connections
-				if _, exists := n.connections.Load(remoteKeyStr); exists {
-					conn.CloseWithError(0, "validator already connected")
-					fmt.Printf("Rejected duplicate connection from validator with key: %s\n", remoteKeyStr)
-					return
-				}
-
-				err := n.createAndStoreConnection(ctx, conn, validatorInfo, true, totalValidators)
-				if err != nil {
-					fmt.Printf("Failed to create connection for validator %s: %v\n", remoteKeyStr, err)
-					return
-				}
-
-				// Signal that this connection has been successfully established
-				select {
-				case connectionEstablished <- remoteKeyStr:
-					// Successfully signaled
-				default:
-					// Channel might be full or closed, but connection is still established
-					log.Printf("Warning: Could not signal connection establishment for %s", remoteKeyStr)
-				}
-			}(quicConn)
-
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// initiateConnection establishes an outbound connection to a validator where this node is the initiator
-func (n *Node) initiateConnection(ctx context.Context, validator ValidatorInfo, totalValidators int) {
-	// Establish connection with retry logic
-	for attempts := 0; attempts < 3; attempts++ {
-		err := n.Connect(ctx, validator, totalValidators)
-		if err == nil {
-			log.Printf("Successfully connected to validator %d", validator.Index)
-			return
-		}
-
-		log.Printf("Connection attempt %d to validator %d failed: %v",
-			attempts+1, validator.Index, err)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-			continue
-		}
-	}
-
-	log.Printf("Failed to connect to validator %d after 3 attempts", validator.Index)
-}
-
-// Connect establishes an outbound connection to the given address
-func (n *Node) Connect(ctx context.Context, validatorInfo ValidatorInfo, totalValidators int) error {
-	// Extract the last 128 bytes which contain network information
-	networkInfo := validatorInfo.Keyset[len(validatorInfo.Keyset)-128:]
-
-	// Extract IPv6 address (first 16 bytes of network info)
-	ipv6Addr := networkInfo[:16]
-	ipv6Str := net.IP(ipv6Addr).String()
-
-	// Extract port (next 2 bytes in little endian)
-	port := binary.LittleEndian.Uint16(networkInfo[16:18])
-
-	// Construct target address
-	target := fmt.Sprintf("[%s]:%d", ipv6Str, port)
-
-	log.Printf("Connecting to validator %d at %s", validatorInfo.Index, target)
-
-	// Create a context with timeout
-	dialCtx, cancel := context.WithTimeout(ctx, n.opts.DialTimeout)
-	defer cancel()
-
-	// Use the built-in QUIC DialAddrEarly which handles connection establishment properly
-	conn, err := quic.DialAddrEarly(dialCtx, target, n.tlsConfig, n.quicConfig)
-	if err != nil {
-		return fmt.Errorf("failed to establish QUIC connection: %w", err)
-	}
-
-	if err = n.createAndStoreConnection(ctx, conn, validatorInfo, false, totalValidators); err != nil {
-		return fmt.Errorf("failed to create and store connection: %w", err)
-	}
 
 	return nil
 }
@@ -559,9 +570,11 @@ func (n *Node) Close() error {
 }
 
 // generateCertificate creates a self-signed certificate for the JAMNP-S client
-func generateCertificate(privateKey []byte) (tls.Certificate, error) {
+func generateCertificate(privateKeyBytes []byte) (tls.Certificate, error) {
+	// Convert []byte to ed25519.PrivateKey (implements crypto.Signer)
+	privateKey := ed25519.PrivateKey(privateKeyBytes)
 	// Extract public key from private key (last 32 bytes)
-	publicKey := privateKey[32:]
+	publicKey := privateKey.Public().(ed25519.PublicKey)
 	// Generate alternative name from public key
 	altName, err := GenerateAlternativeName(publicKey)
 	if err != nil {
@@ -617,6 +630,7 @@ func generateCertificate(privateKey []byte) (tls.Certificate, error) {
 	}
 
 	// Create the certificate with our manually added non-critical extensions
+	// Note: publicKey must be ed25519.PublicKey, privateKey must be ed25519.PrivateKey (implements crypto.Signer)
 	certBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey, privateKey)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to create certificate: %w", err)
@@ -625,7 +639,7 @@ func generateCertificate(privateKey []byte) (tls.Certificate, error) {
 	// Create a tls.Certificate
 	tlsCert := tls.Certificate{
 		Certificate: [][]byte{certBytes},
-		PrivateKey:  privateKey,
+		PrivateKey:  privateKey, // ed25519.PrivateKey implements crypto.Signer
 	}
 
 	return tlsCert, nil
@@ -692,4 +706,56 @@ func isGridNeighbor(myIndex, theirIndex, totalValidators int) bool {
 
 	// Same row or same column
 	return myRow == theirRow || myCol == theirCol
+}
+
+// BroadcastBlockAnnouncement sends a block announcement to all grid neighbors
+func (n *Node) BroadcastBlockAnnouncement(hdr header.Header, finalHash [32]byte, finalSlot types.Timeslot) error {
+	announcement := Announcement{
+		Header: hdr,
+		Final: Final{
+			HeaderHash:    finalHash,
+			FinalizedSlot: finalSlot,
+		},
+	}
+
+	announcementData := serializer.Serialize(announcement)
+	var broadcastErrors []error
+
+	n.connections.Range(func(key, value interface{}) bool {
+		// Get the jamnpsConnection directly
+		jconn, ok := value.(*jamnpsConnection)
+		if !ok {
+			return true
+		}
+
+		// Only broadcast to grid neighbors
+		if !jconn.isNeighbor {
+			return true
+		}
+
+		jconn.upStreamsMu.Lock()
+		stream, exists := jconn.upStreams[StreamKindUP0BlockAnnouncement]
+		jconn.upStreamsMu.Unlock()
+
+		if !exists || stream == nil {
+			log.Printf("[Broadcast] No UP 0 stream to validator %d", jconn.ValidatorIdx())
+			return true
+		}
+
+		// Write the announcement using the stream pointer
+		if err := WriteMessage(stream, announcementData); err != nil {
+			log.Printf("[Broadcast] Failed to send announcement to validator %d: %v", jconn.ValidatorIdx(), err)
+			broadcastErrors = append(broadcastErrors, err)
+		} else {
+			log.Printf("[Broadcast] Sent block announcement to validator %d", jconn.ValidatorIdx())
+		}
+
+		return true
+	})
+
+	if len(broadcastErrors) > 0 {
+		return fmt.Errorf("failed to broadcast to %d peers", len(broadcastErrors))
+	}
+
+	return nil
 }

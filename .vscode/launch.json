@@ -220,7 +220,7 @@
             "env": {
                 "GODEBUG": "gctrace=1",
                 "TEST_VECTORS_DIR": "${workspaceFolder}/jam-conformance/test-vectors/traces",
-                "USE_SOCKET": "true",
+                "USE_SOCKET": "false",
                 "PVM_MODE": "interpreter",
             }
         },
