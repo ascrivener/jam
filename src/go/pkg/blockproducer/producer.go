@@ -15,6 +15,7 @@ import (
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
 	"jam/pkg/statetransition"
+	"jam/pkg/ticket"
 	"jam/pkg/types"
 )
 
@@ -250,13 +251,33 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 		return fmt.Errorf("failed to sign VRF signature: %w", err)
 	}
 
+	// Check if we need to set WinningTicketsMarker
+	var winningTicketsMarker *[constants.NumTimeslotsPerEpoch]header.Ticket
+	priorSlot := currentState.MostRecentBlockTimeslot
+	if slot.EpochIndex() == priorSlot.EpochIndex() &&
+		uint32(priorSlot.SlotPhaseIndex()) < constants.TicketSubmissionEndingSlotPhaseNumber &&
+		uint32(slot.SlotPhaseIndex()) >= constants.TicketSubmissionEndingSlotPhaseNumber &&
+		uint32(len(currentState.SafroleBasicState.TicketAccumulator)) == constants.NumTimeslotsPerEpoch {
+
+		reordered := ticket.ReorderTicketsOutsideIn(currentState.SafroleBasicState.TicketAccumulator)
+		var marker [constants.NumTimeslotsPerEpoch]header.Ticket
+		for i, t := range reordered {
+			marker[i] = header.Ticket{
+				VerifiablyRandomIdentifier: t.VerifiablyRandomIdentifier,
+				EntryIndex:                 t.EntryIndex,
+			}
+		}
+		winningTicketsMarker = &marker
+		log.Printf("[BlockProducer] Setting WinningTicketsMarker at slot %d", slot)
+	}
+
 	unsignedHeader := header.UnsignedHeader{
 		ParentHash:                   tip.Block.Header.Hash(),
 		PriorStateRoot:               tip.Info.PosteriorStateRoot,
 		ExtrinsicHash:                extrinsicHash,
 		TimeSlot:                     slot,
-		EpochMarker:                  nil, // TODO: epoch boundary handling
-		WinningTicketsMarker:         nil, // TODO: ticket accumulator handling
+		EpochMarker:                  nil, // TODO: epoch boundary handling (requires disputes)
+		WinningTicketsMarker:         winningTicketsMarker,
 		BandersnatchBlockAuthorIndex: types.ValidatorIndex(p.validatorIndex),
 		VRFSignature:                 vrfSignature,
 		OffendersMarker:              nil,
