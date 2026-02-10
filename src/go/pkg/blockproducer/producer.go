@@ -11,6 +11,7 @@ import (
 	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
 	"jam/pkg/constants"
+	"jam/pkg/mempool"
 	"jam/pkg/serializer"
 	"jam/pkg/state"
 	"jam/pkg/staterepository"
@@ -26,6 +27,7 @@ type Producer struct {
 	broadcastFunc    func(header.Header) error
 	ctx              context.Context
 	cancel           context.CancelFunc
+	mempool          *mempool.Mempool
 }
 
 // SlotLeaderInfo contains information needed to produce a block when we're the slot leader
@@ -36,12 +38,23 @@ type SlotLeaderInfo struct {
 }
 
 // NewProducer creates a new block producer
-func NewProducer(validatorIndex int, bandersnatchSeed []byte, broadcastFunc func(header.Header) error) *Producer {
+func NewProducer(validatorIndex int, bandersnatchSeed []byte, broadcastFunc func(header.Header) error, mp *mempool.Mempool) *Producer {
 	return &Producer{
 		validatorIndex:   validatorIndex,
 		bandersnatchSeed: bandersnatchSeed,
 		broadcastFunc:    broadcastFunc,
+		mempool:          mp,
 	}
+}
+
+// SetMempool sets the mempool for the producer (for late initialization)
+func (p *Producer) SetMempool(mp *mempool.Mempool) {
+	p.mempool = mp
+}
+
+// GetMempool returns the producer's mempool
+func (p *Producer) GetMempool() *mempool.Mempool {
+	return p.mempool
 }
 
 // Start begins the slot timing loop
@@ -214,15 +227,8 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 		return fmt.Errorf("failed to get chain tip: %w", err)
 	}
 
-	// Create empty extrinsics for now
-	// TODO: Gather pending guarantees, assurances, tickets, etc.
-	extrinsic := extrinsics.Extrinsics{
-		Tickets:    extrinsics.Tickets{},
-		Preimages:  extrinsics.Preimages{},
-		Guarantees: extrinsics.Guarantees{},
-		Assurances: extrinsics.Assurances{},
-		Disputes:   extrinsics.Disputes{},
-	}
+	// Gather extrinsics from mempool
+	extrinsic := p.gatherExtrinsics(slot, currentState, tip.Block.Header.Hash())
 
 	// Calculate extrinsic hash
 	extrinsicHash := extrinsic.MerkleCommitment()
@@ -327,4 +333,78 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 // SerializeBlock serializes a block for transmission
 func SerializeBlock(blk block.Block) []byte {
 	return serializer.Serialize(blk)
+}
+
+// gatherExtrinsics collects pending extrinsics from the mempool
+func (p *Producer) gatherExtrinsics(slot types.Timeslot, currentState *state.State, parentHash [32]byte) extrinsics.Extrinsics {
+	result := extrinsics.Extrinsics{
+		Tickets:    extrinsics.Tickets{},
+		Preimages:  extrinsics.Preimages{},
+		Guarantees: extrinsics.Guarantees{},
+		Assurances: extrinsics.Assurances{},
+		Disputes:   extrinsics.Disputes{},
+	}
+
+	if p.mempool == nil {
+		return result
+	}
+
+	currentEpoch := uint32(slot / types.Timeslot(constants.NumTimeslotsPerEpoch))
+	nextEpoch := currentEpoch + 1
+
+	slotInEpoch := uint32(slot % types.Timeslot(constants.NumTimeslotsPerEpoch))
+	if slotInEpoch < constants.TicketSubmissionEndingSlotPhaseNumber {
+		tickets := p.mempool.GetTickets(nextEpoch)
+		maxTickets := int(constants.MaxTicketsPerExtrinsic)
+		if len(tickets) > maxTickets {
+			tickets = tickets[:maxTickets]
+		}
+		result.Tickets = tickets
+	}
+
+	guarantees := p.mempool.GetGuarantees()
+	maxGuarantees := int(constants.NumCores)
+	if len(guarantees) > maxGuarantees {
+		guarantees = guarantees[:maxGuarantees]
+	}
+	result.Guarantees = guarantees
+
+	assurances := p.mempool.GetAssurances(parentHash)
+	maxAssurances := int(constants.NumValidators)
+	if len(assurances) > maxAssurances {
+		assurances = assurances[:maxAssurances]
+	}
+	result.Assurances = assurances
+
+	preimages := p.mempool.GetPreimages()
+	var selectedPreimages extrinsics.Preimages
+	totalSize := 0
+	maxPreimageSize := 4096
+	for _, preimage := range preimages {
+		if totalSize+len(preimage.Data) <= maxPreimageSize {
+			selectedPreimages = append(selectedPreimages, preimage)
+			totalSize += len(preimage.Data)
+		}
+	}
+	result.Preimages = selectedPreimages
+
+	verdicts := p.mempool.GetVerdicts()
+	culprits := p.mempool.GetCulprits()
+	faults := p.mempool.GetFaults()
+
+	result.Disputes = extrinsics.Disputes{
+		Verdicts: verdicts,
+		Culprits: culprits,
+		Faults:   faults,
+	}
+
+	stats := p.mempool.Stats()
+	if stats.TicketCount > 0 || stats.GuaranteeCount > 0 || stats.AssuranceCount > 0 ||
+		stats.PreimageCount > 0 || stats.VerdictCount > 0 {
+		log.Printf("[BlockProducer] Gathered extrinsics: %d tickets, %d guarantees, %d assurances, %d preimages, %d verdicts",
+			len(result.Tickets), len(result.Guarantees), len(result.Assurances),
+			len(result.Preimages), len(result.Disputes.Verdicts))
+	}
+
+	return result
 }

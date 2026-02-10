@@ -15,6 +15,7 @@ import (
 	"jam/pkg/block"
 	"jam/pkg/block/header"
 	"jam/pkg/blockproducer"
+	"jam/pkg/mempool"
 	"jam/pkg/merklizer"
 	"jam/pkg/net"
 	"jam/pkg/serializer"
@@ -259,11 +260,19 @@ func main() {
 		return node.BroadcastBlockAnnouncement(hdr, tip.Block.Header.Hash(), tip.Block.Header.TimeSlot)
 	}
 
-	producer := blockproducer.NewProducer(*devValidator, bandersnatchSecretSeed, broadcastFunc)
+	// Create mempool for pending extrinsics
+	mp := mempool.New()
+
+	// Create and set protocol handler for CE streams
+	protocolHandler := net.NewProtocolHandler(mp, *devValidator)
+	node.SetProtocolHandler(protocolHandler)
+
+	producer := blockproducer.NewProducer(*devValidator, bandersnatchSecretSeed, broadcastFunc, mp)
 	producer.Start(ctx)
 	defer producer.Stop()
 
 	log.Printf("Block producer started for validator %d", *devValidator)
+	log.Printf("Mempool initialized - ready to receive extrinsics via CE protocols")
 
 	// Keep running until interrupted
 	log.Printf("Node %d running. Press Ctrl+C to stop.", *devValidator)

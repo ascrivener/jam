@@ -15,10 +15,26 @@ const (
 	StreamKindUP0BlockAnnouncement StreamKind = 0
 
 	// CE streams (128-255)
-	StreamKindCE128BlockRequest          StreamKind = 128
-	StreamKindCE129StateRequest          StreamKind = 129
-	StreamKindCE131TicketDistribution    StreamKind = 131
-	StreamKindCE141AssuranceDistribution StreamKind = 141
+	StreamKindCE128BlockRequest                StreamKind = 128
+	StreamKindCE129StateRequest                StreamKind = 129
+	StreamKindCE131TicketDistribution          StreamKind = 131 // Ticket: generator -> proxy
+	StreamKindCE132TicketDistribution          StreamKind = 132 // Ticket: proxy -> validators
+	StreamKindCE133WorkPackageSubmission       StreamKind = 133 // Work-package: builder -> guarantor
+	StreamKindCE134WorkPackageSharing          StreamKind = 134 // Work-package: guarantor -> guarantor
+	StreamKindCE135WorkReportDistribution      StreamKind = 135 // Guaranteed work-report distribution
+	StreamKindCE136WorkReportRequest           StreamKind = 136 // Work-report request (for auditors)
+	StreamKindCE137ShardDistribution           StreamKind = 137 // EC shard distribution
+	StreamKindCE138AuditShardRequest           StreamKind = 138 // Audit shard request
+	StreamKindCE139SegmentShardRequest         StreamKind = 139 // Segment shard request (no justification)
+	StreamKindCE140SegmentShardRequest         StreamKind = 140 // Segment shard request (with justification)
+	StreamKindCE141AssuranceDistribution       StreamKind = 141 // Availability assurance distribution
+	StreamKindCE142PreimageAnnouncement        StreamKind = 142 // Preimage announcement
+	StreamKindCE143PreimageRequest             StreamKind = 143 // Preimage request
+	StreamKindCE144AuditAnnouncement           StreamKind = 144 // Audit announcement
+	StreamKindCE145JudgmentPublication         StreamKind = 145 // Judgment publication
+	StreamKindCE146WorkPackageBundleSubmission StreamKind = 146 // Full work-package bundle submission
+	StreamKindCE147BundleRequest               StreamKind = 147 // Bundle request
+	StreamKindCE148SegmentRequest              StreamKind = 148 // Segment request
 )
 
 // Direction represents the direction of a block request

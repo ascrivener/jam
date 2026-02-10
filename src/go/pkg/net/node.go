@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
 	"jam/pkg/serializer"
 	"jam/pkg/types"
@@ -44,13 +45,14 @@ type ValidatorInfo struct {
 
 // Node is a unified JAMNP-S node that can both initiate and accept connections
 type Node struct {
-	opts        NodeOptions
-	tlsConfig   *tls.Config
-	quicConfig  *quic.Config
-	listener    *quic.Listener
-	listenAddr  string
-	connections sync.Map // Map of address -> connection
-	myValidator ValidatorInfo
+	opts            NodeOptions
+	tlsConfig       *tls.Config
+	quicConfig      *quic.Config
+	listener        *quic.Listener
+	listenAddr      string
+	connections     sync.Map // Map of address -> connection
+	myValidator     ValidatorInfo
+	protocolHandler *ProtocolHandler // Handler for CE protocols with mempool
 }
 
 // OIDs for certificate extensions
@@ -536,10 +538,27 @@ func (n *Node) createAndStoreConnection(ctx context.Context, quicConn *quic.Conn
 		return fmt.Errorf("failed to create JAMNP-S connection: %w", err)
 	}
 
+	// Register CE protocol handlers if we have a protocol handler
+	if n.protocolHandler != nil {
+		if jconn, ok := conn.(*jamnpsConnection); ok {
+			n.protocolHandler.RegisterHandlers(jconn)
+		}
+	}
+
 	// Store the connection in the map
 	n.connections.Store(hex.EncodeToString(conn.RemoteKey()), conn)
 
 	return nil
+}
+
+// SetProtocolHandler sets the protocol handler for CE streams
+func (n *Node) SetProtocolHandler(ph *ProtocolHandler) {
+	n.protocolHandler = ph
+}
+
+// GetProtocolHandler returns the protocol handler
+func (n *Node) GetProtocolHandler() *ProtocolHandler {
+	return n.protocolHandler
 }
 
 // Addr returns the listening address
@@ -708,7 +727,98 @@ func isGridNeighbor(myIndex, theirIndex, totalValidators int) bool {
 	return myRow == theirRow || myCol == theirCol
 }
 
-// BroadcastBlockAnnouncement sends a block announcement to all grid neighbors
+// getGridNeighborConnections returns all connections to grid neighbors
+func (n *Node) getGridNeighborConnections() []*jamnpsConnection {
+	var neighbors []*jamnpsConnection
+	n.connections.Range(func(key, value interface{}) bool {
+		jconn, ok := value.(*jamnpsConnection)
+		if ok && jconn.isNeighbor {
+			neighbors = append(neighbors, jconn)
+		}
+		return true
+	})
+	return neighbors
+}
+
+// ForEachGridNeighbor runs a function for each grid neighbor connection
+func (n *Node) ForEachGridNeighbor(fn func(*jamnpsConnection)) {
+	for _, conn := range n.getGridNeighborConnections() {
+		fn(conn)
+	}
+}
+
+// BroadcastCE broadcasts data to all grid neighbors via a CE stream
+// Opens a new stream for each neighbor, sends data, and closes
+func (n *Node) BroadcastCE(streamKind StreamKind, data []byte, label string) {
+	n.ForEachGridNeighbor(func(conn *jamnpsConnection) {
+		go func(c *jamnpsConnection) {
+			stream, err := c.OpenStream(streamKind)
+			if err != nil {
+				log.Printf("[%s] Failed to open stream to validator %d: %v", label, c.ValidatorIdx(), err)
+				return
+			}
+			defer stream.Close()
+
+			if err := WriteMessage(stream, data); err != nil {
+				log.Printf("[%s] Failed to send to validator %d: %v", label, c.ValidatorIdx(), err)
+				return
+			}
+
+			stream.CloseWrite()
+			log.Printf("[%s] Sent to validator %d", label, c.ValidatorIdx())
+		}(conn)
+	})
+}
+
+// BroadcastTicket sends a ticket to all grid neighbors via CE 132
+func (n *Node) BroadcastTicket(epochIndex uint32, ticket extrinsics.Ticket) {
+	n.BroadcastCE(StreamKindCE132TicketDistribution, EncodeTicket(epochIndex, ticket), "CE 132")
+}
+
+// BroadcastAssurance sends an assurance to all grid neighbors via CE 141
+func (n *Node) BroadcastAssurance(assurance extrinsics.Assurance) {
+	n.BroadcastCE(StreamKindCE141AssuranceDistribution, EncodeAssurance(assurance), "CE 141")
+}
+
+// BroadcastGuarantee sends a guaranteed work-report to all grid neighbors via CE 135
+func (n *Node) BroadcastGuarantee(guarantee extrinsics.Guarantee) {
+	n.BroadcastCE(StreamKindCE135WorkReportDistribution, serializer.Serialize(guarantee), "CE 135")
+}
+
+// BroadcastJudgment sends a judgment to all grid neighbors via CE 145
+func (n *Node) BroadcastJudgment(epochIndex uint32, validatorIndex types.ValidatorIndex, validity bool, workReportHash [32]byte, signature types.Ed25519Signature) {
+	n.BroadcastCE(StreamKindCE145JudgmentPublication, EncodeJudgment(epochIndex, validatorIndex, validity, workReportHash, signature), "CE 145")
+}
+
+// BroadcastUP broadcasts data to all grid neighbors via an existing UP stream
+func (n *Node) BroadcastUP(streamKind StreamKind, data []byte, label string) error {
+	var broadcastErrors []error
+
+	n.ForEachGridNeighbor(func(conn *jamnpsConnection) {
+		conn.upStreamsMu.Lock()
+		stream, exists := conn.upStreams[streamKind]
+		conn.upStreamsMu.Unlock()
+
+		if !exists || stream == nil {
+			log.Printf("[%s] No stream to validator %d", label, conn.ValidatorIdx())
+			return
+		}
+
+		if err := WriteMessage(stream, data); err != nil {
+			log.Printf("[%s] Failed to send to validator %d: %v", label, conn.ValidatorIdx(), err)
+			broadcastErrors = append(broadcastErrors, err)
+		} else {
+			log.Printf("[%s] Sent to validator %d", label, conn.ValidatorIdx())
+		}
+	})
+
+	if len(broadcastErrors) > 0 {
+		return fmt.Errorf("failed to broadcast to %d peers", len(broadcastErrors))
+	}
+	return nil
+}
+
+// BroadcastBlockAnnouncement sends a block announcement to all grid neighbors via UP 0
 func (n *Node) BroadcastBlockAnnouncement(hdr header.Header, finalHash [32]byte, finalSlot types.Timeslot) error {
 	announcement := Announcement{
 		Header: hdr,
@@ -717,45 +827,5 @@ func (n *Node) BroadcastBlockAnnouncement(hdr header.Header, finalHash [32]byte,
 			FinalizedSlot: finalSlot,
 		},
 	}
-
-	announcementData := serializer.Serialize(announcement)
-	var broadcastErrors []error
-
-	n.connections.Range(func(key, value interface{}) bool {
-		// Get the jamnpsConnection directly
-		jconn, ok := value.(*jamnpsConnection)
-		if !ok {
-			return true
-		}
-
-		// Only broadcast to grid neighbors
-		if !jconn.isNeighbor {
-			return true
-		}
-
-		jconn.upStreamsMu.Lock()
-		stream, exists := jconn.upStreams[StreamKindUP0BlockAnnouncement]
-		jconn.upStreamsMu.Unlock()
-
-		if !exists || stream == nil {
-			log.Printf("[Broadcast] No UP 0 stream to validator %d", jconn.ValidatorIdx())
-			return true
-		}
-
-		// Write the announcement using the stream pointer
-		if err := WriteMessage(stream, announcementData); err != nil {
-			log.Printf("[Broadcast] Failed to send announcement to validator %d: %v", jconn.ValidatorIdx(), err)
-			broadcastErrors = append(broadcastErrors, err)
-		} else {
-			log.Printf("[Broadcast] Sent block announcement to validator %d", jconn.ValidatorIdx())
-		}
-
-		return true
-	})
-
-	if len(broadcastErrors) > 0 {
-		return fmt.Errorf("failed to broadcast to %d peers", len(broadcastErrors))
-	}
-
-	return nil
+	return n.BroadcastUP(StreamKindUP0BlockAnnouncement, serializer.Serialize(announcement), "UP 0")
 }
