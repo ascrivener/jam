@@ -14,6 +14,15 @@ int verify_ring_signature(const unsigned char *commitment_ptr, size_t commitment
                          const unsigned char *message_ptr, size_t message_len,
                          const unsigned char *context_ptr, size_t context_len,
                          const unsigned char *proof_ptr, size_t proof_len);
+int vrf_sign(const unsigned char *secret_key_ptr, size_t secret_key_len,
+             const unsigned char *message_ptr, size_t message_len,
+             const unsigned char *context_ptr, size_t context_len,
+             unsigned char *signature_out_ptr);
+int vrf_output_from_seed(const unsigned char *secret_key_ptr, size_t secret_key_len,
+                         const unsigned char *message_ptr, size_t message_len,
+                         unsigned char *vrf_output_ptr);
+int derive_public_key(const unsigned char *secret_key_ptr, size_t secret_key_len,
+                      unsigned char *public_key_out_ptr);
 */
 import "C"
 import (
@@ -294,4 +303,93 @@ func VerifySignature(
 	default:
 		return false, errors.New("error processing signature verification")
 	}
+}
+
+// VRFSign signs a message using Bandersnatch VRF. Returns 96-byte signature.
+func VRFSign(
+	secretKey []byte,
+	message []byte,
+	context []byte,
+) (types.BandersnatchVRFSignature, error) {
+	var signature types.BandersnatchVRFSignature
+
+	if len(secretKey) != 32 {
+		return signature, errors.New("secret key must be 32 bytes")
+	}
+
+	if len(message) == 0 {
+		return signature, errors.New("message cannot be empty")
+	}
+
+	var contextPtr *C.uchar
+	var contextLen C.size_t
+
+	if len(context) > 0 {
+		contextPtr = (*C.uchar)(unsafe.Pointer(&context[0]))
+		contextLen = C.size_t(len(context))
+	}
+
+	ret := C.vrf_sign(
+		(*C.uchar)(unsafe.Pointer(&secretKey[0])),
+		C.size_t(len(secretKey)),
+		(*C.uchar)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		contextPtr,
+		contextLen,
+		(*C.uchar)(unsafe.Pointer(&signature[0])),
+	)
+
+	if ret != 0 {
+		return signature, fmt.Errorf("vrf_sign failed with code: %d", ret)
+	}
+
+	return signature, nil
+}
+
+// VRFOutputFromSeed computes VRF output without full signature.
+func VRFOutputFromSeed(secretKey []byte, message []byte) ([32]byte, error) {
+	var vrfOutput [32]byte
+
+	if len(secretKey) != 32 {
+		return vrfOutput, errors.New("secret key must be 32 bytes")
+	}
+
+	if len(message) == 0 {
+		return vrfOutput, errors.New("message cannot be empty")
+	}
+
+	ret := C.vrf_output_from_seed(
+		(*C.uchar)(unsafe.Pointer(&secretKey[0])),
+		C.size_t(len(secretKey)),
+		(*C.uchar)(unsafe.Pointer(&message[0])),
+		C.size_t(len(message)),
+		(*C.uchar)(unsafe.Pointer(&vrfOutput[0])),
+	)
+
+	if ret != 0 {
+		return vrfOutput, fmt.Errorf("vrf_output_from_seed failed with code: %d", ret)
+	}
+
+	return vrfOutput, nil
+}
+
+// DerivePublicKey derives public key from secret key seed.
+func DerivePublicKey(secretKey []byte) (types.BandersnatchPublicKey, error) {
+	var publicKey types.BandersnatchPublicKey
+
+	if len(secretKey) != 32 {
+		return publicKey, errors.New("secret key must be 32 bytes")
+	}
+
+	ret := C.derive_public_key(
+		(*C.uchar)(unsafe.Pointer(&secretKey[0])),
+		C.size_t(len(secretKey)),
+		(*C.uchar)(unsafe.Pointer(&publicKey[0])),
+	)
+
+	if ret != 0 {
+		return publicKey, fmt.Errorf("derive_public_key failed with code: %d", ret)
+	}
+
+	return publicKey, nil
 }

@@ -1,4 +1,4 @@
-use ark_vrf::ietf::Verifier;
+use ark_vrf::ietf::{Prover, Verifier};
 use ark_vrf::reexports::ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_vrf::ring;
 use ark_vrf::ring::RingSuite;
@@ -6,7 +6,7 @@ use ark_vrf::suites::bandersnatch::{
     BandersnatchSha512Ell2, PcsParams, RingCommitment, RingProof, RingProofParams,
 };
 use ark_vrf::Suite;
-use ark_vrf::{codec, ietf, Error, Input, Output, Public};
+use ark_vrf::{codec, ietf, Error, Input, Output, Public, Secret};
 use once_cell::sync::OnceCell;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,6 +118,161 @@ pub extern "C" fn ietf_vrf_output(input_ptr: *const u8, input_len: usize, out_pt
         }
         Err(_) => -3,
     }
+}
+
+/// Compute VRF output from a seed and message without full signature.
+pub fn vrf_output_from_seed_ffi(
+    secret_key: &[u8],
+    message: &[u8],
+) -> Result<[u8; 32], Error> {
+    if secret_key.len() != 32 {
+        return Err(Error::InvalidData);
+    }
+    let secret = Secret::<BandersnatchSha512Ell2>::from_seed(secret_key);
+
+    let input = Input::new(message).ok_or(Error::InvalidData)?;
+    let output = secret.output(input);
+    let vrf_hash = <BandersnatchSha512Ell2>::point_to_hash(&output.0);
+    let vrf_output: [u8; 32] = vrf_hash.as_slice()[..32]
+        .try_into()
+        .map_err(|_| Error::InvalidData)?;
+
+    Ok(vrf_output)
+}
+
+/// FFI wrapper for vrf_output_from_seed_ffi.
+#[no_mangle]
+pub extern "C" fn vrf_output_from_seed(
+    secret_key_ptr: *const u8,
+    secret_key_len: usize,
+    message_ptr: *const u8,
+    message_len: usize,
+    vrf_output_ptr: *mut u8,
+) -> i32 {
+    if secret_key_ptr.is_null() || message_ptr.is_null() || vrf_output_ptr.is_null() {
+        return -1;
+    }
+
+    let secret_key = unsafe { slice::from_raw_parts(secret_key_ptr, secret_key_len) };
+    let message = unsafe { slice::from_raw_parts(message_ptr, message_len) };
+
+    match vrf_output_from_seed_ffi(secret_key, message) {
+        Ok(vrf_output) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(vrf_output.as_ptr(), vrf_output_ptr, 32);
+            }
+            0
+        }
+        Err(_) => -2,
+    }
+}
+
+/// Sign a message using Bandersnatch VRF. Returns 96-byte signature.
+pub fn vrf_sign_ffi(
+    secret_key: &[u8],
+    message: &[u8],
+    context: &[u8],
+) -> Result<[u8; 96], Error> {
+    if secret_key.len() != 32 {
+        return Err(Error::InvalidData);
+    }
+    let secret = Secret::<BandersnatchSha512Ell2>::from_seed(secret_key);
+    let input = Input::new(message).ok_or(Error::InvalidData)?;
+    let output = secret.output(input);
+    let proof = secret.prove(input, output, context);
+
+    // Serialize: gamma (32 bytes) || proof (64 bytes)
+    let mut signature = [0u8; 96];
+    let mut gamma_bytes = Vec::new();
+    output.0.serialize_compressed(&mut gamma_bytes)
+        .map_err(|_| Error::InvalidData)?;
+    if gamma_bytes.len() != 32 {
+        return Err(Error::InvalidData);
+    }
+    signature[..32].copy_from_slice(&gamma_bytes);
+
+    let mut proof_bytes = Vec::new();
+    proof.serialize_compressed(&mut proof_bytes)
+        .map_err(|_| Error::InvalidData)?;
+    if proof_bytes.len() != 64 {
+        return Err(Error::InvalidData);
+    }
+    signature[32..96].copy_from_slice(&proof_bytes);
+
+    Ok(signature)
+}
+
+/// FFI wrapper for vrf_sign_ffi.
+#[no_mangle]
+pub extern "C" fn vrf_sign(
+    secret_key_ptr: *const u8,
+    secret_key_len: usize,
+    message_ptr: *const u8,
+    message_len: usize,
+    context_ptr: *const u8,
+    context_len: usize,
+    signature_out_ptr: *mut u8,
+) -> i32 {
+    if secret_key_ptr.is_null() || message_ptr.is_null() || signature_out_ptr.is_null() {
+        return -1;
+    }
+    let secret_key = unsafe { slice::from_raw_parts(secret_key_ptr, secret_key_len) };
+    let message = unsafe { slice::from_raw_parts(message_ptr, message_len) };
+    let context = if context_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(context_ptr, context_len) }
+    };
+
+    match vrf_sign_ffi(secret_key, message, context) {
+        Ok(signature) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(signature.as_ptr(), signature_out_ptr, 96);
+            }
+            0
+        }
+        Err(_) => -2,
+    }
+}
+
+/// Derive public key from secret key seed.
+#[no_mangle]
+pub extern "C" fn derive_public_key(
+    secret_key_ptr: *const u8,
+    secret_key_len: usize,
+    public_key_out_ptr: *mut u8,
+) -> i32 {
+    if secret_key_ptr.is_null() || public_key_out_ptr.is_null() {
+        return -1;
+    }
+
+    let secret_key = unsafe { slice::from_raw_parts(secret_key_ptr, secret_key_len) };
+    
+    if secret_key.len() != 32 {
+        return -2;
+    }
+
+    // Create secret from seed
+    let secret = Secret::<BandersnatchSha512Ell2>::from_seed(secret_key);
+
+    // Derive public key
+    let public = secret.public();
+
+    // Serialize public key
+    let mut pk_bytes = Vec::new();
+    if public.0.serialize_compressed(&mut pk_bytes).is_err() {
+        return -2;
+    }
+
+    if pk_bytes.len() != 32 {
+        return -2;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(pk_bytes.as_ptr(), public_key_out_ptr, 32);
+    }
+
+    0
 }
 
 // Embed the SRS data directly in the binary

@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"jam/pkg/bandersnatch"
 	"jam/pkg/block"
 	"jam/pkg/block/extrinsics"
 	"jam/pkg/block/header"
@@ -19,11 +20,18 @@ import (
 
 // Producer handles block production for a validator
 type Producer struct {
-	validatorIndex    int
-	bandersnatchSeed  []byte
-	broadcastFunc     func(header.Header) error
-	ctx               context.Context
-	cancel            context.CancelFunc
+	validatorIndex   int
+	bandersnatchSeed []byte
+	broadcastFunc    func(header.Header) error
+	ctx              context.Context
+	cancel           context.CancelFunc
+}
+
+// SlotLeaderInfo contains information needed to produce a block when we're the slot leader
+type SlotLeaderInfo struct {
+	IsLeader   bool
+	IsTicketed bool             // true if ticket mode, false if fallback mode
+	EntryIndex types.GenericNum // Ticket entry index (only valid in ticket mode)
 }
 
 // NewProducer creates a new block producer
@@ -108,21 +116,20 @@ func (p *Producer) processSlot() {
 	}
 
 	// Check if we're the slot leader
-	isLeader, err := p.isSlotLeader(currentSlot, currentState)
+	leaderInfo, err := p.checkSlotLeader(currentSlot, currentState)
 	if err != nil {
 		log.Printf("[BlockProducer] Failed to check slot leader: %v", err)
 		return
 	}
 
-	if !isLeader {
+	if !leaderInfo.IsLeader {
 		log.Printf("[BlockProducer] Not slot leader for slot %d", currentSlot)
 		return
 	}
 
 	log.Printf("[BlockProducer] We are slot leader for slot %d! Producing block...", currentSlot)
 
-	// Produce the block
-	if err := p.produceBlock(currentSlot); err != nil {
+	if err := p.produceBlock(currentSlot, currentState, leaderInfo); err != nil {
 		log.Printf("[BlockProducer] Failed to produce block: %v", err)
 		return
 	}
@@ -135,43 +142,65 @@ func (p *Producer) getCurrentSlot() types.Timeslot {
 	return types.Timeslot(slotsSinceEpoch)
 }
 
-// isSlotLeader checks if this validator should produce a block for the given slot
-func (p *Producer) isSlotLeader(slot types.Timeslot, currentState *state.State) (bool, error) {
+// checkSlotLeader checks if this validator should produce a block for the given slot.
+func (p *Producer) checkSlotLeader(slot types.Timeslot, currentState *state.State) (SlotLeaderInfo, error) {
+	notLeader := SlotLeaderInfo{IsLeader: false}
+
 	// Calculate slot index within epoch
 	slotIndexInEpoch := int(slot % types.Timeslot(constants.NumTimeslotsPerEpoch))
 
 	// Get our Bandersnatch public key from the active validator keysets
 	if p.validatorIndex >= len(currentState.ValidatorKeysetsActive) {
-		return false, fmt.Errorf("validator index %d out of range", p.validatorIndex)
+		return notLeader, fmt.Errorf("validator index %d out of range", p.validatorIndex)
 	}
 	myBandersnatchKey := currentState.ValidatorKeysetsActive[p.validatorIndex].ToBandersnatchPublicKey()
 
 	sks := currentState.SafroleBasicState.SealingKeySequence
 
 	if sks.IsSealKeyTickets() {
-		// Ticket-based mode: check if we own the ticket for this slot
-		// The ticket contains a VerifiablyRandomIdentifier which is derived from our VRF
-		// For now, we check if the ticket's entry index matches our validator index
-		// This is a simplification - full implementation would verify VRF ownership
+		// Ticket mode: sign with message "jam_ticket_seal" || entropy[3] || ticket.EntryIndex
+		// and check if VRF output matches ticket.VerifiablyRandomIdentifier
 		ticket := sks.SealKeyTickets[slotIndexInEpoch]
-		// TODO: Proper ticket ownership verification requires VRF proof
-		// For now, we can't produce blocks in ticket mode without VRF signing capability
-		log.Printf("[BlockProducer] Ticket mode - ticket entry index: %d, our index: %d",
-			ticket.EntryIndex, p.validatorIndex)
-		return false, nil
+
+		message := append([]byte("jam_ticket_seal"), currentState.EntropyAccumulator[3][:]...)
+		message = append(message, byte(ticket.EntryIndex))
+
+		vrfOutput, err := bandersnatch.VRFOutputFromSeed(p.bandersnatchSeed, message)
+		if err != nil {
+			return notLeader, fmt.Errorf("failed to compute VRF output: %w", err)
+		}
+
+		// Check if our VRF output matches the ticket's VerifiablyRandomIdentifier
+		if vrfOutput != ticket.VerifiablyRandomIdentifier {
+			return notLeader, nil
+		}
+
+		log.Printf("[BlockProducer] Ticket mode - we own ticket for slot %d (entry index: %d)",
+			slotIndexInEpoch, ticket.EntryIndex)
+
+		return SlotLeaderInfo{
+			IsLeader:   true,
+			IsTicketed: true,
+			EntryIndex: ticket.EntryIndex,
+		}, nil
 	} else {
 		// Fallback mode: check if our Bandersnatch key matches the expected key
 		expectedKey := sks.BandersnatchKeys[slotIndexInEpoch]
-		isLeader := myBandersnatchKey == expectedKey
-		if isLeader {
-			log.Printf("[BlockProducer] Fallback mode - our key matches slot %d", slotIndexInEpoch)
+		if myBandersnatchKey != expectedKey {
+			return notLeader, nil
 		}
-		return isLeader, nil
+
+		log.Printf("[BlockProducer] Fallback mode - we are slot leader for slot %d", slotIndexInEpoch)
+
+		return SlotLeaderInfo{
+			IsLeader:   true,
+			IsTicketed: false,
+		}, nil
 	}
 }
 
 // produceBlock creates and broadcasts a new block
-func (p *Producer) produceBlock(slot types.Timeslot) error {
+func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, leaderInfo SlotLeaderInfo) error {
 	// Get the current chain tip
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
@@ -197,24 +226,52 @@ func (p *Producer) produceBlock(slot types.Timeslot) error {
 	// Calculate extrinsic hash
 	extrinsicHash := extrinsic.MerkleCommitment()
 
-	// Create the unsigned header
+	// Build the block seal message
+	var sealMessage []byte
+	if leaderInfo.IsTicketed {
+		// Ticket mode: message = "jam_ticket_seal" || entropy[3] || entry_index
+		sealMessage = append([]byte("jam_ticket_seal"), currentState.EntropyAccumulator[3][:]...)
+		sealMessage = append(sealMessage, byte(leaderInfo.EntryIndex))
+	} else {
+		// Fallback mode: message = "jam_fallback_seal" || entropy[3]
+		sealMessage = append([]byte("jam_fallback_seal"), currentState.EntropyAccumulator[3][:]...)
+	}
+
+	// Compute VRF output from seal message (needed for VRF signature)
+	sealVRFOutput, err := bandersnatch.VRFOutputFromSeed(p.bandersnatchSeed, sealMessage)
+	if err != nil {
+		return fmt.Errorf("failed to compute seal VRF output: %w", err)
+	}
+
+	// Sign the VRF signature (entropy contribution)
+	entropyMessage := append([]byte("jam_entropy"), sealVRFOutput[:]...)
+	vrfSignature, err := bandersnatch.VRFSign(p.bandersnatchSeed, entropyMessage, []byte{})
+	if err != nil {
+		return fmt.Errorf("failed to sign VRF signature: %w", err)
+	}
+
 	unsignedHeader := header.UnsignedHeader{
 		ParentHash:                   tip.Block.Header.Hash(),
 		PriorStateRoot:               tip.Info.PosteriorStateRoot,
 		ExtrinsicHash:                extrinsicHash,
 		TimeSlot:                     slot,
-		EpochMarker:                  nil, // TODO: Set on epoch boundary
-		WinningTicketsMarker:         nil, // TODO: Set when tickets are ready
+		EpochMarker:                  nil, // TODO: epoch boundary handling
+		WinningTicketsMarker:         nil, // TODO: ticket accumulator handling
 		BandersnatchBlockAuthorIndex: types.ValidatorIndex(p.validatorIndex),
-		VRFSignature:                 types.BandersnatchVRFSignature{}, // TODO: Sign with Bandersnatch
+		VRFSignature:                 vrfSignature,
 		OffendersMarker:              nil,
 	}
 
+	unsignedHeaderBytes := serializer.Serialize(&unsignedHeader)
+	blockSeal, err := bandersnatch.VRFSign(p.bandersnatchSeed, sealMessage, unsignedHeaderBytes)
+	if err != nil {
+		return fmt.Errorf("failed to sign block seal: %w", err)
+	}
+
 	// Create the full header with block seal
-	// TODO: Sign with Bandersnatch to create proper block seal
 	newHeader := header.Header{
 		UnsignedHeader: unsignedHeader,
-		BlockSeal:      types.BandersnatchVRFSignature{}, // TODO: Sign
+		BlockSeal:      blockSeal,
 	}
 
 	// Create the block
