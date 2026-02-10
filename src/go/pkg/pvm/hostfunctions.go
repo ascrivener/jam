@@ -353,7 +353,6 @@ func Info(ctx *HostFunctionContext[struct{}], tx *staterepository.TrackedTx, ser
 				ParentServiceIndex:             targetAccount.ParentServiceIndex,
 			}
 
-			// Serialize the account information
 			v = serializer.Serialize(accountInfo)
 
 		}

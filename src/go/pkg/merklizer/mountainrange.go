@@ -19,7 +19,6 @@ func (r MMBelt) DeepCopy() MMBelt {
 	result := make(MMBelt, len(r))
 	for i, node := range r {
 		if node != nil {
-			// Create a new [32]byte and copy the data
 			newNode := new([32]byte)
 			copy(newNode[:], node[:])
 			result[i] = newNode

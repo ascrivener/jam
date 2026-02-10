@@ -693,7 +693,6 @@ func (c *jamnpsConnection) processBlockAnnouncement(announcement *Announcement) 
 	log.Printf("Announced block slot: %d", announcement.Header.TimeSlot)
 	log.Printf("Finalized block hash: %x", announcement.Final.HeaderHash)
 
-	// Check if we already have this block
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		log.Printf("Failed to create transaction for block check: %v", err)
@@ -809,33 +808,26 @@ func (c *jamnpsConnection) handleBlockRequest(stream Stream) error {
 	log.Printf("Received block request from validator %d: hash=%x, direction=%d, maxBlocks=%d",
 		c.ValidatorIdx(), req.Hash, req.Direction, req.MaxBlocks)
 
-	// Create a transaction to read blocks
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return fmt.Errorf("failed to create transaction: %w", err)
 	}
 	defer tx.Close()
 
-	// Collect blocks to send
 	var blocks [][]byte
 	currentHash := req.Hash
 
 	for i := uint32(0); i < req.MaxBlocks; i++ {
-		// Get the block
 		blk, err := block.Get(tx, currentHash)
 		if err != nil {
-			// Block not found - stop here
 			log.Printf("Block %x not found, stopping at %d blocks", currentHash, len(blocks))
 			break
 		}
 
-		// Serialize the block (just the Block, not BlockWithInfo)
 		blockData := serializer.Serialize(blk.Block)
 		blocks = append(blocks, blockData)
 
-		// Move to next block based on direction
 		if req.Direction == DirectionAncestors {
-			// Move to parent
 			currentHash = blk.Block.Header.ParentHash
 		} else {
 			// DirectionDescendants - we'd need to track children, which we don't currently
@@ -844,14 +836,12 @@ func (c *jamnpsConnection) handleBlockRequest(stream Stream) error {
 		}
 	}
 
-	// Send each block as a separate message
 	for _, blockData := range blocks {
 		if err := WriteMessage(stream, blockData); err != nil {
 			return fmt.Errorf("failed to write block: %w", err)
 		}
 	}
 
-	// Close write side to signal we're done
 	stream.CloseWrite()
 
 	log.Printf("Sent %d blocks to validator %d", len(blocks), c.ValidatorIdx())

@@ -824,7 +824,6 @@ func StateKeyConstructorFromHash(s types.ServiceIndex, h [32]byte) [31]byte {
 	key[6] = n3
 	key[7] = h[3]
 
-	// Copy the remaining bytes of h from index 4 onward
 	copy(key[8:], h[4:])
 
 	return key

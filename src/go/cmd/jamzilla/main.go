@@ -69,7 +69,6 @@ func main() {
 
 	log.Printf("Using dev validator %d", *devValidator)
 
-	// Initialize the global state repository
 	err = staterepository.InitializeGlobalRepository(*dataPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize global state repository: %v", err)
@@ -78,7 +77,6 @@ func main() {
 
 	merklizerState := &merklizer.State{}
 	for stateKey, stateValue := range config.GenesisState {
-		// Convert state key from hex to [31]byte
 		keyBytes, err := hex.DecodeString(stateKey)
 		if err != nil {
 			log.Fatalf("Failed to decode state key %s: %v", stateKey, err)
@@ -87,33 +85,27 @@ func main() {
 			log.Fatalf("Invalid state key length: expected 31 bytes, got %d bytes for key %s", len(keyBytes), stateKey)
 		}
 
-		// Convert state value from hex to []byte
 		valueBytes, err := hex.DecodeString(stateValue)
 		if err != nil {
 			log.Fatalf("Failed to decode state value for key %s: %v", stateKey, err)
 		}
 
-		// Create a [31]byte array for the key
 		var key [31]byte
 		copy(key[:], keyBytes)
 
-		// Add to state
 		*merklizerState = append(*merklizerState, merklizer.StateKV{
 			OriginalKey: key,
 			Value:       valueBytes,
 		})
 	}
 
-	// Begin a transaction
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		log.Fatalf("Failed to create transaction: %v", err)
 	}
-	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
-			// Rollback if not marked successful
 			tx.Close()
 		}
 	}()
@@ -180,10 +172,6 @@ func main() {
 	h2.Write(seed)
 	bandersnatchSecretSeed := h2.Sum(nil)
 
-	// Use the derived secret seed to get private key
-	// NOTE: Using crypto/ed25519 for key derivation is fine - ZIP-215 compliance
-	// only matters for signature VERIFICATION, not key generation.
-	// The networking layer will use ed25519consensus for verification if needed.
 	privateKey = ed25519.NewKeyFromSeed(ed25519SecretSeed)
 
 	log.Printf("Using JIP-5 derived keys for validator %d", *devValidator)
@@ -191,15 +179,12 @@ func main() {
 	log.Printf("Ed25519 secret seed: %x", ed25519SecretSeed)
 	log.Printf("Bandersnatch secret seed: %x", bandersnatchSecretSeed)
 
-	// Extract chain ID from genesis header hash (first 8 nibbles/4 bytes)
 	genesisHash := blake2b.Sum256(headerBytes)
 	chainID := fmt.Sprintf("%x", genesisHash[:4])
 	log.Printf("Using chain ID: %s", chainID)
 
-	// Determine listen address based on validator index
 	listenAddr := fmt.Sprintf(":%d", 40000+*devValidator)
 
-	// Create a network node for both outgoing and incoming connections
 	nodeOpts := net.NodeOptions{
 		PrivateKey:  privateKey,
 		ChainID:     chainID,
@@ -207,26 +192,21 @@ func main() {
 		DialTimeout: 10 * time.Second,
 	}
 
-	// Initialize the global singleton node
 	err = net.InitializeGlobalNode(nodeOpts)
 	if err != nil {
 		log.Fatalf("Error creating network node: %v", err)
 	}
 
-	// Get reference to the global node for local use
 	node := net.GetGlobalNode()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Choose peer provider based on config
 	var peerProvider net.PeerProvider
 	if len(config.Peers) > 0 {
-		// Testnet mode: use config-based peer discovery
 		log.Printf("Using testnet mode with %d configured peers", len(config.Peers))
 		peerProvider = net.NewConfigPeerProvider(*devValidator, privateKey, config.Peers)
 	} else {
-		// Production mode: use chain state for peer discovery
 		log.Printf("Using production mode with chain state peer discovery")
 		peerProvider, err = net.NewChainStatePeerProvider(privateKey)
 		if err != nil {
@@ -234,7 +214,6 @@ func main() {
 		}
 	}
 
-	// Start the node with the chosen peer provider
 	if err := node.StartWithProvider(ctx, peerProvider); err != nil {
 		log.Fatalf("Error starting network node: %v", err)
 	}
@@ -242,9 +221,7 @@ func main() {
 
 	log.Printf("Network node started, listening at %s", node.Addr())
 
-	// Start the block producer
 	broadcastFunc := func(hdr header.Header) error {
-		// Get the current finalized block info
 		tx, err := staterepository.NewTrackedTx([32]byte{})
 		if err != nil {
 			return err
@@ -256,14 +233,10 @@ func main() {
 			return err
 		}
 
-		// Use the parent as finalized for now (simplified)
 		return node.BroadcastBlockAnnouncement(hdr, tip.Block.Header.Hash(), tip.Block.Header.TimeSlot)
 	}
 
-	// Create mempool for pending extrinsics
 	mp := mempool.New()
-
-	// Create and set protocol handler for CE streams
 	protocolHandler := net.NewProtocolHandler(mp, *devValidator)
 	node.SetProtocolHandler(protocolHandler)
 

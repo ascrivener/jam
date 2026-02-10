@@ -192,7 +192,6 @@ type DeferredTransfer struct { // X
 
 // DeepCopy creates a deep copy of DeferredTransfer
 func (t DeferredTransfer) DeepCopy() DeferredTransfer {
-	// Create a new instance with all fields copied
 	return DeferredTransfer{
 		SenderServiceIndex:   t.SenderServiceIndex,
 		ReceiverServiceIndex: t.ReceiverServiceIndex,

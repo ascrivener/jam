@@ -65,15 +65,12 @@ func (a *AccumulationHistory) ShiftLeft(newLast map[[32]byte]struct{}) {
 }
 
 func GetState(tx *staterepository.TrackedTx) (*State, error) {
-	// Create a data source that reads from repository
 	dataSource := &repositoryDataSource{tx: tx}
 	return getStateFromDataSource(dataSource)
 }
 
 // GetStateFromKVs reconstructs a State object from a merklizer.State (list of key-value pairs)
-// This is useful for testing and reconstructing states from test vectors
 func GetStateFromKVs(kvs merklizer.State) (*State, error) {
-	// Create a data source that reads from KV map
 	dataSource := &kvDataSource{kvMap: createKVMap(kvs)}
 	return getStateFromDataSource(dataSource)
 }

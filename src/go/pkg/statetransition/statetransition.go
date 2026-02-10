@@ -63,12 +63,10 @@ func FilterWorkReportsByWorkPackageHashes(r []workreport.WorkReportWithWorkPacka
 
 func STF(curBlock block.Block) ([32]byte, error) {
 
-	// 1. Begin a transaction for reorganization
 	tx, err := staterepository.NewTrackedTx(curBlock.Header.PriorStateRoot)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to begin reorganization transaction: %w", err)
 	}
-	// Use a separate txErr variable to track transaction errors
 	defer tx.Close()
 
 	parentBlock, err := block.Get(tx, curBlock.Header.ParentHash)
@@ -337,13 +335,11 @@ func computeAuthorizersPool(header header.Header, guarantees extrinsics.Guarante
 }
 
 func computeIntermediateRecentBlocks(header header.Header, priorRecentBlocks []state.RecentBlock) []state.RecentBlock {
-	// Create a deep copy of the slice and its contents
 	posteriorRecentBlocks := make([]state.RecentBlock, len(priorRecentBlocks))
 	for i, block := range priorRecentBlocks {
 		posteriorRecentBlocks[i] = block.DeepCopy()
 	}
 
-	// Now modify the copy, not the original
 	if len(posteriorRecentBlocks) > 0 {
 		posteriorRecentBlocks[len(posteriorRecentBlocks)-1].StateRoot = header.PriorStateRoot
 	}
@@ -364,26 +360,20 @@ func computeAccumulationOutputLog(priorAccumulationOutputLog merklizer.MMBelt, a
 func computeRecentActivity(header header.Header, guarantees extrinsics.Guarantees, intermediateRecentBlocks []state.RecentBlock, priorAccumulationOutputLog merklizer.MMBelt, accumulationOutputSequence []pvm.BEEFYCommitment) state.RecentActivity {
 	posteriorAccumulationOutputLog := computeAccumulationOutputLog(priorAccumulationOutputLog, accumulationOutputSequence)
 
-	// Create work package hashes map
 	workPackageHashesToSegmentRoots := make(map[[32]byte][32]byte)
 	for _, guarantee := range guarantees {
-		// Calculate the work package hash ((gw)s)h
 		workPackageSpecification := guarantee.WorkReport.WorkPackageSpecification
 		workPackageHashesToSegmentRoots[workPackageSpecification.WorkPackageHash] = workPackageSpecification.SegmentRoot
 	}
 
-	// Create the new recent block
 	newRecentBlock := state.RecentBlock{
 		HeaderHash:                      blake2b.Sum256(serializer.Serialize(header)),
 		MMRSuperPeak:                    merklizer.MMRSuperPeak(posteriorAccumulationOutputLog),
 		StateRoot:                       [32]byte{},
 		WorkPackageHashesToSegmentRoots: workPackageHashesToSegmentRoots,
 	}
-	// Append the new block to the recent blocks list
 	updatedRecentBlocks := append(intermediateRecentBlocks, newRecentBlock)
-	// Keep only the most recent H blocks
 	if len(updatedRecentBlocks) > int(constants.RecentHistorySizeBlocks) {
-		// Trim the list to keep only the most recent H blocks
 		updatedRecentBlocks = updatedRecentBlocks[len(updatedRecentBlocks)-int(constants.RecentHistorySizeBlocks):]
 	}
 
@@ -562,10 +552,7 @@ func computePostJudgementIntermediatePendingReports(disputes extrinsics.Disputes
 }
 
 func computePostGuaranteesExtrinsicIntermediatePendingReports(header header.Header, assurances extrinsics.Assurances, postJudgementIntermediatePendingReports [constants.NumCores]*state.PendingReport) [constants.NumCores]*state.PendingReport {
-	// Create a copy of the input array
 	posteriorPendingReports := postJudgementIntermediatePendingReports
-
-	// Apply the modifications to the copy
 	for coreIndex, pendingReport := range posteriorPendingReports {
 		if pendingReport == nil {
 			continue

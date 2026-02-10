@@ -231,14 +231,12 @@ type AccumulationStateComponents struct {
 }
 
 func (u *AccumulationStateComponents) DeepCopy() *AccumulationStateComponents {
-	// Create a new struct to hold the copied data
 	copy := &AccumulationStateComponents{
 		UpcomingValidatorKeysets: u.UpcomingValidatorKeysets,
 		AuthorizersQueue:         u.AuthorizersQueue,
-		PrivilegedServices:       u.PrivilegedServices, // Copy the struct
+		PrivilegedServices:       u.PrivilegedServices,
 	}
 
-	// Deep copy the map inside PrivilegedServices if it exists
 	if u.PrivilegedServices.AlwaysAccumulateServicesWithGas != nil {
 		copy.PrivilegedServices.AlwaysAccumulateServicesWithGas = make(map[types.ServiceIndex]types.GasValue)
 		maps.Copy(copy.PrivilegedServices.AlwaysAccumulateServicesWithGas, u.PrivilegedServices.AlwaysAccumulateServicesWithGas)

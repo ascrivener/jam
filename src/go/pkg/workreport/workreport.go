@@ -51,15 +51,12 @@ func (workReport WorkReport) Set(tx *staterepository.TrackedTx) error {
 	workPackageHash := workReport.WorkPackageSpecification.WorkPackageHash
 	segmentRoot := workReport.WorkPackageSpecification.SegmentRoot
 
-	// Serialize the work report once
 	serialized := serializer.Serialize(workReport)
 
-	// Store the primary record by segment root
 	if err := staterepository.SetWorkReportBySegmentRoot(tx, segmentRoot, serialized); err != nil {
 		return fmt.Errorf("failed to store work report by segment root: %w", err)
 	}
 
-	// Store a reference from work package hash to segment root
 	if err := staterepository.SetWorkReportIndex(tx, workPackageHash, segmentRoot); err != nil {
 		return fmt.Errorf("failed to store work package hash index: %w", err)
 	}
@@ -82,7 +79,6 @@ func GetWorkReportByWorkPackageHash(tx *staterepository.TrackedTx, workPackageHa
 		return WorkReport{}, fmt.Errorf("segment root not found for work package hash %x", workPackageHash)
 	}
 
-	// Then do the main lookup
 	return GetWorkReportBySegmentRoot(tx, segmentRoot)
 }
 
@@ -111,7 +107,6 @@ func getWorkReportByKey(tx *staterepository.TrackedTx, segmentRoot [32]byte) (Wo
 		return WorkReport{}, fmt.Errorf("work report not found for segment root %x", segmentRoot)
 	}
 
-	// Copy the value before closing
 	dataCopy := make([]byte, len(workReportBytes))
 	copy(dataCopy, workReportBytes)
 

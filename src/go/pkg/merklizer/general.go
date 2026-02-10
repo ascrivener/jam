@@ -235,20 +235,12 @@ func GetRootUsingJustification(leaf []byte, leafIndex int, leafCount int, justif
 		mid := (leafCount + 1) / 2
 
 		if currentIndex < mid {
-			// We're in left subtree, sibling is on the right
-			// Create a "mini-array" with just our current hash and the sibling
 			nodeInputs := [][]byte{currentHash[:], sibling[:]}
-			// Use node() to hash them together properly
 			currentHash = [32]byte(node(nodeInputs, hash))
-			// Next level, stay in left half
 			leafCount = mid
 		} else {
-			// We're in right subtree, sibling is on the left
-			// Create a "mini-array" with just the sibling and our current hash
-			nodeInputs := [][]byte{sibling[:], currentHash[:]} // Use byte slices for node function
-			// Use node() to hash them together properly
+			nodeInputs := [][]byte{sibling[:], currentHash[:]}
 			currentHash = [32]byte(node(nodeInputs, hash))
-			// Next level, move to right half and adjust index
 			currentIndex = currentIndex - mid
 			leafCount = leafCount - mid
 		}

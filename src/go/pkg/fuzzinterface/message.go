@@ -131,10 +131,8 @@ func EncodeMessage(msg ResponseMessage) ([]byte, error) {
 		return nil, fmt.Errorf("unknown message type")
 	}
 
-	// Prefix with message type
 	result := append([]byte{byte(msgType)}, encodedMessage...)
 
-	// Calculate length and prefix it
 	lengthBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lengthBytes, uint32(len(result)))
 	return append(lengthBytes, result...), nil

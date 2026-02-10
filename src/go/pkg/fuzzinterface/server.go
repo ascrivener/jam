@@ -88,14 +88,12 @@ func (s *Server) Start(socketPath string) error {
 func (s *Server) handleConnection(conn net.Conn) error {
 	defer conn.Close()
 
-	// Wait for first message (PeerInfo)
 	msgData, err := s.receiveMessageData(conn)
 	if err != nil {
 		log.Printf("Error receiving initial PeerInfo: %v", err)
 		return err
 	}
 
-	// Get the message type
 	msgType := RequestMessageType(msgData[0])
 
 	if msgType != RequestMessageTypePeerInfo {
@@ -103,7 +101,6 @@ func (s *Server) handleConnection(conn net.Conn) error {
 		return fmt.Errorf("first message is not PeerInfo")
 	}
 
-	// Skip the type byte
 	msgData = msgData[1:]
 
 	var peerInfo PeerInfo
@@ -186,7 +183,6 @@ func (s *Server) HandleMessageData(msgData []byte) (ResponseMessage, error) {
 	}
 
 	msgType := RequestMessageType(msgData[0])
-	// Skip the type byte
 	msgData = msgData[1:]
 
 	switch msgType {
@@ -225,16 +221,13 @@ func (s *Server) handleInitialize(initializeData []byte) (ResponseMessage, error
 		return ResponseMessage{}, fmt.Errorf("global repository not initialized")
 	}
 
-	// Begin a transaction
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return ResponseMessage{}, err
 	}
-	// Use a separate txErr variable to track transaction errors
 	var txSuccess bool
 	defer func() {
 		if !txSuccess {
-			// Rollback if not marked successful
 			tx.Close()
 		}
 	}()

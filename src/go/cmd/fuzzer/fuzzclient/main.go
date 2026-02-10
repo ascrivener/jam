@@ -173,10 +173,8 @@ func encodeRequestMessage(msg fuzzinterface.RequestMessage) ([]byte, error) {
 		return nil, fmt.Errorf("unknown message type")
 	}
 
-	// Prefix with message type
 	result := append([]byte{byte(msgType)}, encodedMessage...)
 
-	// Calculate length and prefix it
 	lengthBytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(lengthBytes, uint32(len(result)))
 	return append(lengthBytes, result...), nil
@@ -184,15 +182,11 @@ func encodeRequestMessage(msg fuzzinterface.RequestMessage) ([]byte, error) {
 
 // decodeResponseMessage decodes a response message according to the JAM protocol format
 func decodeResponseMessage(data []byte) (fuzzinterface.ResponseMessage, error) {
-	// First byte is the message type
 	if len(data) < 1 {
 		return fuzzinterface.ResponseMessage{}, fmt.Errorf("message too short")
 	}
 
-	// Get the message type
 	msgType := fuzzinterface.ResponseMessageType(data[0])
-
-	// Skip the type byte
 	data = data[1:]
 
 	var msg fuzzinterface.ResponseMessage
@@ -294,7 +288,6 @@ func (fc *FuzzerClient) testDisputes(t *testing.T, disputesDir string) {
 
 	t.Logf("Found %d test directories in %s", len(testDirs), disputesDir)
 
-	// Run each test directory as a subtest
 	for _, testDir := range testDirs {
 		testName := filepath.Base(testDir)
 		// if !strings.Contains(testName, "1768067359_9734") {
@@ -410,16 +403,9 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 		t.Fatalf("State root mismatch: %x != %x", *resp.StateRoot, expectedStateRoot)
 	}
 
-	// Process all test files sequentially after the warp file
 	var longestDuration time.Duration
 	var longestTestFile string
 
-	// Start profiling before processing test vectors
-	// startProfiling := fuzzinterface.StartProfiling{}
-	// _, err = fc.sendAndReceive(fuzzinterface.RequestMessage{StartProfiling: &startProfiling})
-	// if err != nil {
-	// 	t.Logf("Warning: Failed to start profiling: %v", err)
-	// } else {
 	// 	t.Logf("Profiling started for ImportBlock operations")
 	// }
 
@@ -504,20 +490,17 @@ func (fc *FuzzerClient) testIndividualVector(t *testing.T, vectorsDir string) {
 				continue
 			}
 
-			// compare expectedState with actualState
 			if diff := cmp.Diff(expectedState, actualState); diff != "" {
 				t.Errorf("State comparison failed for %s:", testFileName)
 				t.Errorf("State mismatch (-expected +actual):\n%s", diff)
 			} else {
 				t.Logf("State comparison passed for %s: states are identical", testFileName)
 			}
-			// Compare the underlying KVs to show any differences
 			compareKVs(t, testVector.PostState.State, *getStateResponse.State)
 		} else {
 			t.Logf("Test passed for %s! State root matches: %x", testFileName, *resp.StateRoot)
 		}
 
-		// Track longest test
 		duration := time.Since(startTime)
 		if duration > longestDuration {
 			longestDuration = duration
@@ -622,39 +605,32 @@ func (fc *FuzzerClient) testFuzzerVersion(t *testing.T, dir string) {
 // ff + little-endian uint32 service index + zeros
 // Returns the service index and true if it matches, 0 and false otherwise
 func parseServiceIndexKey(key [31]byte) (uint32, bool) {
-	// Check if key starts with 0xff
 	if key[0] != 0xff {
 		return 0, false
 	}
 
-	// Check if the pattern matches: ff, n0, 0, n1, 0, n2, 0, n3, 0, 0...
-	// where n0,n1,n2,n3 are the little-endian bytes of a uint32 service index
-	if len(key) < 9 { // Need at least ff + 4 service index bytes + 4 zero bytes
+	if len(key) < 9 {
 		return 0, false
 	}
 
-	// Check the pattern: every other byte after ff should be 0
 	for i := 2; i < len(key) && i < 9; i += 2 {
 		if key[i] != 0 {
 			return 0, false
 		}
 	}
 
-	// Check that remaining bytes are all zeros
 	for i := 9; i < len(key); i++ {
 		if key[i] != 0 {
 			return 0, false
 		}
 	}
 
-	// Extract the service index from positions 1, 3, 5, 7 (little-endian)
 	serviceIndex := uint32(key[1]) | (uint32(key[3]) << 8) | (uint32(key[5]) << 16) | (uint32(key[7]) << 24)
 
 	return serviceIndex, true
 }
 
 func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
-	// Compare the underlying KVs to show any differences
 	expectedKVsMap := make(map[[31]byte][]byte)
 	for _, kv := range expectedKVs {
 		expectedKVsMap[kv.OriginalKey] = kv.Value
@@ -710,7 +686,6 @@ func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 			t.Errorf("~ %x:", key)
 			expectedValue := expectedKVsMap[key]
 			actualValue := actualKVsMap[key]
-			// Check if this key matches the service index pattern
 			if serviceIndex, isServiceKey := parseServiceIndexKey(key); isServiceKey {
 				fmt.Printf("Service index key mismatch detected: %d\n", serviceIndex)
 				expectedServiceAccount := serviceaccount.ServiceAccountData{}
@@ -739,7 +714,6 @@ func compareKVs(t *testing.T, expectedKVs, actualKVs merklizer.State) {
 }
 
 func main() {
-	// Parse command line arguments
 	socketPath := flag.String("socket", "/tmp/jam_target.sock", "Path for the Unix domain socket")
 	vectorsPath := flag.String("vectors", "/Users/adamscrivener/Projects/Jam/jam-test-vectors/traces/fallback", "Path to the test vectors directory")
 	inProcess := flag.Bool("in-process", false, "Run in in-process mode (no socket communication)")

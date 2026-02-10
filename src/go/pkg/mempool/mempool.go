@@ -135,8 +135,6 @@ func (m *Mempool) AddTicket(epochIndex uint32, ticket extrinsics.Ticket, receive
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Derive VRF output from the proof for keying
-	// The VRF output is the first 32 bytes of the proof
 	var vrfOutput [32]byte
 	copy(vrfOutput[:], ticket.ValidityProof[:32])
 
@@ -294,12 +292,10 @@ func (m *Mempool) AddJudgment(workReportHash [32]byte, epochIndex uint32, judgme
 
 	key := judgmentKey{WorkReportHash: workReportHash, ValidatorIndex: judgment.ValidatorIndex}
 
-	// Check if we already have this judgment
 	if _, exists := m.judgments[key]; exists {
 		return false, false, false
 	}
 
-	// Add the judgment
 	m.judgments[key] = PendingJudgment{
 		WorkReportHash: workReportHash,
 		Judgment:       judgment,
@@ -308,12 +304,10 @@ func (m *Mempool) AddJudgment(workReportHash [32]byte, epochIndex uint32, judgme
 
 	isNegative := !judgment.Valid
 
-	// Check if we already have a verdict for this work-report
 	if _, exists := m.verdicts[workReportHash]; exists {
 		return true, isNegative, false
 	}
 
-	// Count judgments for this work-report
 	var judgmentsForReport []extrinsics.Judgement
 	for k, pj := range m.judgments {
 		if k.WorkReportHash == workReportHash {
@@ -321,10 +315,8 @@ func (m *Mempool) AddJudgment(workReportHash [32]byte, epochIndex uint32, judgme
 		}
 	}
 
-	// Check if we have enough for a verdict (2/3 + 1 threshold)
 	threshold := int(constants.NumValidatorSafetyThreshold)
 	if len(judgmentsForReport) >= threshold {
-		// Create verdict with exactly threshold judgments
 		var verdictJudgments [constants.NumValidatorSafetyThreshold]extrinsics.Judgement
 		for i := 0; i < threshold && i < len(judgmentsForReport); i++ {
 			verdictJudgments[i] = judgmentsForReport[i]

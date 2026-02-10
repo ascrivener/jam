@@ -735,7 +735,6 @@ func Get(tx *staterepository.TrackedTx, headerHash [32]byte) (*BlockWithInfo, er
 func GetAnchorBlock(tx *staterepository.TrackedTx, header header.Header, targetAnchorHeaderHash [32]byte) (*BlockWithInfo, error) {
 	currentHeaderHash := header.ParentHash
 	for {
-		// Get the current block
 		blockWithInfo, err := Get(tx, currentHeaderHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get block %x: %w", currentHeaderHash, err)
@@ -762,28 +761,21 @@ func (block *BlockWithInfo) GetPathFromAncestor(tx *staterepository.TrackedTx, a
 		return nil, fmt.Errorf("block and ancestor cannot be nil")
 	}
 
-	// If LCA and target are the same, return empty path
 	ancestorHash := ancestor.Block.Header.Hash()
-	// Build path from target back to LCA
 	var path []*BlockWithInfo
 	current := block
 
 	for {
-		// Check if we've reached ancestor
 		if current.Block.Header.Hash() == ancestorHash {
-			// Found ancestor
 			break
 		}
 
-		// Check if we've reached genesis without finding ancestor
 		if current.Block.Header.ParentHash == [32]byte{} {
 			return nil, fmt.Errorf("reached genesis without finding ancestor")
 		}
 
-		// Add current block to path
 		path = append([]*BlockWithInfo{current}, path...)
 
-		// Move to parent
 		parent, err := Get(tx, current.Block.Header.ParentHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get parent block: %w", err)
@@ -795,19 +787,13 @@ func (block *BlockWithInfo) GetPathFromAncestor(tx *staterepository.TrackedTx, a
 }
 
 func (block *BlockWithInfo) Set(tx *staterepository.TrackedTx) error {
-
-	// Calculate the header hash
 	headerHash := block.Block.Header.Hash()
-
-	// Serialize the block
 	data := serializer.Serialize(block)
 
-	// Store the serialized block in the repository
-	if err := staterepository.SetBlockKV(tx, headerHash, data); err != nil { // Use batch instead of repo
+	if err := staterepository.SetBlockKV(tx, headerHash, data); err != nil {
 		return fmt.Errorf("failed to store block %x: %w", headerHash, err)
 	}
 
-	// Automatically update the chain tip when storing a new block
 	if err := staterepository.SetTip(tx, headerHash); err != nil {
 		return fmt.Errorf("failed to update chain tip: %w", err)
 	}
@@ -817,12 +803,9 @@ func (block *BlockWithInfo) Set(tx *staterepository.TrackedTx) error {
 
 // GetTip retrieves the current chain tip block from the database
 func GetTip(tx *staterepository.TrackedTx) (*BlockWithInfo, error) {
-	// Get the chain tip header hash
 	headerHash, err := staterepository.GetTip(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get chain tip: %w", err)
 	}
-
-	// Get the actual block using the header hash
 	return Get(tx, headerHash)
 }

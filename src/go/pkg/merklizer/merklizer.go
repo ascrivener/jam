@@ -36,13 +36,11 @@ func collectLeaves(tx *staterepository.TrackedTx, nodeHash [32]byte, state *Stat
 	}
 
 	if node.IsLeaf() {
-		// This is a leaf - add to state
 		*state = append(*state, StateKV{
 			OriginalKey: node.OriginalKey,
 			Value:       node.OriginalValue,
 		})
 	} else {
-		// This is an internal node - recurse on children
 		if node.LeftHash != [32]byte{} {
 			err = collectLeaves(tx, node.LeftHash, state)
 			if err != nil {

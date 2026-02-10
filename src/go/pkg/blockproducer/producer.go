@@ -96,7 +96,6 @@ func (p *Producer) slotLoop() {
 	ticker := time.NewTicker(slotDuration)
 	defer ticker.Stop()
 
-	// Process the first slot immediately
 	p.processSlot()
 
 	for {
@@ -115,7 +114,6 @@ func (p *Producer) processSlot() {
 	currentSlot := p.getCurrentSlot()
 	log.Printf("[BlockProducer] Processing slot %d", currentSlot)
 
-	// Get current state
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		log.Printf("[BlockProducer] Failed to create transaction: %v", err)
@@ -129,7 +127,6 @@ func (p *Producer) processSlot() {
 		return
 	}
 
-	// Check if we're the slot leader
 	leaderInfo, err := p.checkSlotLeader(currentSlot, currentState)
 	if err != nil {
 		log.Printf("[BlockProducer] Failed to check slot leader: %v", err)
@@ -184,7 +181,6 @@ func (p *Producer) checkSlotLeader(slot types.Timeslot, currentState *state.Stat
 			return notLeader, fmt.Errorf("failed to compute VRF output: %w", err)
 		}
 
-		// Check if our VRF output matches the ticket's VerifiablyRandomIdentifier
 		if vrfOutput != ticket.VerifiablyRandomIdentifier {
 			return notLeader, nil
 		}
@@ -215,7 +211,6 @@ func (p *Producer) checkSlotLeader(slot types.Timeslot, currentState *state.Stat
 
 // produceBlock creates and broadcasts a new block
 func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, leaderInfo SlotLeaderInfo) error {
-	// Get the current chain tip
 	tx, err := staterepository.NewTrackedTx([32]byte{})
 	if err != nil {
 		return fmt.Errorf("failed to create transaction: %w", err)
@@ -227,13 +222,9 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 		return fmt.Errorf("failed to get chain tip: %w", err)
 	}
 
-	// Gather extrinsics from mempool
 	extrinsic := p.gatherExtrinsics(slot, currentState, tip.Block.Header.Hash())
-
-	// Calculate extrinsic hash
 	extrinsicHash := extrinsic.MerkleCommitment()
 
-	// Build the block seal message
 	var sealMessage []byte
 	if leaderInfo.IsTicketed {
 		// Ticket mode: message = "jam_ticket_seal" || entropy[3] || entry_index
@@ -244,20 +235,17 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 		sealMessage = append([]byte("jam_fallback_seal"), currentState.EntropyAccumulator[3][:]...)
 	}
 
-	// Compute VRF output from seal message (needed for VRF signature)
 	sealVRFOutput, err := bandersnatch.VRFOutputFromSeed(p.bandersnatchSeed, sealMessage)
 	if err != nil {
 		return fmt.Errorf("failed to compute seal VRF output: %w", err)
 	}
 
-	// Sign the VRF signature (entropy contribution)
 	entropyMessage := append([]byte("jam_entropy"), sealVRFOutput[:]...)
 	vrfSignature, err := bandersnatch.VRFSign(p.bandersnatchSeed, entropyMessage, []byte{})
 	if err != nil {
 		return fmt.Errorf("failed to sign VRF signature: %w", err)
 	}
 
-	// Check if we need to set WinningTicketsMarker
 	var winningTicketsMarker *[constants.NumTimeslotsPerEpoch]header.Ticket
 	priorSlot := currentState.MostRecentBlockTimeslot
 	if slot.EpochIndex() == priorSlot.EpochIndex() &&
@@ -295,13 +283,11 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 		return fmt.Errorf("failed to sign block seal: %w", err)
 	}
 
-	// Create the full header with block seal
 	newHeader := header.Header{
 		UnsignedHeader: unsignedHeader,
 		BlockSeal:      blockSeal,
 	}
 
-	// Create the block
 	newBlock := block.Block{
 		Header:     newHeader,
 		Extrinsics: extrinsic,
@@ -309,7 +295,6 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 
 	log.Printf("[BlockProducer] Created block: slot=%d, parent=%x", slot, newBlock.Header.ParentHash[:8])
 
-	// Validate and import via STF
 	stateRoot, err := statetransition.STF(newBlock)
 	if err != nil {
 		return fmt.Errorf("STF validation failed: %w", err)
@@ -317,7 +302,6 @@ func (p *Producer) produceBlock(slot types.Timeslot, currentState *state.State, 
 
 	log.Printf("[BlockProducer] Block validated, state root: %x", stateRoot[:8])
 
-	// Broadcast the block header to grid neighbors
 	if p.broadcastFunc != nil {
 		if err := p.broadcastFunc(newHeader); err != nil {
 			log.Printf("[BlockProducer] Failed to broadcast block: %v", err)
