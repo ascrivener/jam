@@ -3,6 +3,7 @@ package header
 import (
 	"jam/pkg/constants"
 	"jam/pkg/serializer"
+	"jam/pkg/ticket"
 	"jam/pkg/types"
 
 	"golang.org/x/crypto/blake2b"
@@ -10,15 +11,15 @@ import (
 
 // UnsignedHeader contains all header fields except the BlockSeal
 type UnsignedHeader struct {
-	ParentHash                   [32]byte                                  // p
-	PriorStateRoot               [32]byte                                  // r
-	ExtrinsicHash                [32]byte                                  // x
-	TimeSlot                     types.Timeslot                            // t
-	EpochMarker                  *EpochMarker                              // e
-	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]Ticket) // w
-	BandersnatchBlockAuthorIndex types.ValidatorIndex                      // i
-	VRFSignature                 types.BandersnatchVRFSignature            // v
-	OffendersMarker              []types.Ed25519PublicKey                  // o
+	ParentHash                   [32]byte                                         // p
+	PriorStateRoot               [32]byte                                         // r
+	ExtrinsicHash                [32]byte                                         // x
+	TimeSlot                     types.Timeslot                                   // t
+	EpochMarker                  *EpochMarker                                     // e
+	WinningTicketsMarker         *([constants.NumTimeslotsPerEpoch]ticket.Ticket) // w
+	BandersnatchBlockAuthorIndex types.ValidatorIndex                             // i
+	VRFSignature                 types.BandersnatchVRFSignature                   // v
+	OffendersMarker              []types.Ed25519PublicKey                         // o
 }
 
 type Header struct {
@@ -37,9 +38,4 @@ type EpochMarker struct {
 		types.BandersnatchPublicKey
 		types.Ed25519PublicKey
 	}
-}
-
-type Ticket struct {
-	VerifiablyRandomIdentifier [32]byte
-	EntryIndex                 types.GenericNum
 }
