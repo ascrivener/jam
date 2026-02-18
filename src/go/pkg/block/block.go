@@ -32,7 +32,7 @@ type Block struct {
 func (b Block) VerifyInBounds(priorState *state.State) error {
 	if b.Header.WinningTicketsMarker != nil {
 		for _, ticket := range b.Header.WinningTicketsMarker {
-			if ticket.EntryIndex >= uint8(constants.NumTicketEntries) {
+			if uint16(ticket.EntryIndex) >= constants.NumTicketEntries {
 				return errors.ProtocolErrorf("ticket entry index is out of bounds: %d", ticket.EntryIndex)
 			}
 		}
